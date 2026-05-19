@@ -1,0 +1,2021 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Impact Analyzer — AI Code Intelligence</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,500;0,600;1,400&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.11.0/tabler-icons.min.css"/>
+<style>
+  :root {
+    --bg: #f7f8fa; --surface: #ffffff; --card: #ffffff; --border: #e8eaed;
+    --text: #c9d4e8; --text-dim: #4a5b7a; --text-bright: #e8f0ff;
+    --accent: #3b82f6; --accent-dim: #1e3a5f; --accent-bright: #60a5fa;
+    --green: #10b981; --green-dim: #064e3b; --green-bright: #34d399;
+    --amber: #f59e0b; --amber-dim: #451a03; --amber-bright: #fbbf24;
+    --red: #ef4444; --red-dim: #450a0a; --red-bright: #f87171;
+    --mono: 'JetBrains Mono', monospace; --sans: 'Instrument Sans', sans-serif;
+    --r: 8px; --rl: 12px;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: #f7f8fa; color: #0d1117; font-family: var(--sans); font-size: 14px; }
+  body { display: flex; flex-direction: column; min-height: 100vh; }
+
+  /* Layout */
+  .shell { display: flex; height: 100vh; overflow: hidden; }
+  .sidebar { width: 220px; flex-shrink: 0; background: #ffffff; border-right: 1px solid #e8eaed; display: flex; flex-direction: column; padding: 20px 0; }
+  .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .topbar { height: 52px; border-bottom: 1px solid #e8eaed; display: flex; align-items: center; padding: 0 24px; gap: 12px; background: #ffffff; flex-shrink: 0; }
+  .content { flex: 1; overflow-y: auto; padding: 24px; }
+
+  /* Sidebar */
+  .brand { padding: 0 20px 24px; display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 600; color: #0d1117; border-bottom: 1px solid #e8eaed; margin-bottom: 12px; }
+  .brand i { font-size: 22px; color: #1a6cf6; }
+  .nav-item { display: flex; align-items: center; gap: 10px; padding: 9px 20px; font-size: 13px; color: #7a8494; cursor: pointer; transition: all 0.15s; border-left: 3px solid transparent; }
+  .nav-item:hover { color: #0d1117; background: #ffffff; }
+  .nav-item.active { color: #1a6cf6; background: #eff5ff; border-left-color: #1a6cf6; }
+  .nav-item i { font-size: 17px; }
+  .nav-section { font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: #7a8494; padding: 16px 20px 6px; font-weight: 500; }
+  .conn-indicator { margin: auto 0 0; padding: 12px 20px; border-top: 1px solid #e8eaed; font-size: 12px; color: #7a8494; }
+  .conn-dot { width: 8px; height: 8px; border-radius: 50%; background: #e8eaed; display: inline-block; margin-right: 6px; }
+  .conn-dot.ok { background: var(--green); box-shadow: 0 0 6px var(--green); }
+
+  /* Cards */
+  .card { background: #ffffff; border: 1px solid #e8eaed; border-radius: var(--rl); padding: 20px; margin-bottom: 16px; }
+  .card-title { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: #7a8494; margin-bottom: 16px; display: flex; align-items: center; gap: 7px; }
+  .card-title i { font-size: 15px; }
+
+  /* Forms */
+  label { display: block; font-size: 12px; color: #7a8494; margin-bottom: 5px; font-weight: 500; }
+  input[type="text"], input[type="password"], input[type="url"], select, textarea {
+    width: 100%; background: #ffffff; border: 1px solid #e8eaed; border-radius: var(--r);
+    color: #0d1117; font-family: var(--sans); font-size: 13px; padding: 8px 12px;
+    transition: border-color 0.15s; outline: none;
+  }
+  input[type="text"]:focus, input[type="password"]:focus, input[type="url"]:focus, select:focus, textarea:focus { border-color: #1a6cf6; }
+  input[type="text"]::placeholder, input[type="password"]::placeholder, textarea::placeholder { color: #7a8494; }
+  select option { background: #ffffff; }
+  .field { margin-bottom: 14px; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+  .field-hint { font-size: 11px; color: #7a8494; margin-top: 4px; }
+  .field-hint a { color: #1a6cf6; text-decoration: none; }
+
+  /* Radio pills */
+  .pill-group { display: flex; gap: 8px; flex-wrap: wrap; }
+  .pill { display: flex; align-items: center; gap: 7px; padding: 7px 14px; border: 1px solid #e8eaed; border-radius: 20px; cursor: pointer; font-size: 13px; color: #7a8494; transition: all 0.15s; user-select: none; }
+  .pill:hover { border-color: #1a6cf6; color: #0d1117; }
+  .pill.selected { border-color: #1a6cf6; background: #eff5ff; color: #1a6cf6; }
+  .pill i { font-size: 16px; }
+
+  /* Buttons */
+  .btn { display: inline-flex; align-items: center; gap: 7px; padding: 8px 16px; border: 1px solid #e8eaed; border-radius: var(--r); cursor: pointer; font-size: 13px; font-family: var(--sans); font-weight: 500; transition: all 0.15s; background: transparent; color: #0d1117; }
+  .btn:hover:not(:disabled) { background: #ffffff; border-color: #1a6cf6; color: #1a6cf6; }
+  .btn:active:not(:disabled) { transform: scale(0.98); }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-primary { background: #1a6cf6; border-color: #1a6cf6; color: #fff; }
+  .btn-primary:hover:not(:disabled) { background: #1a6cf6; border-color: #1a6cf6; color: #fff; }
+  .btn-success { background: #edfaf3; border-color: var(--green); color: #0c7c4b; }
+  .btn-danger { background: #fff1f1; border-color: var(--red); color: #b81c1c; }
+  .btn-sm { padding: 5px 10px; font-size: 12px; }
+  .btn-icon { width: 32px; height: 32px; padding: 0; justify-content: center; }
+
+  /* Steps */
+  .steps-row { display: flex; align-items: center; gap: 0; margin-bottom: 24px; }
+  .step-item { display: flex; align-items: center; gap: 8px; }
+  .step-circle { width: 26px; height: 26px; border-radius: 50%; border: 1px solid #e8eaed; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 500; color: #7a8494; flex-shrink: 0; transition: all 0.2s; }
+  .step-circle.active { border-color: #1a6cf6; background: #1a6cf6; color: #fff; }
+  .step-circle.done { border-color: var(--green); background: #edfaf3; color: #0c7c4b; }
+  .step-label { font-size: 12px; color: #7a8494; white-space: nowrap; }
+  .step-label.active { color: #0d1117; font-weight: 500; }
+  .step-label.done { color: #0c7c4b; }
+  .step-line { flex: 1; height: 1px; background: #e8eaed; margin: 0 10px; min-width: 20px; }
+  .step-line.done { background: var(--green); }
+
+  /* Repo grid */
+  .repo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; max-height: 300px; overflow-y: auto; padding: 2px; }
+  .repo-tile { background: #ffffff; border: 1px solid #e8eaed; border-radius: var(--r); padding: 10px 12px; cursor: pointer; transition: all 0.15s; }
+  .repo-tile:hover { border-color: #1a6cf6; }
+  .repo-tile.primary { border-color: var(--green); background: #edfaf3; }
+  .repo-tile.connected { border-color: #1a6cf6; background: #eff5ff; }
+  .repo-tile-name { font-size: 12px; font-weight: 500; color: #0d1117; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .repo-tile.primary .repo-tile-name { color: #0c7c4b; }
+  .repo-tile.connected .repo-tile-name { color: #1a6cf6; }
+  .repo-tile-meta { font-size: 11px; color: #7a8494; margin-top: 4px; display: flex; align-items: center; gap: 5px; }
+  .lang-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+  /* List items */
+  .list-item { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border: 1px solid #e8eaed; border-radius: var(--r); margin-bottom: 6px; cursor: pointer; transition: all 0.15s; background: #ffffff; }
+  .list-item:hover { border-color: #1a6cf6; }
+  .list-item.selected { border-color: #1a6cf6; background: #eff5ff; }
+  .list-item .li-main { flex: 1; min-width: 0; }
+  .list-item .li-title { font-size: 13px; font-weight: 500; color: #0d1117; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .list-item.selected .li-title { color: #1a6cf6; }
+  .list-item .li-sub { font-size: 11px; color: #7a8494; margin-top: 2px; }
+  .list-scroll { max-height: 280px; overflow-y: auto; }
+
+  /* Tabs */
+  .tabs { display: flex; gap: 2px; border-bottom: 1px solid #e8eaed; margin-bottom: 18px; }
+  .tab { padding: 8px 16px; font-size: 13px; cursor: pointer; color: #7a8494; border-bottom: 2px solid transparent; margin-bottom: -1px; font-family: var(--sans); background: none; border-top: none; border-left: none; border-right: none; transition: all 0.15s; }
+  .tab:hover { color: #0d1117; }
+  .tab.active { color: #1a6cf6; border-bottom-color: #1a6cf6; }
+
+  /* Badges */
+  .badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 500; padding: 2px 8px; border-radius: 12px; border: 1px solid; }
+  .badge-green { background: #edfaf3; color: #0c7c4b; border-color: var(--green); }
+  .badge-amber { background: #fff8ec; color: #8a5200; border-color: #8a5200; }
+  .badge-red { background: #fff1f1; color: #b81c1c; border-color: var(--red); }
+  .badge-blue { background: #eff5ff; color: #1a6cf6; border-color: #1a6cf6; }
+  .badge-dim { background: #ffffff; color: #7a8494; border-color: #e8eaed; }
+
+  /* Gate banner */
+  .gate-banner { border-radius: var(--rl); padding: 18px 22px; display: flex; align-items: center; gap: 16px; margin-bottom: 18px; border: 1px solid; }
+  .gate-approve { background: #edfaf3; border-color: var(--green); }
+  .gate-hold { background: #fff8ec; border-color: #8a5200; }
+  .gate-block { background: #fff1f1; border-color: var(--red); }
+  .gate-icon { font-size: 32px; flex-shrink: 0; }
+  .gate-approve .gate-icon { color: #0c7c4b; }
+  .gate-hold .gate-icon { color: #8a5200; }
+  .gate-block .gate-icon { color: #b81c1c; }
+  .gate-title { font-size: 18px; font-weight: 600; }
+  .gate-approve .gate-title { color: #0c7c4b; }
+  .gate-hold .gate-title { color: #8a5200; }
+  .gate-block .gate-title { color: #b81c1c; }
+  .gate-sub { font-size: 13px; color: #7a8494; margin-top: 4px; line-height: 1.5; }
+
+  /* Metrics grid */
+  .metrics-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; margin-bottom: 18px; }
+  .metric { background: #ffffff; border: 1px solid #e8eaed; border-radius: var(--r); padding: 12px 14px; }
+  .metric-label { font-size: 11px; color: #7a8494; margin-bottom: 6px; }
+  .metric-value { font-size: 22px; font-weight: 600; color: #0d1117; font-family: var(--mono); }
+
+  /* Findings */
+  .finding { display: flex; align-items: flex-start; gap: 10px; padding: 10px 0; border-bottom: 1px solid #e8eaed; }
+  .finding:last-child { border-bottom: none; }
+  .finding-body { flex: 1; min-width: 0; }
+  .finding-desc { font-size: 13px; color: #0d1117; }
+  .finding-file { font-size: 11px; color: #7a8494; font-family: var(--mono); margin-top: 3px; }
+  .sev { font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 10px; flex-shrink: 0; margin-top: 2px; text-transform: uppercase; letter-spacing: 0.05em; border: 1px solid; }
+  .sev-critical { background: #fff1f1; color: #b81c1c; border-color: var(--red); }
+  .sev-high { background: #fff8ec; color: #8a5200; border-color: #8a5200; }
+  .sev-medium { background: #eff5ff; color: #1a6cf6; border-color: #1a6cf6; }
+  .sev-low { background: #ffffff; color: #7a8494; border-color: #e8eaed; }
+
+  /* Misc */
+  .spinner { width: 18px; height: 18px; border: 2px solid #e8eaed; border-top-color: #1a6cf6; border-radius: 50%; animation: spin 0.7s linear infinite; display: inline-block; flex-shrink: 0; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .progress-bar { height: 3px; background: #e8eaed; border-radius: 2px; overflow: hidden; }
+  .progress-fill { height: 100%; background: #1a6cf6; border-radius: 2px; transition: width 0.4s; }
+  .search-wrap { position: relative; margin-bottom: 12px; }
+  .search-wrap i { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: #7a8494; font-size: 16px; pointer-events: none; }
+  .search-wrap input { padding-left: 34px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .chip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 3px 10px; border-radius: 14px; background: #eff5ff; color: #1a6cf6; border: 1px solid #1a6cf6; }
+  .chip button { background: none; border: none; cursor: pointer; color: inherit; padding: 0; font-size: 14px; line-height: 1; display: flex; }
+  .info-msg { font-size: 12px; background: #ffffff; border: 1px solid #e8eaed; border-radius: var(--r); padding: 8px 12px; color: #7a8494; display: flex; align-items: center; gap: 7px; margin-bottom: 12px; }
+  .err-msg { font-size: 13px; background: #fff1f1; border: 1px solid var(--red); border-radius: var(--r); padding: 10px 14px; color: #b81c1c; display: flex; align-items: flex-start; gap: 8px; margin-bottom: 14px; }
+  .footer-bar { display: flex; align-items: center; justify-content: space-between; padding: 14px 24px; border-top: 1px solid #e8eaed; background: #ffffff; flex-shrink: 0; }
+  .section-heading { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: #7a8494; margin-bottom: 10px; display: flex; align-items: center; gap: 6px; }
+  .section-heading i { font-size: 14px; }
+  .score-bar { height: 6px; background: #ffffff; border-radius: 3px; overflow: hidden; width: 100%; margin-top: 6px; }
+  .score-fill { height: 100%; border-radius: 3px; }
+  code { font-family: var(--mono); font-size: 11px; background: #ffffff; padding: 1px 5px; border-radius: 4px; border: 1px solid #e8eaed; color: #1a6cf6; }
+  .empty-state { text-align: center; padding: 40px 20px; color: #7a8494; }
+  .empty-state i { font-size: 36px; display: block; margin-bottom: 10px; opacity: 0.4; }
+  .history-item { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border: 1px solid #e8eaed; border-radius: var(--r); margin-bottom: 6px; background: #ffffff; cursor: pointer; transition: all 0.15s; }
+  .history-item:hover { border-color: #1a6cf6; }
+  a { color: #1a6cf6; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .topbar-title { font-size: 14px; font-weight: 500; color: #0d1117; }
+  .topbar-sub { font-size: 12px; color: #7a8494; }
+  .scrollable { overflow-y: auto; }
+  .checklist-item { display: flex; align-items: flex-start; gap: 8px; padding: 6px 0; border-bottom: 1px solid #e8eaed; font-size: 13px; }
+  .checklist-item:last-child { border-bottom: none; }
+  .checklist-item i { font-size: 15px; color: #7a8494; flex-shrink: 0; margin-top: 1px; }
+
+/* ── Professional Light Theme Overrides ── */
+html, body { font-family: 'Instrument Sans', sans-serif; background: #f7f8fa; color: #0d1117; }
+.shell { height: 100vh; }
+.sidebar { background: #ffffff; border-right: 1px solid #e8eaed; }
+.main { background: #f7f8fa; }
+.topbar { background: #ffffff; border-bottom: 1px solid #e8eaed; }
+
+/* Brand */
+.brand { padding: 18px 20px; border-bottom: 1px solid #e8eaed; }
+.brand i { color: #0d1117; }
+.brand-text { font-family: 'Instrument Serif', serif; font-size: 16px; color: #0d1117; letter-spacing: -.01em; }
+
+/* Gate banners in light theme */  
+.gate-approve { background: #edfaf3; border-color: #b5e8cf; }
+.gate-hold { background: #fff8ec; border-color: #fad98a; }
+.gate-block { background: #fff1f1; border-color: #f8c0c0; }
+.gate-approve .gate-title { color: #0c7c4b; }
+.gate-hold .gate-title { color: #8a5200; }
+.gate-block .gate-title { color: #b81c1c; }
+
+/* Metrics cards */
+.metric { background: #ffffff; border: 1px solid #e8eaed; }
+.metric-label { color: #7a8494; }
+
+/* Repo tiles */
+.repo-tile { background: #ffffff; border: 1.5px solid #e8eaed; }
+.repo-tile:hover { border-color: #3d4652; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+.repo-tile.primary { border-color: #0c7c4b; background: #edfaf3; }
+.repo-tile.connected { border-color: #1a6cf6; background: #eff5ff; }
+
+/* List items */
+.list-item { background: #ffffff; border: 1.5px solid #e8eaed; }
+.list-item.selected { border-color: #1a6cf6; background: #eff5ff; }
+.list-item:hover { border-color: #3d4652; }
+
+/* Nav items */
+.nav-item.active { background: #eff5ff; border-left-color: #1a6cf6; color: #1a6cf6; }
+.nav-item:hover { background: #f7f8fa; }
+
+/* Buttons */
+.btn { background: #ffffff; border: 1.5px solid #e8eaed; color: #0d1117; }
+.btn:hover:not(:disabled) { background: #f7f8fa; border-color: #3d4652; }
+.btn-primary { background: #0d1117; color: #ffffff; border-color: #0d1117; }
+.btn-primary:hover:not(:disabled) { background: #1e2530; color: #ffffff; }
+.btn-blue { background: #1a6cf6; color: #ffffff; border-color: #1a6cf6; }
+
+/* Input fields */
+input, select { background: #ffffff; border: 1.5px solid #e8eaed; color: #0d1117; }
+input:focus, select:focus { border-color: #1a6cf6; box-shadow: 0 0 0 3px rgba(26,108,246,.08); }
+
+/* Cards */
+.card { background: #ffffff; border: 1px solid #e8eaed; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
+
+/* Steps */
+.step-num.active { background: #0d1117; border-color: #0d1117; color: #ffffff; }
+.step-num.done { background: #0c7c4b; border-color: #0c7c4b; color: #ffffff; }
+.step-line.done { background: #0c7c4b; }
+.step-label.active { color: #0d1117; font-weight: 600; }
+.step-label.done { color: #0c7c4b; }
+
+/* Severity badges */
+.sev-critical, .sev-CRITICAL { background: #fff1f1; color: #b81c1c; border: 1px solid #f8c0c0; }
+.sev-high, .sev-HIGH { background: #fff8ec; color: #8a5200; border: 1px solid #fad98a; }
+.sev-medium, .sev-MEDIUM { background: #eff5ff; color: #1a6cf6; border: 1px solid #c2d6fe; }
+.sev-low, .sev-LOW, .sev-gap { background: #f7f8fa; color: #7a8494; border: 1px solid #e8eaed; }
+
+/* Spinner in light mode */
+.spinner { border-color: #e8eaed; border-top-color: #1a6cf6; }
+
+/* Code elements */
+code { background: #f7f8fa; border: 1px solid #e8eaed; color: #1a6cf6; }
+
+/* Chip colors */
+.chip-blue { background: #eff5ff; color: #1a6cf6; border-color: #c2d6fe; }
+.chip-green { background: #edfaf3; color: #0c7c4b; border-color: #b5e8cf; }
+.chip-amber { background: #fff8ec; color: #8a5200; border-color: #fad98a; }
+.chip-red { background: #fff1f1; color: #b81c1c; border-color: #f8c0c0; }
+.chip-dim { background: #f7f8fa; color: #7a8494; border-color: #e8eaed; }
+
+/* Provider tiles */
+.provider-tile { border: 1.5px solid #e8eaed; background: #ffffff; }
+.provider-tile:hover { border-color: #3d4652; }
+.provider-tile.selected { border-color: #1a6cf6; background: #eff5ff; }
+.provider-tile.selected .pt-icon { color: #1a6cf6; }
+.provider-tile.selected .pt-label { color: #1a6cf6; }
+.provider-tile .pt-check { background: #1a6cf6; }
+
+/* Auth tabs */
+.auth-tab { border: 1.5px solid #e8eaed; background: #ffffff; color: #3d4652; }
+.auth-tab.active { background: #0d1117; border-color: #0d1117; color: #ffffff; }
+.auth-tab:hover:not(.active) { border-color: #3d4652; }
+
+/* Info messages */
+.info-msg { background: #eff5ff; border-color: #c2d6fe; color: #3d4652; }
+.err-msg { background: #fff1f1; border-color: #f8c0c0; color: #b81c1c; }
+.success-msg { background: #edfaf3; border-color: #b5e8cf; color: #0c7c4b; }
+
+/* Score bars */
+.score-bar-bg { background: #f1f3f5; }
+
+/* Footer */
+.footer-bar { background: #ffffff; border-top: 1px solid #e8eaed; }
+
+/* Progress */
+.progress-bar { background: #e8eaed; }
+.progress-fill { background: #1a6cf6; }
+
+/* Conn indicator */
+.conn-dot.ok { background: #22c55e; box-shadow: 0 0 0 3px rgba(34,197,94,.15); }
+.conn-indicator { border-top: 1px solid #e8eaed; }
+
+/* Gate banner text */
+.gate-icon { font-size: 28px; }
+.gate-approve .gate-icon { color: #0c7c4b; }
+.gate-hold .gate-icon { color: #8a5200; }
+.gate-block .gate-icon { color: #b81c1c; }
+
+/* History rows */
+.history-item { background: #ffffff; border: 1px solid #e8eaed; }
+.history-item:hover { border-color: #3d4652; box-shadow: 0 2px 8px rgba(0,0,0,.04); }
+
+/* Tabs */
+.tab-btn.active { color: #0d1117; border-bottom-color: #0d1117; }
+
+/* Typography improvements */
+h1, h2, h3 { font-family: 'Instrument Serif', serif; }
+.gate-title { font-family: 'Instrument Serif', serif; font-size: 20px; letter-spacing: -.02em; }
+.metric-value { font-family: 'JetBrains Mono', monospace; }
+.brand-name-text { font-family: 'Instrument Serif', serif; }
+
+</style>
+</head>
+<body>
+<div class="shell">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="brand"><i class="ti ti-microscope"></i>Impact Analyzer</div>
+
+    <div class="nav-section">Analysis</div>
+    <div class="nav-item active" onclick="showView('configure')" id="nav-configure">
+      <i class="ti ti-plug-connected"></i>Configure
+    </div>
+    <div class="nav-item" onclick="showView('repos')" id="nav-repos">
+      <i class="ti ti-folder"></i>Repositories
+    </div>
+    <div class="nav-item" onclick="showView('target')" id="nav-target">
+      <i class="ti ti-target"></i>Analysis target
+    </div>
+    <div class="nav-item" onclick="showView('results')" id="nav-results">
+      <i class="ti ti-chart-bar"></i>Results
+    </div>
+
+    <div class="nav-section">History</div>
+    <div class="nav-item" onclick="showView('history')" id="nav-history">
+      <i class="ti ti-history"></i>Past analyses
+    </div>
+
+    <div class="nav-section">Settings</div>
+    <div class="nav-item" onclick="showView('settings')" id="nav-settings">
+      <i class="ti ti-settings"></i>Backend config
+    </div>
+
+    <div class="conn-indicator" id="conn-indicator">
+      <span class="conn-dot" id="conn-dot"></span>
+      <span id="conn-text">Not connected</span>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <div class="main">
+    <div class="topbar">
+      <div>
+        <div class="topbar-title" id="topbar-title">Configure provider</div>
+        <div class="topbar-sub" id="topbar-sub">Connect your Git provider to begin</div>
+      </div>
+      <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
+        <span id="topbar-badge"></span>
+        <a id="backend-url-display" href="#" style="font-size:11px;color:#7a8494" onclick="showView('settings');return false;"></a>
+      </div>
+    </div>
+
+    <!-- Views -->
+    <div id="view-configure" class="content"></div>
+    <div id="view-repos" class="content" style="display:none"></div>
+    <div id="view-target" class="content" style="display:none"></div>
+    <div id="view-results" class="content" style="display:none"></div>
+    <div id="view-history" class="content" style="display:none"></div>
+    <div id="view-settings" class="content" style="display:none"></div>
+
+    <div class="footer-bar" id="footer-bar" style="display:none">
+      <button class="btn" id="btn-back" onclick="goBack()"><i class="ti ti-arrow-left"></i>Back</button>
+      <button class="btn btn-primary" id="btn-next" onclick="goNext()">Continue <i class="ti ti-arrow-right"></i></button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ────────────────────────────────────────────────────────────────────
+const state = {
+  step: 0,
+  // Provider: github | github_enterprise | bitbucket | bitbucket_server
+  provider: localStorage.getItem('provider') || 'github',
+  authMode: localStorage.getItem('authMode') || 'token',
+  token: localStorage.getItem('token') || '',
+  username: localStorage.getItem('username') || '',
+  password: '',  // never persisted
+  workspace: localStorage.getItem('workspace') || '',
+  baseUrl: localStorage.getItem('baseUrl') || '',  // enterprise/server base URL
+  useProxy: true,  // always use backend proxy (solves CORS for all providers)
+  userInfo: null,
+  backendUrl: localStorage.getItem('backendUrl') || 'http://localhost:8080',
+  backendKey: localStorage.getItem('backendKey') || '',
+  modelProvider: localStorage.getItem('modelProvider') || 'anthropic',
+  modelName:     localStorage.getItem('modelName')     || 'claude-sonnet-4-6',
+  modelApiKey:   localStorage.getItem('modelApiKey')   || '',
+  modelBaseUrl:  localStorage.getItem('modelBaseUrl')  || '',
+  modelApiVer:   localStorage.getItem('modelApiVer')   || '2024-08-01-preview',
+  repos: [],
+  primaryRepo: null,
+  connectedRepos: [],
+  targetType: 'pr',
+  prs: [], branches: [], commits: [],
+  selectedPR: null, sourceBranch: '', targetBranch: '',
+  commitSha: '',
+  report: null,
+  lastRequestId: null,
+  humanReview: null,  // pending human review state
+  history: JSON.parse(localStorage.getItem('analysisHistory') || '[]'),
+};
+
+function saveState() {
+  ['provider','authMode','token','username','workspace','baseUrl',
+   'modelProvider','modelName','modelApiKey','modelBaseUrl','modelApiVer',
+   'backendUrl','backendKey'].forEach(k => {
+    if(state[k] !== undefined && state[k] !== null) localStorage.setItem(k, state[k]);
+  });
+}
+
+const LANG_COLORS = {JavaScript:'#f1e05a',TypeScript:'#3178c6',Python:'#3572A5',Java:'#b07219',Go:'#00ADD8',Ruby:'#701516',Kotlin:'#A97BFF',Rust:'#dea584',C:'#555555',Scala:'#c22d40',Shell:'#89e051'};
+const VIEWS = ['configure','repos','target','results','history','settings'];
+const STEP_VIEWS = ['configure','repos','target','results'];
+const STEPS = ['Connect','Repositories','Target','Results'];
+
+// ── Navigation ────────────────────────────────────────────────────────────────
+function showView(name) {
+  VIEWS.forEach(v => { document.getElementById('view-'+v).style.display = 'none'; document.getElementById('nav-'+v).classList.remove('active'); });
+  document.getElementById('view-'+name).style.display = 'block';
+  document.getElementById('nav-'+name).classList.add('active');
+  const idx = STEP_VIEWS.indexOf(name);
+  document.getElementById('footer-bar').style.display = (idx >= 0 && idx < 3) ? 'flex' : 'none';
+  updateTopbar(name);
+  renderView(name);
+}
+
+function updateTopbar(name) {
+  const titles = { configure:'Configure provider', repos:'Select repositories', target:'Analysis target', results:'Analysis results', history:'Past analyses', settings:'Backend settings' };
+  const subs = { configure:'Connect GitHub or Bitbucket', repos:'Choose primary repo and connected apps', target:'Pick PR, branch diff, or commit', results:'Review gate decision and findings', history:'Previous analysis runs', settings:'Configure backend API connection' };
+  document.getElementById('topbar-title').textContent = titles[name] || name;
+  document.getElementById('topbar-sub').textContent = subs[name] || '';
+  const u = document.getElementById('backend-url-display');
+  u.textContent = state.backendUrl ? '⚡ '+state.backendUrl : '';
+}
+
+function goBack() {
+  const views = ['configure','repos','target'];
+  const cur = STEP_VIEWS.findIndex(v => document.getElementById('view-'+v).style.display !== 'none');
+  if(cur > 0) showView(STEP_VIEWS[cur-1]);
+}
+function goNext() {
+  const views = STEP_VIEWS;
+  const cur = views.findIndex(v => document.getElementById('view-'+v).style.display !== 'none');
+  if(cur === 2) {
+    // Validate target selection before advancing
+    if(!canProceedFromTarget()) { alert('Please select a pull request, branch pair, or commit SHA first.'); return; }
+  }
+  if(cur < 2) showView(views[cur+1]);
+  else if(cur === 2) { state.report = null; showView('results'); }
+}
+
+// ── Render views ─────────────────────────────────────────────────────────────
+function renderView(name) {
+  const el = document.getElementById('view-'+name);
+  if(name === 'configure') renderConfigure(el);
+  else if(name === 'repos') renderRepos(el);
+  else if(name === 'target') renderTarget(el);
+  else if(name === 'results') renderResults(el);
+  else if(name === 'history') renderHistory(el);
+  else if(name === 'settings') renderSettings(el);
+}
+
+// ── Step indicator ───────────────────────────────────────────────────────────
+function stepsHtml(active) {
+  return `<div class="steps-row">${STEPS.map((s,i) => {
+    const cls = i < active ? 'done' : i === active ? 'active' : '';
+    const lbl = `<span class="step-label ${cls}">${s}</span>`;
+    const circ = `<div class="step-circle ${cls}">${i < active ? '<i class="ti ti-check" style="font-size:12px"></i>' : i+1}</div>`;
+    const line = i < STEPS.length-1 ? `<div class="step-line ${i < active ? 'done' : ''}"></div>` : '';
+    return `<div class="step-item">${circ}${lbl}</div>${line}`;
+  }).join('')}</div>`;
+}
+
+// ── Model provider catalogue (mirrors agents/llm_client.py PROVIDERS) ─────────
+const MODEL_PROVIDERS = {
+  anthropic:    {
+    label:'Anthropic Claude', icon:'✦',
+    models:['claude-sonnet-4-6','claude-haiku-4-5-20251001','claude-opus-4-6'],
+    needsKey:true, needsUrl:false,
+    keyPlaceholder:'sk-ant-api03-…', urlPlaceholder:'',
+    hint:'Best quality for code analysis. <a href="https://console.anthropic.com/settings/keys" target="_blank">Get key ↗</a>',
+  },
+  openai:       {
+    label:'OpenAI', icon:'⬡',
+    models:['gpt-4o','gpt-4o-mini','gpt-4-turbo','gpt-3.5-turbo'],
+    needsKey:true, needsUrl:false,
+    keyPlaceholder:'sk-…', urlPlaceholder:'',
+    hint:'Strong alternative. <a href="https://platform.openai.com/api-keys" target="_blank">Get key ↗</a>',
+  },
+  azure_openai: {
+    label:'Azure OpenAI', icon:'⬡',
+    models:['gpt-4o','gpt-4-turbo','gpt-35-turbo'],
+    needsKey:true, needsUrl:true,
+    keyPlaceholder:'Azure API key', urlPlaceholder:'https://YOUR.openai.azure.com',
+    hint:'Your Azure-hosted OpenAI deployment. Enter the full endpoint URL from the Azure portal.',
+  },
+  ollama:       {
+    label:'Ollama (Local)', icon:'🦙',
+    models:['llama3.2','llama3.1','codellama','mistral','qwen2.5-coder','deepseek-coder','phi3','gemma2'],
+    needsKey:false, needsUrl:true,
+    keyPlaceholder:'', urlPlaceholder:'http://localhost:11434',
+    hint:'Fully local — no data leaves your machine. Run: <code>ollama serve</code> then <code>ollama pull llama3.2</code>',
+  },
+  custom:       {
+    label:'Custom / Org Llama', icon:'⚡',
+    models:[],
+    needsKey:true, needsUrl:true,
+    keyPlaceholder:'Bearer token / API key', urlPlaceholder:'https://your-org-llm.company.com/v1',
+    hint:'Any OpenAI-compatible endpoint — org-deployed Llama, Maverick, vLLM, Groq, Together AI, Fireworks, etc.<br>Auth: <code>Authorization: Bearer {key}</code><br>Payload: <code>{"model": "your-model", "messages": [{"role": "user", "content": "…"}]}</code>',
+  },
+};
+
+function saveModelConfig() {
+  localStorage.setItem('modelProvider', state.modelProvider);
+  localStorage.setItem('modelName',     state.modelName);
+  localStorage.setItem('modelApiKey',   state.modelApiKey);
+  localStorage.setItem('modelBaseUrl',  state.modelBaseUrl);
+  localStorage.setItem('modelApiVer',   state.modelApiVer);
+}
+
+function getModelConfig() {
+  return {
+    provider:    state.modelProvider,
+    model:       state.modelName,
+    api_key:     state.modelApiKey,
+    base_url:    state.modelBaseUrl,
+    api_version: state.modelApiVer,
+  };
+}
+
+// ── CONFIGURE ─────────────────────────────────────────────────────────────────
+const GIT_PROVIDERS = {
+  github:            { label:'GitHub Cloud',              icon:'ti-brand-github',    bb:false, enterprise:false },
+  github_enterprise: { label:'GitHub Enterprise',         icon:'ti-brand-github',    bb:false, enterprise:true  },
+  bitbucket:         { label:'Bitbucket Cloud',            icon:'ti-brand-bitbucket', bb:true,  enterprise:false },
+  bitbucket_server:  { label:'Bitbucket Server (On-Prem)', icon:'ti-brand-bitbucket', bb:true,  enterprise:true  },
+};
+
+function renderConfigure(el) {
+  const gp = GIT_PROVIDERS[state.provider] || GIT_PROVIDERS.github;
+  const isBB = gp.bb;
+  const isEnt = gp.enterprise;
+
+  el.innerHTML = `
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;max-width:960px">
+
+    <!-- LEFT: Git provider config -->
+    <div>
+      <div class="card">
+        <div class="card-title"><i class="ti ti-plug-connected"></i>Git Provider</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:18px">
+          ${Object.entries(GIT_PROVIDERS).map(([k,v]) => `
+          <div onclick="selectGitProvider('${k}')" style="border:1.5px solid ${state.provider===k?'#1a6cf6':'#e8eaed'};background:${state.provider===k?'#eff5ff':'#fff'};border-radius:8px;padding:11px 12px;cursor:pointer;transition:all .15s;display:flex;align-items:center;gap:8px">
+            <i class="ti ${v.icon}" style="font-size:17px;color:${state.provider===k?'#1a6cf6':'#7a8494'};flex-shrink:0"></i>
+            <span style="font-size:12px;font-weight:600;color:${state.provider===k?'#1a6cf6':'#3d4652'}">${v.label}</span>
+            ${state.provider===k?'<i class="ti ti-check" style="margin-left:auto;font-size:13px;color:#1a6cf6"></i>':''}
+          </div>`).join('')}
+        </div>
+
+        ${isEnt ? `
+        <div class="field-group" style="margin-bottom:14px">
+          <label>${isBB ? 'Bitbucket Server base URL' : 'GitHub Enterprise URL'}</label>
+          <input type="url" value="${esc(state.baseUrl)}" placeholder="${isBB ? 'https://bitbucket.mycompany.com' : 'https://github.mycompany.com'}" oninput="state.baseUrl=this.value;saveState()"/>
+          <div class="field-hint">${isBB ? 'Your on-premise Bitbucket Server URL (without /rest/api/...)' : 'Your GitHub Enterprise Server URL'}</div>
+        </div>` : ''}
+
+        <div class="card-title"><i class="ti ti-lock"></i>Authentication</div>
+        <div style="display:flex;gap:8px;margin-bottom:14px">
+          <div onclick="state.authMode='token';saveState();renderView('configure')" style="flex:1;padding:10px;border:1.5px solid ${state.authMode==='token'?'#1a6cf6':'#e8eaed'};background:${state.authMode==='token'?'#eff5ff':'#fff'};border-radius:8px;cursor:pointer;text-align:center;transition:all .15s">
+            <i class="ti ti-key" style="font-size:20px;display:block;margin-bottom:4px;color:${state.authMode==='token'?'#1a6cf6':'#7a8494'}"></i>
+            <span style="font-size:12px;font-weight:600;color:${state.authMode==='token'?'#1a6cf6':'#3d4652'}">${isBB ? 'HTTP Access Token' : 'Access Token'}</span>
+          </div>
+          <div onclick="state.authMode='password';saveState();renderView('configure')" style="flex:1;padding:10px;border:1.5px solid ${state.authMode==='password'?'#1a6cf6':'#e8eaed'};background:${state.authMode==='password'?'#eff5ff':'#fff'};border-radius:8px;cursor:pointer;text-align:center;transition:all .15s">
+            <i class="ti ti-user" style="font-size:20px;display:block;margin-bottom:4px;color:${state.authMode==='password'?'#1a6cf6':'#7a8494'}"></i>
+            <span style="font-size:12px;font-weight:600;color:${state.authMode==='password'?'#1a6cf6':'#3d4652'}">${isBB ? 'Username + Password' : 'Password'}</span>
+          </div>
+        </div>
+
+        ${state.authMode === 'token' ? `
+        <div class="field-group" style="margin-bottom:14px">
+          <label>${isBB ? 'HTTP Access Token / Personal Access Token' : 'Personal access token'}</label>
+          <input type="password" value="${esc(state.token)}" placeholder="${isBB ? (isEnt ? 'HTTP access token from your profile' : 'App password from bitbucket.org') : 'ghp_… or github_pat_…'}" oninput="state.token=this.value;saveState()"/>
+          <div class="field-hint">
+            ${isBB && isEnt
+              ? '🔑 Bitbucket Server: <strong>Your avatar → Profile → HTTP Access Tokens → Create token</strong><br>Needs: Repository Read, Project Read'
+              : isBB
+                ? '🔑 <a href="https://bitbucket.org/account/settings/app-passwords/new" target="_blank">Create App Password ↗</a> — needs Repositories: Read, Pull requests: Read'
+                : isEnt
+                  ? `🔑 Create at <strong>${state.baseUrl||'your-server'}/settings/tokens/new</strong> — needs <code>repo</code> scope`
+                  : '🔑 <a href="https://github.com/settings/tokens/new" target="_blank">Create Personal Access Token ↗</a> — needs <code>repo</code>, <code>read:org</code>'}
+          </div>
+        </div>` : `
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
+          <div class="field-group">
+            <label>Username</label>
+            <input type="text" value="${esc(state.username)}" placeholder="${isBB ? 'your-username' : 'github-username'}" oninput="state.username=this.value;saveState()"/>
+          </div>
+          <div class="field-group">
+            <label>${isBB && isEnt ? 'Password' : isBB ? 'App password' : 'Password'}</label>
+            <input type="password" value="" oninput="state.password=this.value" placeholder="••••••••"/>
+          </div>
+        </div>`}
+
+        ${isBB ? `
+        <div class="field-group" style="margin-bottom:14px">
+          <label>${isEnt ? 'Project key / Workspace' : 'Workspace slug'} <span style="font-weight:400;color:#7a8494">(optional)</span></label>
+          <input type="text" value="${esc(state.workspace)}" oninput="state.workspace=this.value;saveState()" placeholder="${isEnt ? 'MYPROJECT' : 'my-workspace'}"/>
+          <div class="field-hint">${isEnt ? 'Bitbucket Server project key (e.g. BANK). Leave blank to list all accessible repos.' : 'Your workspace slug from bitbucket.org/<strong>workspace</strong>/'}</div>
+        </div>` : ''}
+
+        <div id="auth-msg" style="margin-bottom:10px"></div>
+        <div id="auth-user-info"></div>
+
+        <div style="display:flex;align-items:center;gap:12px">
+          <button class="btn btn-primary" onclick="doConnect()" id="btn-connect">
+            <i class="ti ti-plug-connected"></i>Connect &amp; verify
+          </button>
+          <div style="font-size:11px;color:#7a8494;display:flex;align-items:center;gap:5px">
+            <i class="ti ti-shield-lock" style="color:#0c7c4b;font-size:14px"></i>
+            All API calls proxied through backend — CORS-free
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: AI model -->
+    <div>
+      <div class="card">
+        <div class="card-title"><i class="ti ti-cpu"></i>AI Model</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px">
+          ${Object.entries(MODEL_PROVIDERS).map(([k,v]) => `
+          <div onclick="selectModelProvider('${k}')" style="border:1.5px solid ${state.modelProvider===k?'#1a6cf6':'#e8eaed'};background:${state.modelProvider===k?'#eff5ff':'#fff'};border-radius:8px;padding:10px;cursor:pointer;transition:all .15s;text-align:center">
+            <div style="font-size:18px;margin-bottom:3px">${v.icon}</div>
+            <div style="font-size:11px;font-weight:600;color:${state.modelProvider===k?'#1a6cf6':'#3d4652'}">${v.label}</div>
+          </div>`).join('')}
+        </div>
+        <div style="background:#f7f8fa;border:1px solid #e8eaed;border-radius:8px;padding:14px">
+          ${renderModelFieldsInline()}
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderModelFieldsInline() {
+  const p = MODEL_PROVIDERS[state.modelProvider]; if(!p) return '';
+  const opts = p.models.length ? p.models.map(m => `<option value="${m}" ${state.modelName===m?'selected':''}>${m}</option>`).join('') : '';
+  return `
+  ${p.models.length
+    ? `<div class="field-group" style="margin-bottom:10px"><label>Model</label><select onchange="state.modelName=this.value;saveModelConfig()">${opts}</select></div>`
+    : `<div class="field-group" style="margin-bottom:10px"><label>Model name</label><input type="text" value="${esc(state.modelName)}" oninput="state.modelName=this.value;saveModelConfig()"/></div>`}
+  ${p.needsKey ? `<div class="field-group" style="margin-bottom:10px"><label>API key</label><input type="password" value="${esc(state.modelApiKey)}" placeholder="${p.keyPlaceholder}" oninput="state.modelApiKey=this.value;saveModelConfig()"/></div>` : ''}
+  ${p.needsUrl ? `<div class="field-group" style="margin-bottom:0"><label>${state.modelProvider==='azure_openai'?'Azure endpoint':'Base URL'}</label><input type="url" value="${esc(state.modelBaseUrl)}" placeholder="${p.urlPlaceholder||''}" oninput="state.modelBaseUrl=this.value;saveModelConfig()"/></div>` : ''}
+  <div class="field-hint" style="margin-top:8px">${p.hint||''}</div>`;
+}
+
+function selectModelProvider(k) {
+  state.modelProvider = k; state.modelName = MODEL_PROVIDERS[k].models[0]||'';
+  state.modelBaseUrl = k==='ollama'?'http://localhost:11434':'';
+  saveModelConfig(); renderView('configure');
+}
+
+function selectGitProvider(k) {
+  state.provider = k; state.authMode = 'token';
+  state.userInfo = null; state.repos = []; state.primaryRepo = null;
+  saveState(); renderView('configure');
+}
+
+async function doConnect() {
+  const btn = document.getElementById('btn-connect');
+  const msg = document.getElementById('auth-msg');
+  const info = document.getElementById('auth-user-info');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Verifying…';
+  msg.innerHTML = ''; if(info) info.innerHTML = '';
+
+  try {
+    // Always use backend proxy — eliminates CORS for ALL providers including Bitbucket Server
+    const h = {'Content-Type':'application/json'};
+    if(state.backendKey) h['X-API-Key'] = state.backendKey;
+
+    const body = {
+      provider: state.provider,
+      base_url: state.baseUrl || '',
+      token:    state.authMode==='token' ? state.token : '',
+      username: state.authMode==='password' ? state.username : '',
+      password: state.authMode==='password' ? (state.password||'') : '',
+      workspace: state.workspace || '',
+      path: '',  // not used for verify
+    };
+
+    const r = await fetch(_backendBase()+'/api/v1/git/verify', {
+      method:'POST', headers:h, body:JSON.stringify(body)
+    });
+    if(r.status===401) throw new Error('Invalid credentials — check your token or password');
+    if(!r.ok) { const t=await r.text(); throw new Error(`${r.status}: ${t.slice(0,200)}`); }
+
+    state.userInfo = await r.json();
+    const name = state.userInfo.login || state.userInfo.display_name || state.userInfo.username || state.username;
+    if(!state.workspace && state.userInfo.username) state.workspace = state.userInfo.username;
+    saveState();
+
+    const connLabel = GIT_PROVIDERS[state.provider]?.label || state.provider;
+    if(info) info.innerHTML = `<div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:#edfaf3;border:1px solid #b5e8cf;border-radius:8px;margin-bottom:12px;font-size:13px;color:#0c7c4b"><i class="ti ti-circle-check"></i>Connected as <strong>${esc(name)}</strong> on ${esc(connLabel)}</div>`;
+    updateConnIndicator(true, name);
+    setTimeout(() => showView('repos'), 600);
+  } catch(e) {
+    msg.innerHTML = `<div class="err-msg" style="margin:0"><i class="ti ti-alert-circle" style="flex-shrink:0;margin-top:1px"></i><div><strong>Connection failed</strong><br>${esc(e.message)}<br><span style="font-size:11px;opacity:.8">Make sure your backend is running at ${esc(state.backendUrl||'http://localhost:8080')}</span></div></div>`;
+    updateConnIndicator(false);
+  }
+  btn.disabled = false; btn.innerHTML = '<i class="ti ti-plug-connected"></i>Connect &amp; verify';
+}
+
+function updateConnIndicator(ok, name) {
+  const dot = document.getElementById('conn-dot');
+  const txt = document.getElementById('conn-text');
+  dot.className = 'conn-dot' + (ok?' ok':'');
+  txt.textContent = ok ? name : 'Not connected';
+}
+
+// ── REPOS ────────────────────────────────────────────────────────────────────
+function renderRepos(el) {
+  const hasRepos = state.repos.length > 0;
+  el.innerHTML = stepsHtml(1) + `
+  ${!state.userInfo ? `<div class="err-msg"><i class="ti ti-alert-circle"></i>Please connect your provider first.</div>` : ''}
+  <div class="card">
+    <div class="card-title"><i class="ti ti-git-branch"></i>Primary repository <span style="margin-left:auto">${state.primaryRepo ? `<span class="badge badge-green"><i class="ti ti-check"></i>${repoName(state.primaryRepo)}</span>` : ''}</span></div>
+    <div class="info-msg"><i class="ti ti-info-circle"></i>Click a repository to set it as the primary impact analysis target.</div>
+    <div class="search-wrap"><i class="ti ti-search" aria-hidden="true"></i><input type="text" id="repo-search" placeholder="Search repositories..." oninput="filterRepos()" /></div>
+    <div id="repo-load-status">${!hasRepos && state.userInfo ? '<div class="empty-state"><span class="spinner" style="width:24px;height:24px"></span><div style="margin-top:12px">Loading repositories...</div></div>' : ''}</div>
+    <div class="repo-grid" id="primary-grid">${hasRepos ? renderRepoGrid(state.repos, 'primary') : ''}</div>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><i class="ti ti-topology-star-3"></i>Connected applications <span style="font-size:11px;font-weight:400;color:#7a8494;margin-left:4px">multi-repo blast radius</span></div>
+    <div class="info-msg"><i class="ti ti-info-circle"></i>Select additional repos that call or depend on the primary. Their APIs and dependencies will be included in the analysis.</div>
+    <div class="chips" id="connected-chips">${renderChips()}</div>
+    <div class="repo-grid" id="connected-grid">${hasRepos ? renderRepoGrid(state.repos.filter(r => repoName(r) !== (state.primaryRepo ? repoName(state.primaryRepo) : '')), 'connected') : ''}</div>
+  </div>`;
+
+  if(!hasRepos && state.userInfo) loadRepos();
+}
+
+function renderChips() {
+  return state.connectedRepos.map(r => `<div class="chip"><i class="ti ti-git-branch" style="font-size:12px"></i>${shortName(r)}<button onclick="removeConnected('${repoName(r)}')"><i class="ti ti-x"></i></button></div>`).join('');
+}
+
+function renderRepoGrid(repos, mode) {
+  return repos.slice(0, 80).map(r => {
+    const n = repoName(r);
+    const isPrimary = state.primaryRepo && repoName(state.primaryRepo) === n;
+    const isConn = state.connectedRepos.some(x => repoName(x) === n);
+    let cls = isPrimary ? 'primary' : isConn ? 'connected' : '';
+    const lang = repoLang(r);
+    return `<div class="repo-tile ${cls}" onclick="selectRepo('${n}','${mode}')">
+      <div class="repo-tile-name" title="${n}">${shortName(r)}</div>
+      <div class="repo-tile-meta">
+        ${lang ? `<span class="lang-dot" style="background:${LANG_COLORS[lang]||'#4a5b7a'}"></span><span>${lang}</span>` : ''}
+        ${isPrimary ? '<span class="badge badge-green" style="font-size:10px;padding:1px 5px">primary</span>' : ''}
+        ${isConn ? '<span class="badge badge-blue" style="font-size:10px;padding:1px 5px">+</span>' : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function selectRepo(name, mode) {
+  const r = state.repos.find(x => repoName(x) === name);
+  if(!r) return;
+  if(mode === 'primary') {
+    if(!state.primaryRepo || repoName(state.primaryRepo) !== name) {
+      // Reset all target state when primary repo changes
+      state.prs = []; state.branches = []; state.commits = [];
+      state.selectedPR = null; state.sourceBranch = ''; state.targetBranch = ''; state.commitSha = '';
+      targetLoadState.pr = null; targetLoadState.branch = null; targetLoadState.commit = null;
+    }
+    state.primaryRepo = r;
+    state.connectedRepos = state.connectedRepos.filter(x => repoName(x) !== name);
+  } else {
+    if(state.primaryRepo && repoName(state.primaryRepo) === name) { state.primaryRepo = r; }
+    else {
+      const idx = state.connectedRepos.findIndex(x => repoName(x) === name);
+      if(idx >= 0) state.connectedRepos.splice(idx, 1);
+      else state.connectedRepos.push(r);
+    }
+  }
+  renderView('repos');
+}
+
+function removeConnected(name) { state.connectedRepos = state.connectedRepos.filter(x => repoName(x) !== name); renderView('repos'); }
+
+function filterRepos() {
+  const q = document.getElementById('repo-search').value.toLowerCase();
+  const filtered = state.repos.filter(r => repoName(r).toLowerCase().includes(q));
+  document.getElementById('primary-grid').innerHTML = renderRepoGrid(filtered, 'primary');
+  document.getElementById('connected-grid').innerHTML = renderRepoGrid(filtered.filter(r => !state.primaryRepo || repoName(r) !== repoName(state.primaryRepo)), 'connected');
+}
+
+// Shared proxy helper - all git API calls go through backend proxy (no CORS)
+// ── Git proxy helpers — all call /api/v1/git/* on the backend ─────────────────
+
+function _gitCfg() {
+  // GitConfig body sent to every proxy endpoint
+  return {
+    provider:  state.provider,
+    base_url:  state.baseUrl || '',
+    auth_mode: state.authMode,
+    token:     state.token    || '',
+    username:  state.username || '',
+    password:  state.password || '',
+    workspace: state.workspace || '',
+  };
+}
+
+function _backendBase() {
+  return (state.backendUrl || 'http://localhost:8080');
+}
+
+function _backendHeaders() {
+  const h = { 'Content-Type': 'application/json' };
+  if (state.backendKey) h['X-API-Key'] = state.backendKey;
+  return h;
+}
+
+async function _backendPost(path, body) {
+  const r = await fetch(_backendBase() + path, {
+    method:  'POST',
+    headers: _backendHeaders(),
+    body:    JSON.stringify(body),
+    signal:  AbortSignal.timeout(30000),
+  });
+  if (!r.ok) {
+    const t = await r.text().catch(() => '');
+    let msg = t;
+    try { msg = JSON.parse(t).detail || t; } catch {}
+    throw new Error(`${r.status}: ${msg.slice(0, 200)}`);
+  }
+  return r.json();
+}
+
+// Fetch repos via backend proxy
+async function gitProxyRepos() {
+  return _backendPost('/api/v1/git/repos', _gitCfg());
+}
+
+// Fetch PRs via backend proxy — repo_slug in the URL path
+async function gitProxyPRs(repoSlug) {
+  return _backendPost(`/api/v1/git/prs/${encodeURIComponent(repoSlug)}`, _gitCfg());
+}
+
+// Fetch branches via backend proxy
+async function gitProxyBranches(repoSlug) {
+  return _backendPost(`/api/v1/git/branches/${encodeURIComponent(repoSlug)}`, _gitCfg());
+}
+
+// Fetch commits via backend proxy
+async function gitProxyCommits(repoSlug) {
+  return _backendPost(`/api/v1/git/commits/${encodeURIComponent(repoSlug)}`, _gitCfg());
+}
+
+// Fetch unified diff via backend proxy
+async function gitProxyDiff(changeType, repoSlug, source, target, prId) {
+  const body = {
+    cfg:         _gitCfg(),
+    change_type: changeType,
+    repo_slug:   repoSlug,
+    source:      source  || '',
+    target:      target  || '',
+    pr_id:       prId    || '',
+  };
+  const d = await _backendPost('/api/v1/git/diff', body);
+  return d.diff || '';
+}
+
+// Verify credentials via backend proxy
+async function gitProxyVerify() {
+  return _backendPost('/api/v1/git/verify', _gitCfg());
+}
+
+async function loadRepos() {
+  try {
+    const d = await gitProxyRepos();
+    state.repos = d.repos || [];
+    renderView('repos');
+  } catch(e) {
+    const el = document.getElementById('repo-load-status');
+    if(el) el.innerHTML = `<div class="err-msg" style="margin:0"><i class="ti ti-alert-circle" style="flex-shrink:0"></i>Failed to load repos: ${esc(e.message)}</div>`;
+  }
+}
+
+async function loadTargetData() {
+  const t = state.targetType;
+  targetLoadState[t] = true;
+  const bodyEl = document.getElementById('target-body');
+  if(bodyEl) bodyEl.innerHTML = renderTargetBody();
+
+  try {
+    const slug = repoName(state.primaryRepo);
+
+    if(t === 'pr') {
+      const d = await gitProxyPRs(slug);
+      state.prs = d.prs || [];
+
+    } else if(t === 'branch') {
+      const d = await gitProxyBranches(slug);
+      state.branches = d.branches || [];
+      if(!state.targetBranch) {
+        const names = state.branches.map(b => branchName(b));
+        state.targetBranch = names.find(n=>n==='main') || names.find(n=>n==='master') || names[0] || '';
+      }
+
+    } else {
+      const d = await gitProxyCommits(slug);
+      state.commits = d.commits || [];
+    }
+
+    targetLoadState[t] = false;
+  } catch(e) {
+    console.error('Target load error:', e);
+    targetLoadState[t] = e.message || 'Unknown error';
+  }
+
+  const bodyEl2 = document.getElementById('target-body');
+  if(bodyEl2) bodyEl2.innerHTML = renderTargetBody();
+  updateNextButton();
+}
+// Explicit loading state: null=not started, true=loading, false=done, string=error
+const targetLoadState = { pr: null, branch: null, commit: null };
+
+function renderTarget(el) {
+  if(!state.primaryRepo) {
+    el.innerHTML = stepsHtml(2)+'<div class="err-msg"><i class="ti ti-alert-circle"></i>Select a primary repository first.</div>';
+    return;
+  }
+  el.innerHTML = stepsHtml(2) + `
+  <div class="card">
+    <div class="card-title"><i class="ti ti-target"></i>Target — ${repoName(state.primaryRepo)}</div>
+    <div class="tabs">
+      <button class="tab ${state.targetType==='pr'?'active':''}" onclick="setTargetType('pr')"><i class="ti ti-git-pull-request"></i> Pull request</button>
+      <button class="tab ${state.targetType==='branch'?'active':''}" onclick="setTargetType('branch')"><i class="ti ti-git-branch"></i> Branch diff</button>
+      <button class="tab ${state.targetType==='commit'?'active':''}" onclick="setTargetType('commit')"><i class="ti ti-git-commit"></i> Commit</button>
+    </div>
+    <div id="target-body">${renderTargetBody()}</div>
+  </div>
+  ${state.connectedRepos.length ? `
+  <div class="card">
+    <div class="card-title"><i class="ti ti-topology-star-3"></i>Connected repos in scope</div>
+    <div class="chips">${state.connectedRepos.map(r=>`<div class="chip"><i class="ti ti-git-branch" style="font-size:12px"></i>${shortName(r)}</div>`).join('')}</div>
+    <div style="font-size:12px;color:#7a8494">These repos will be included in dependency blast radius and interface contract analysis.</div>
+  </div>` : ''}`;
+
+  // Only trigger load if this tab hasn't been loaded yet
+  if(targetLoadState[state.targetType] === null) loadTargetData();
+  // Always sync the Continue button state
+  setTimeout(updateNextButton, 0);
+}
+
+function renderTargetBody() {
+  const t = state.targetType;
+  const loadState = targetLoadState[t];
+
+  // ── Still loading ──────────────────────────────────────────────────────────
+  if(loadState === true) {
+    const label = t==='pr' ? 'pull requests' : t==='branch' ? 'branches' : 'commits';
+    return `<div class="empty-state"><span class="spinner" style="width:24px;height:24px"></span><div style="margin-top:12px">Loading ${label}...</div></div>`;
+  }
+
+  // ── API error ──────────────────────────────────────────────────────────────
+  if(typeof loadState === 'string') {
+    return `<div class="err-msg" style="margin:0"><i class="ti ti-alert-circle" style="flex-shrink:0"></i>
+      <div><strong>Failed to load data</strong><br/>${escHtml(loadState)}<br/>
+      <button class="btn btn-sm" style="margin-top:8px" onclick="retryLoad()"><i class="ti ti-refresh"></i>Retry</button></div>
+    </div>`;
+  }
+
+  // ── Pull requests ──────────────────────────────────────────────────────────
+  if(t === 'pr') {
+    if(!state.prs.length) return `
+      <div class="empty-state">
+        <i class="ti ti-git-pull-request"></i>
+        <div style="margin-bottom:12px">No open pull requests found in this repository.</div>
+        <div style="font-size:12px;color:#7a8494;margin-bottom:12px">Switch to <strong>Branch diff</strong> or <strong>Commit</strong> to analyse without a PR.</div>
+        <button class="btn btn-sm" onclick="retryLoad()"><i class="ti ti-refresh"></i>Refresh</button>
+      </div>`;
+    return `<div class="list-scroll">${state.prs.map(p=>{
+      const id = prNum(p); const sel = state.selectedPR && prNum(state.selectedPR)===id;
+    return `<div class="list-item ${sel?'selected':''}" onclick="selectPR('${id}')" style="cursor:pointer">
+        <i class="ti ti-git-pull-request" style="font-size:18px;color:${sel?'#1a6cf6':'#7a8494'};flex-shrink:0"></i>
+        <div class="li-main">
+          <div class="li-title">${escHtml(prTitle(p))}</div>
+          <div class="li-sub">${id} · ${escHtml(prHead(p))} → ${escHtml(prBase(p))} · by ${escHtml(prAuthor(p))}</div>
+        </div>
+        <i class="ti ${sel?'ti-circle-check':'ti-circle'}" style="color:${sel?'#1a6cf6':'#e8eaed'};font-size:20px;flex-shrink:0;transition:all 0.15s"></i>
+      </div>`;
+    }).join('')}</div>`;
+  }
+
+  // ── Branch diff ────────────────────────────────────────────────────────────
+  if(t === 'branch') {
+    if(!state.branches.length) return `
+      <div class="empty-state">
+        <i class="ti ti-git-branch"></i>
+        <div style="margin-bottom:12px">No branches found.</div>
+        <button class="btn btn-sm" onclick="retryLoad()"><i class="ti ti-refresh"></i>Retry</button>
+      </div>`;
+    const opts = state.branches.map(b=>`<option value="${escHtml(branchName(b))}" ${state.sourceBranch===branchName(b)?'selected':''}>${escHtml(branchName(b))}</option>`).join('');
+    const topts = state.branches.map(b=>`<option value="${escHtml(branchName(b))}" ${state.targetBranch===branchName(b)?'selected':''}>${escHtml(branchName(b))}</option>`).join('');
+    return `
+      <div class="two-col">
+        <div class="field">
+          <label>Source branch (your feature branch)</label>
+          <select onchange="state.sourceBranch=this.value;document.getElementById('branch-preview').style.display=state.sourceBranch&&state.targetBranch?'flex':'none';document.getElementById('branch-from').textContent=state.sourceBranch;updateNextButton();"><option value="">— select source —</option>${opts}</select>
+        </div>
+        <div class="field">
+          <label>Target branch (merge into)</label>
+          <select onchange="state.targetBranch=this.value;document.getElementById('branch-preview').style.display=state.sourceBranch&&state.targetBranch?'flex':'none';document.getElementById('branch-into').textContent=state.targetBranch;updateNextButton();"><option value="">— select target —</option>${topts}</select>
+        </div>
+      </div>
+      <div id="branch-preview" class="info-msg" style="display:${state.sourceBranch&&state.targetBranch?'flex':'none'}">
+        <i class="ti ti-arrow-right-bar"></i>
+        <span>Analysing: <strong id="branch-from">${escHtml(state.sourceBranch)}</strong> → <strong id="branch-into">${escHtml(state.targetBranch)}</strong></span>
+      </div>`;
+  }
+
+  // ── Commit ─────────────────────────────────────────────────────────────────
+  if(t === 'commit') {
+    const commitList = state.commits.length
+      ? state.commits.map(c => {
+          const sha = commitSha(c); const sel = state.commitSha===sha;
+          return `<div class="list-item ${sel?'selected':''}" onclick="pickCommit('${sha}')">
+            <code style="font-size:11px;flex-shrink:0;width:56px;text-align:center;color:#1a6cf6">${sha}</code>
+            <div class="li-main">
+              <div class="li-title">${escHtml((commitMsg(c)||'').slice(0,80))}</div>
+              <div class="li-sub">${escHtml(commitAuthor(c))}</div>
+            </div>
+            ${sel?'<i class="ti ti-circle-check" style="color:#1a6cf6;font-size:18px;flex-shrink:0"></i>':''}
+          </div>`;
+        }).join('')
+      : `<div class="empty-state"><i class="ti ti-git-commit"></i>No commits loaded.<br/><button class="btn btn-sm" style="margin-top:8px" onclick="retryLoad()"><i class="ti ti-refresh"></i>Retry</button></div>`;
+
+    return `
+      <div class="field">
+        <label>Commit SHA (type manually or click from list below)</label>
+        <input type="text" id="sha-input" placeholder="e.g. a1b2c3d" value="${escHtml(state.commitSha)}" oninput="state.commitSha=this.value;updateNextButton();" style="font-family:var(--mono);font-size:13px"/>
+      </div>
+      <div class="list-scroll">${commitList}</div>`;
+  }
+  return '';
+}
+
+function pickCommit(sha) {
+  state.commitSha = sha;
+  const inp = document.getElementById('sha-input');
+  if(inp) inp.value = sha;
+  renderView('target');
+  updateNextButton();
+}
+
+function setTargetType(t) {
+  state.targetType = t;
+  state.selectedPR = null;
+  renderView('target');
+  // Trigger load only if this tab has never been attempted
+  if(targetLoadState[t] === null) loadTargetData();
+}
+
+function retryLoad() {
+  targetLoadState[state.targetType] = null; // reset so it re-fetches
+  renderView('target');
+}
+
+function selectPR(id) {
+  state.selectedPR = state.prs.find(p=>prNum(p)===id)||null;
+  renderView('target');
+  updateNextButton();
+}
+
+// ── TARGET ───────────────────────────────────────────────────────────────────
+
+function updateNextButton() {
+  const btn = document.getElementById('btn-next');
+  if(!btn) return;
+  const ok = canProceedFromTarget();
+  btn.disabled = !ok;
+  btn.title = ok ? '' : 'Select a PR, branch pair, or commit SHA first';
+}
+
+function canProceedFromTarget() {
+  if(state.targetType==='pr') return !!state.selectedPR;
+  if(state.targetType==='branch') return !!(state.sourceBranch && state.targetBranch && state.sourceBranch !== state.targetBranch);
+  if(state.targetType==='commit') return state.commitSha.length >= 5;
+  return false;
+}
+
+// ── RESULTS ──────────────────────────────────────────────────────────────────
+function renderResults(el) {
+  if(!state.report) {
+    // ── Professional agent progress view ────────────────────────────────────
+    el.innerHTML = `
+    <div style="max-width:680px;margin:0 auto;padding:20px 0">
+      <!-- Header -->
+      <div style="display:flex;align-items:center;gap:16px;margin-bottom:28px;padding-bottom:20px;border-bottom:1px solid #e8eaed">
+        <div style="width:44px;height:44px;background:#0d1117;border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <span class="spinner" style="width:22px;height:22px;border-color:rgba(255,255,255,.2);border-top-color:#fff"></span>
+        </div>
+        <div>
+          <div style="font-size:18px;font-weight:600;color:#0d1117;font-family:'Instrument Serif',serif;letter-spacing:-.01em">Running Impact Analysis</div>
+          <div style="font-size:13px;color:#7a8494;margin-top:2px" id="agent-status">Initialising agents…</div>
+        </div>
+        <div style="margin-left:auto;text-align:right">
+          <div style="font-size:11px;color:#7a8494;margin-bottom:4px">Progress</div>
+          <div style="font-size:18px;font-weight:600;font-family:'JetBrains Mono',monospace;color:#0d1117" id="progress-pct">0%</div>
+        </div>
+      </div>
+
+      <!-- Progress bar -->
+      <div style="height:4px;background:#e8eaed;border-radius:2px;overflow:hidden;margin-bottom:24px">
+        <div id="progress-fill" style="height:100%;background:linear-gradient(to right,#1a6cf6,#0c7c4b);border-radius:2px;transition:width .5s ease;width:0%"></div>
+      </div>
+
+      <!-- Agent pipeline cards -->
+      <div id="agent-pipeline" style="display:flex;flex-direction:column;gap:8px"></div>
+
+      <!-- Diff info -->
+      <div id="diff-info" style="display:none;margin-top:16px;padding:10px 14px;background:#f7f8fa;border:1px solid #e8eaed;border-radius:8px;font-size:12px;color:#7a8494;display:flex;align-items:center;gap:8px">
+        <i class="ti ti-file-code" style="font-size:15px"></i>
+        <span id="diff-info-text"></span>
+      </div>
+
+      <!-- Elapsed time -->
+      <div style="margin-top:20px;text-align:center;font-size:11px;color:#9fadbf">
+        <span id="elapsed-time"></span>
+        <span style="margin-left:6px;opacity:.6">• Backend agents typically take 30–90 seconds</span>
+      </div>
+    </div>`;
+    runAnalysis();
+    return;
+  }
+
+  const r = state.report;
+  const gKey = (r.gate_decision||'HOLD').toUpperCase();
+  const gCls  = {APPROVE:'gate-approve',HOLD:'gate-hold',BLOCK:'gate-block'}[gKey]||'gate-hold';
+  const gIcon  = {APPROVE:'ti-circle-check',HOLD:'ti-alert-triangle',BLOCK:'ti-ban'}[gKey]||'ti-alert-triangle';
+  const provInfo = MODEL_PROVIDERS[state.modelProvider] || {icon:'✦',label:'AI'};
+  const modelBadge = `<span style="font-size:11px;background:#ffffff;border:1px solid #e8eaed;border-radius:12px;padding:2px 8px;color:#7a8494;display:inline-flex;align-items:center;gap:4px">${provInfo.icon} ${esc(state.modelName||state.modelProvider)}</span>`;
+
+  const hasAgentData = r.code_analysis?.summary || r.security?.findings?.length || r.code_analysis?.change_type !== 'unknown';
+  const fallbackNotice = !hasAgentData ? `
+    <div style="display:flex;align-items:flex-start;gap:8px;padding:10px 14px;background:#fff8ec;border:1px solid #fad98a;border-radius:8px;margin-bottom:14px;font-size:12px;color:#8a5200">
+      <i class="ti ti-info-circle" style="flex-shrink:0;margin-top:1px"></i>
+      <div><strong>Heuristic mode</strong> — agents used rule-based fallbacks. Set a valid <code>ANTHROPIC_API_KEY</code> in <code>.env</code> for AI-powered analysis.</div>
+    </div>` : '';
+
+  const errorsNotice = (r.errors||[]).length ? `
+    <div style="display:flex;align-items:flex-start;gap:8px;padding:10px 14px;background:#fff1f1;border:1px solid #f8c0c0;border-radius:8px;margin-bottom:14px;font-size:12px;color:#b81c1c">
+      <i class="ti ti-alert-circle" style="flex-shrink:0;margin-top:1px"></i>
+      <div><strong>Analysis errors:</strong> ${(r.errors||[]).map(e=>esc(e)).join('<br/>')}</div>
+    </div>` : '';
+
+  // Human-in-the-loop panel (shown when gate is HOLD or BLOCK)
+  const humanReviewPanel = (gKey === 'HOLD' || gKey === 'BLOCK') ? `
+    <div style="background:#fff;border:1.5px solid ${gKey==='BLOCK'?'#f8c0c0':'#fad98a'};border-radius:12px;padding:20px 22px;margin-bottom:18px" id="human-review-panel">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+        <div style="width:36px;height:36px;border-radius:8px;background:${gKey==='BLOCK'?'#fff1f1':'#fff8ec'};display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <i class="ti ti-user-check" style="font-size:18px;color:${gKey==='BLOCK'?'#b81c1c':'#8a5200'}"></i>
+        </div>
+        <div>
+          <div style="font-size:14px;font-weight:600;color:#0d1117">Human Review Required</div>
+          <div style="font-size:12px;color:#7a8494;margin-top:1px">This ${gKey==='BLOCK'?'BLOCK':'HOLD'} gate requires a human reviewer to approve or reject before the pipeline can proceed</div>
+        </div>
+        <div id="review-status-badge" style="margin-left:auto"></div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
+        <div style="background:#f7f8fa;border:1px solid #e8eaed;border-radius:8px;padding:12px;text-align:center;cursor:pointer;transition:all .15s;border:2px solid transparent" id="btn-approve-panel" onclick="showHumanReviewModal('APPROVED')">
+          <i class="ti ti-circle-check" style="font-size:24px;color:#0c7c4b;display:block;margin-bottom:5px"></i>
+          <div style="font-size:13px;font-weight:600;color:#0c7c4b">Approve</div>
+          <div style="font-size:11px;color:#7a8494;margin-top:2px">Pipeline can proceed</div>
+        </div>
+        <div style="background:#f7f8fa;border:1px solid #e8eaed;border-radius:8px;padding:12px;text-align:center;cursor:pointer;transition:all .15s" id="btn-reject-panel" onclick="showHumanReviewModal('REJECTED')">
+          <i class="ti ti-ban" style="font-size:24px;color:#b81c1c;display:block;margin-bottom:5px"></i>
+          <div style="font-size:13px;font-weight:600;color:#b81c1c">Reject</div>
+          <div style="font-size:11px;color:#7a8494;margin-top:2px">Block deployment</div>
+        </div>
+      </div>
+
+      <div style="font-size:11px;color:#9fadbf;display:flex;align-items:center;gap:5px">
+        <i class="ti ti-shield-lock" style="font-size:13px"></i>
+        All review decisions are permanently logged in the audit trail. Request ID: <code style="font-size:10px">${esc(state.lastRequestId||'—')}</code>
+      </div>
+    </div>
+
+    <!-- Review modal overlay -->
+    <div id="review-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:1000;display:none;align-items:center;justify-content:center">
+      <div style="background:#fff;border-radius:14px;padding:28px;max-width:480px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,.2)">
+        <div id="modal-header" style="margin-bottom:18px">
+          <div style="font-size:18px;font-weight:600;color:#0d1117;font-family:'Instrument Serif',serif" id="modal-title">Review Decision</div>
+          <div style="font-size:13px;color:#7a8494;margin-top:3px" id="modal-sub"></div>
+        </div>
+        <div class="field-group" style="margin-bottom:14px">
+          <label>Your name / reviewer ID <span style="color:#b81c1c">*</span></label>
+          <input type="text" id="reviewer-name" placeholder="e.g. Jane Smith or jsmith@bank.com"/>
+        </div>
+        <div class="field-group" style="margin-bottom:14px">
+          <label>Reason / justification <span style="color:#b81c1c">*</span></label>
+          <textarea id="reviewer-reason" rows="3" placeholder="Explain your decision…" style="resize:vertical"></textarea>
+        </div>
+        <div class="field-group" style="margin-bottom:18px">
+          <label>Additional notes <span style="color:#7a8494;font-weight:400">(optional)</span></label>
+          <textarea id="reviewer-notes" rows="2" placeholder="Any additional context for the audit log…" style="resize:vertical"></textarea>
+        </div>
+        <div style="display:flex;gap:10px;justify-content:flex-end">
+          <button class="btn" onclick="closeReviewModal()">Cancel</button>
+          <button class="btn btn-primary" id="modal-submit-btn" onclick="submitHumanReview()">Submit Review</button>
+        </div>
+      </div>
+    </div>` : '';
+
+
+
+  el.innerHTML = `
+    ${errorsNotice}
+    ${fallbackNotice}
+    ${humanReviewPanel}
+    <div class="gate-banner ${gCls}">
+      <i class="ti ${gIcon} gate-icon"></i>
+      <div style="flex:1">
+        <div class="gate-title">${r.gate_decision} — ${(r.overall_risk||'').toUpperCase()} RISK</div>
+        <div class="gate-sub">${escHtml(r.rationale||'')}</div>
+        <div style="margin-top:6px">${modelBadge}</div>
+      </div>
+      <div style="margin-left:auto;text-align:right;flex-shrink:0">
+        <div style="font-size:28px;font-weight:700;font-family:var(--mono)">${r.risk_score}</div>
+        <div style="font-size:11px;color:#7a8494">risk score /100</div>
+      </div>
+    </div>
+
+    <div class="metrics-grid">
+      ${[['Security findings',(r.security?.findings?.length||0)],['Secrets',r.security?.secrets_detected?'⚠ YES':'None'],['Blast radius',`${r.dependency?.blast_radius_score||0}/100`],['Breaking changes',(r.interface?.breaking_changes?.length||0)],['Coverage delta',`${((r.test_coverage?.coverage_delta||0)>0?'+':'')+parseFloat(r.test_coverage?.coverage_delta||0).toFixed(1)}%`],['Schema changes',(r.schema_change?.changes?.length||0)],['Deploy strategy',(r.risk?.deployment_strategy||'standard')],['Rollback',(r.risk?.rollback_feasibility||'?')]].map(([l,v])=>`<div class="metric"><div class="metric-label">${l}</div><div class="metric-value" style="font-size:16px">${v}</div></div>`).join('')}
+    </div>
+
+    <div class="tabs" id="result-tabs">
+      ${['summary','security','dependency','interface','schema','remediation'].map(t=>`<button class="tab ${t==='summary'?'active':''}" onclick="switchResultTab('${t}')">${t.charAt(0).toUpperCase()+t.slice(1)}</button>`).join('')}
+    </div>
+
+    <div id="result-tab-content">${renderResultTab('summary',r)}</div>
+
+    <div style="display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:16px">
+      <button class="btn" onclick="resetAnalysis()"><i class="ti ti-plus"></i>New analysis</button>
+      <button class="btn btn-primary" onclick="submitToBackend()"><i class="ti ti-upload"></i>Submit to backend</button>
+    </div>
+  `;
+}
+
+function switchResultTab(tab) {
+  document.querySelectorAll('#result-tabs .tab').forEach(t => t.classList.toggle('active', t.textContent.toLowerCase()===tab));
+  document.getElementById('result-tab-content').innerHTML = renderResultTab(tab, state.report);
+}
+
+function renderResultTab(tab, r) {
+  if(tab==='summary') return `
+    <div class="card">
+      <div class="section-heading"><i class="ti ti-code"></i>Code analysis</div>
+      <p style="font-size:13px;margin-bottom:10px">${escHtml(r.code_analysis?.summary||'')}</p>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
+        <span class="badge badge-dim">${r.code_analysis?.change_type||'unknown'}</span>
+        <span class="badge ${(r.code_analysis?.complexity_delta||0)>0?'badge-amber':'badge-dim'}">complexity ${(r.code_analysis?.complexity_delta||0)>0?'+':''}${r.code_analysis?.complexity_delta||0}</span>
+      </div>
+      ${(r.code_analysis?.findings||[]).map(f=>`<div class="finding"><span class="sev sev-${f.severity}">${f.severity}</span><div class="finding-body"><div class="finding-desc">${escHtml(f.description)}</div><div class="finding-file">${escHtml(f.file||'')}</div></div></div>`).join('')}
+      <div style="margin-top:16px"><div class="section-heading"><i class="ti ti-test-pipe"></i>Test coverage</div>
+      <div style="font-size:13px;margin-bottom:6px">Coverage delta: <strong>${((r.test_coverage?.coverage_delta||0)>0?'+':'')+parseFloat(r.test_coverage?.coverage_delta||0).toFixed(1)}%</strong> &nbsp;·&nbsp; Regression risk: <span class="badge badge-${r.test_coverage?.regression_risk==='high'?'amber':'dim'}">${r.test_coverage?.regression_risk||'low'}</span></div>
+      ${(r.test_coverage?.uncovered_paths||[]).map(u=>`<div class="finding"><span class="sev sev-medium">gap</span><div class="finding-body"><div class="finding-desc">${escHtml(u.description||u.file||'')}</div><div class="finding-file">${escHtml(u.file||'')}</div></div></div>`).join('')}
+      </div>
+    </div>`;
+
+  if(tab==='security') return `
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <div class="section-heading" style="margin-bottom:0"><i class="ti ti-shield-lock"></i>Security findings</div>
+        <span class="badge badge-${r.security?.overall_severity==='critical'||r.security?.overall_severity==='high'?'red':r.security?.overall_severity==='medium'?'amber':'dim'}">${r.security?.overall_severity} overall</span>
+      </div>
+      ${r.security?.secrets_detected?`<div class="err-msg" style="margin-bottom:12px"><i class="ti ti-key"></i><strong>Secrets detected</strong> — immediate rotation required</div>`:''}
+      ${(r.security?.findings||[]).length===0?'<div class="empty-state"><i class="ti ti-shield-check"></i>No security findings</div>':(r.security?.findings||[]).map(f=>`<div class="finding"><span class="sev sev-${f.severity}">${f.severity}</span><div class="finding-body"><div class="finding-desc"><code>${f.cwe||''}</code> ${escHtml(f.description)}</div><div class="finding-file">${escHtml(f.file||'')}</div></div></div>`).join('')}
+    </div>`;
+
+  if(tab==='dependency') return `
+    <div class="card">
+      <div class="section-heading"><i class="ti ti-topology-star-3"></i>Blast radius analysis</div>
+      <div style="margin-bottom:12px"><div style="font-size:12px;color:#7a8494;margin-bottom:5px">Blast radius score: ${r.dependency?.blast_radius_score||0}/100</div><div class="score-bar"><div class="score-fill" style="width:${r.dependency?.blast_radius_score||0}%;background:${(r.dependency?.blast_radius_score||0)>70?'var(--red)':(r.dependency?.blast_radius_score||0)>40?'#8a5200':'var(--green)'}"></div></div></div>
+      ${(r.dependency?.affected_services||[]).length?`<div class="section-heading"><i class="ti ti-server"></i>Affected services</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">${(r.dependency?.affected_services||[]).map(s=>`<span class="badge badge-amber">${escHtml(s)}</span>`).join('')}</div>`:''}
+      ${(r.dependency?.changed_packages||[]).length?`<div class="section-heading"><i class="ti ti-package"></i>Changed packages</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">${(r.dependency?.changed_packages||[]).map(p=>`<code>${escHtml(p)}</code>`).join('')}</div>`:''}
+      ${state.connectedRepos.length?`<div class="section-heading"><i class="ti ti-git-branch"></i>Connected repos in scope</div><div style="display:flex;flex-wrap:wrap;gap:6px">${state.connectedRepos.map(r=>`<span class="badge badge-blue">${escHtml(shortName(r))}</span>`).join('')}</div>`:''}
+    </div>`;
+
+  if(tab==='interface') return `
+    <div class="card">
+      <div class="section-heading"><i class="ti ti-api"></i>Contract breaking changes</div>
+      ${(r.interface?.breaking_changes||[]).length===0?'<div class="empty-state"><i class="ti ti-circle-check"></i>No breaking interface changes</div>':(r.interface?.breaking_changes||[]).map(b=>`<div class="finding"><span class="sev sev-${b.severity}">${b.severity}</span><div class="finding-body"><div class="finding-desc"><span class="badge badge-dim" style="margin-right:6px">${b.type}</span>${escHtml((b.break_type||'').replace(/_/g,' '))} change</div><div class="finding-file">${escHtml(b.path||'')}</div></div></div>`).join('')}
+    </div>`;
+
+  if(tab==='schema') return `
+    <div class="card">
+      <div class="section-heading"><i class="ti ti-database"></i>Database schema changes</div>
+      ${r.schema_change?.has_irreversible?`<div class="err-msg" style="margin-bottom:12px"><i class="ti ti-alert-triangle"></i>Irreversible changes detected — DBA sign-off required</div>`:''}
+      ${r.schema_change?.has_destructive&&!r.schema_change?.has_irreversible?`<div style="padding:8px 12px;background:#fff8ec;border:1px solid #8a5200;border-radius:var(--r);font-size:12px;color:#8a5200;display:flex;align-items:center;gap:7px;margin-bottom:12px"><i class="ti ti-alert-triangle"></i>Destructive changes — verify rollback plan</div>`:''}
+      ${(r.schema_change?.changes||[]).length===0?'<div class="empty-state"><i class="ti ti-database"></i>No schema changes detected</div>':(r.schema_change?.changes||[]).map(c=>`<div class="finding"><span class="sev sev-${c.severity}">${c.severity}</span><div class="finding-body"><div class="finding-desc"><code>${(c.change_type||'').replace(/_/g,' ')}</code> on <code>${escHtml(c.table||'')}</code></div><div class="finding-file">${c.reversible?'Reversible':'⚠ Not reversible'}</div></div></div>`).join('')}
+    </div>`;
+
+  if(tab==='remediation') return `
+    <div class="card">
+      <div class="section-heading"><i class="ti ti-speakerphone"></i>Executive summary</div>
+      <p style="font-size:13px;line-height:1.7;margin-bottom:12px">${escHtml(r.remediation?.executive_summary||'')}</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <span class="badge badge-blue"><i class="ti ti-rocket" style="font-size:12px"></i>${r.risk?.deployment_strategy||'standard'}</span>
+        <span class="badge badge-dim"><i class="ti ti-history" style="font-size:12px"></i>Rollback: ${r.risk?.rollback_feasibility||'?'}</span>
+      </div>
+      <p style="font-size:12px;color:#7a8494;margin-top:10px">${escHtml(r.risk?.deployment_guidance||'')}</p>
+    </div>
+    <div class="card">
+      <div class="section-heading"><i class="ti ti-tool"></i>Fix suggestions</div>
+      ${(r.remediation?.fix_suggestions||[]).map((f,i)=>`<div style="display:flex;gap:8px;padding:7px 0;border-bottom:1px solid #e8eaed;font-size:13px"><span style="color:#7a8494;flex-shrink:0;width:20px">${i+1}.</span>${escHtml(f)}</div>`).join('')}
+    </div>
+    <div class="card">
+      <div class="section-heading"><i class="ti ti-checklist"></i>Validation checklist</div>
+      ${(r.remediation?.validation_checklist||[]).map(c=>`<div class="checklist-item"><i class="ti ti-square"></i>${escHtml(c)}</div>`).join('')}
+    </div>`;
+
+  return '';
+}
+
+async function fetchRealDiff(target) {
+  /** Fetch unified diff via backend proxy — no CORS, works for all providers */
+  try {
+    const slug = repoName(state.primaryRepo);
+    return await gitProxyDiff(
+      target.changeType,
+      slug,
+      target.source,
+      target.target,
+      target.meta?.pr_id || ''
+    );
+  } catch(e) {
+    console.warn('Diff fetch failed:', e.message);
+    return '';
+  }
+}
+
+async function runAnalysis() {
+  const AGENTS = ['Fetching diff','Code Analysis','Security Review','Dependency Mapping','Test Coverage','Interface / API','Schema Change','Risk Assessment','Remediation'];
+  const listEl = document.getElementById('agent-list');
+  const statusEl = document.getElementById('agent-status');
+  const progEl = document.getElementById('progress-fill');
+
+  function updateAgentList(currentIdx) {
+    if(!listEl) return;
+    listEl.innerHTML = AGENTS.map((a,i) => {
+      const done = i < currentIdx; const active = i === currentIdx;
+      return `<div style="display:flex;align-items:center;gap:8px;font-size:12px;color:${done?'#0c7c4b':active?'#0d1117':'#7a8494'}">
+        ${done?'<i class="ti ti-circle-check" style="font-size:14px"></i>':active?'<span class="spinner" style="width:14px;height:14px"></span>':'<i class="ti ti-circle" style="font-size:14px"></i>'}
+        ${a}
+      </div>`;
+    }).join('');
+  }
+
+  const target = buildAnalysisTarget();
+
+  // ── Step 0: Fetch the real diff ────────────────────────────────────────────
+  updateAgentList(0);
+  if(statusEl) statusEl.textContent = 'Fetching diff from ' + (state.provider === 'github' ? 'GitHub' : 'Bitbucket') + '...';
+  if(progEl) progEl.style.width = '8%';
+
+  const diffText = await fetchRealDiff(target);
+  const diffLines = diffText ? diffText.split('\n').length : 0;
+  const diffKb = diffText ? Math.round(diffText.length / 1024) : 0;
+
+  // Show diff size info
+  if(listEl) {
+    const diffInfo = document.createElement('div');
+    diffInfo.style.cssText = 'font-size:11px;color:#7a8494;margin-top:4px;margin-bottom:8px;padding-left:22px';
+    diffInfo.textContent = diffText
+      ? `✓ Fetched ${diffLines.toLocaleString()} lines (${diffKb}KB)`
+      : '⚠ No diff fetched — check token permissions';
+    if(listEl.parentNode) listEl.parentNode.insertBefore(diffInfo, listEl);
+  }
+
+  // ── Try real backend ───────────────────────────────────────────────────────
+  if(state.backendUrl) {
+    try {
+      for(let i=1;i<AGENTS.length;i++) {
+        updateAgentList(i);
+        if(statusEl) statusEl.textContent = AGENTS[i]+'...';
+        if(progEl) progEl.style.width = Math.round(8 + (i/AGENTS.length)*77)+'%';
+        await new Promise(r=>setTimeout(r,250+Math.random()*150));
+      }
+      const headers = { 'Content-Type':'application/json' };
+      if(state.backendKey) headers['X-API-Key'] = state.backendKey;
+
+      const payload = {
+        repo_url:     repoName(state.primaryRepo),
+        source_ref:   target.source,
+        target_ref:   target.target,
+        change_type:  target.changeType,
+        diff_text:    diffText,
+        llm_config: getModelConfig(),     // ← per-request model selection
+        metadata: {
+          provider:        state.provider,
+          connected_repos: state.connectedRepos.map(repoName),
+          diff_lines:      diffLines,
+          ...target.meta
+        }
+      };
+
+      const r = await fetch(state.backendUrl+'/api/v1/analyse', { method:'POST', headers, body:JSON.stringify(payload) });
+      if(r.status === 401) throw new Error('Backend returned 401 — set SKIP_AUTH=true in .env');
+      if(!r.ok) throw new Error(`Backend error ${r.status}`);
+
+      const d = await r.json();
+      const rid = d.request_id;
+      if(progEl) progEl.style.width = '90%';
+
+      let report = null;
+      const pollStart = Date.now();
+      for(let attempt=0;attempt<150;attempt++) {  // poll up to 5 minutes
+        await new Promise(res=>setTimeout(res,2000));
+        const elapsed = Math.round((Date.now()-pollStart)/1000);
+        if(statusEl) statusEl.textContent = `Agents running… ${elapsed}s (agents may take 30–90s)`;
+
+        try {
+          const poll = await fetch(state.backendUrl+'/api/v1/report/'+rid+'?fmt=full', {headers});
+          if(poll.status === 200) {
+            report = await poll.json();
+            // If report has errors array with content and no useful data, still show it
+            break;
+          }
+          // 404 = still running (not saved yet) → keep polling, don't break early
+          // 202 = explicitly "still running" status → keep polling
+        } catch(pollErr) {
+          console.warn('Poll error (will retry):', pollErr.message);
+        }
+      }
+      if(report) {
+        state.report = normalizeReport(report);
+        // If the backend saved an error report, show a warning but still display
+        if(report.errors && report.errors.length && !report.risk) {
+          console.warn('Backend returned error report:', report.errors);
+        }
+        saveHistory(state.report, target);
+        if(progEl) progEl.style.width='100%';
+        updateAgentList(AGENTS.length);
+        setTimeout(()=>renderView('results'),300);
+        return;
+      } else {
+        // Timed out waiting — fall through to AI simulation
+        console.warn('Timed out waiting for backend report after 5 minutes');
+      }
+    } catch(e) {
+      const isCORSorNetwork = e.message === 'Failed to fetch' || e.message.includes('NetworkError') || e.message.includes('CORS');
+      console.warn(isCORSorNetwork
+        ? 'Backend unreachable — using AI simulation'
+        : 'Backend error, using AI simulation: '+e.message);
+    }
+  }
+
+  // ── AI simulation fallback ─────────────────────────────────────────────────
+  if(statusEl) statusEl.textContent = 'Running AI analysis...';
+  const notice = document.getElementById('agent-list');
+  if(notice && !document.getElementById('sim-notice')) {
+    const nb = document.createElement('div');
+    nb.id = 'sim-notice';
+    nb.style.cssText = 'margin-top:12px;font-size:12px;background:#fff8ec;border:1px solid #8a5200;border-radius:8px;padding:10px 14px;color:#8a5200;display:flex;align-items:flex-start;gap:8px;text-align:left;max-width:360px;margin-left:auto;margin-right:auto';
+    nb.innerHTML = '<i class="ti ti-info-circle" style="flex-shrink:0;margin-top:1px"></i><div><strong>AI Simulation mode</strong> — backend unreachable.<br/><span style="opacity:0.8">Ensure backend is running with <code>SKIP_AUTH=true</code>.</span></div>';
+    notice.parentNode && notice.parentNode.insertBefore(nb, notice.nextSibling);
+  }
+
+  for(let i=1;i<AGENTS.length;i++) {
+    updateAgentList(i);
+    if(statusEl) statusEl.textContent = AGENTS[i]+'...';
+    if(progEl) progEl.style.width = Math.round(8 + (i/AGENTS.length)*77)+'%';
+    await new Promise(r=>setTimeout(r,400+Math.random()*300));
+  }
+  if(progEl) progEl.style.width='92%';
+
+  try {
+    const r = await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        model:'claude-sonnet-4-20250514',
+        max_tokens:1500,
+        messages:[{role:'user',content:buildAnalysisPrompt(target, diffText)}]
+      })
+    });
+    if(!r.ok) throw new Error('Anthropic API error: '+r.status);
+    const d = await r.json();
+    let text = (d.content&&d.content[0]&&d.content[0].text)||'{}';
+    text = text.replace(/```json[\s\S]*?```|```[\s\S]*?```/g, m => m.slice(m.indexOf('\n')+1, m.lastIndexOf('```'))).trim();
+    if(text.startsWith('```')) text = text.replace(/^```\w*\n?/,'').replace(/```$/,'').trim();
+    state.report = JSON.parse(text);
+    saveHistory(state.report, target);
+    updateAgentList(AGENTS.length);
+    if(progEl) progEl.style.width='100%';
+    setTimeout(()=>renderView('results'),400);
+  } catch(e) {
+    const el = document.getElementById('view-results');
+    if(el) el.innerHTML = `<div class="err-msg" style="margin:20px"><i class="ti ti-alert-circle"></i><div><strong>Analysis failed:</strong> ${escHtml(e.message)}<br/><span style="font-size:11px;opacity:0.8">Check your backend is running and ANTHROPIC_API_KEY is correct in .env</span></div></div><div style="display:flex;justify-content:flex-end;gap:8px;margin:0 20px"><button class="btn" onclick="showView('target')"><i class="ti ti-arrow-left"></i>Back</button><button class="btn btn-primary" onclick="state.report=null;renderView('results')"><i class="ti ti-refresh"></i>Retry</button></div>`;
+  }
+}
+
+function buildAnalysisTarget() {
+  if(state.targetType==='pr'&&state.selectedPR) return { source:prHead(state.selectedPR), target:prBase(state.selectedPR), changeType:'pull_request', meta:{pr_id:prNum(state.selectedPR),pr_title:prTitle(state.selectedPR)} };
+  if(state.targetType==='branch') return { source:state.sourceBranch, target:state.targetBranch, changeType:'branch_diff', meta:{} };
+  return { source:state.commitSha, target:state.commitSha+'~1', changeType:'commit_diff', meta:{sha:state.commitSha} };
+}
+
+function buildAnalysisPrompt(target, diffText) {
+  const rn   = repoName(state.primaryRepo);
+  const conn = state.connectedRepos.map(shortName).join(', ') || 'none';
+
+  // Trim diff to ~6000 chars for the prompt (keep most-changed files)
+  const diffSnippet = diffText
+    ? diffText.slice(0, 6000) + (diffText.length > 6000 ? '\n... (truncated)' : '')
+    : '(no diff available — analyse based on repository name and target only)';
+
+  const diffStats = diffText
+    ? `${diffText.split('\n').filter(l=>l.startsWith('+')).length} additions, ${diffText.split('\n').filter(l=>l.startsWith('-')).length} deletions`
+    : 'unknown';
+
+  return `You are an expert code impact analysis engine. Analyse the following REAL git diff and produce a detailed, accurate impact analysis report.
+
+Repository: ${rn}
+Provider: ${state.provider}
+Change: ${target.changeType} — ${target.source} → ${target.target}
+Diff stats: ${diffStats}
+Connected repos for blast radius: ${conn}
+
+ACTUAL GIT DIFF:
+\`\`\`diff
+${diffSnippet}
+\`\`\`
+
+Analyse the REAL diff above carefully. Base ALL findings on what you actually see in the diff:
+- Identify real security issues (hardcoded secrets, SQL injection, weak crypto, etc.)
+- Flag real code quality issues from the changed lines
+- Determine if dependency files changed
+- Detect if API/interface files changed
+- Assess real test coverage gaps
+- Calculate realistic risk based on actual change size and content
+
+Respond ONLY with a single JSON object (no markdown fences, no explanation):
+{"gate_decision":"APPROVE","overall_risk":"low","risk_score":20,"rationale":"Concise 2-sentence rationale based on actual findings.","code_analysis":{"summary":"One sentence describing what this change actually does.","change_type":"feature","complexity_delta":1,"findings":[{"severity":"medium","description":"Specific issue found in the diff.","file":"actual/file/path.py"}]},"security":{"overall_severity":"low","secrets_detected":false,"findings":[]},"dependency":{"blast_radius_score":10,"affected_services":[],"changed_packages":[]},"test_coverage":{"coverage_delta":0,"regression_risk":"low","uncovered_paths":[]},"interface":{"breaking_changes":[]},"schema_change":{"has_destructive":false,"has_irreversible":false,"changes":[]},"risk":{"deployment_guidance":"One sentence on how to deploy.","rollback_feasibility":"easy","deployment_strategy":"standard"},"remediation":{"fix_suggestions":["Specific actionable fix based on actual diff findings"],"validation_checklist":["Specific test step for this change"],"executive_summary":"3-sentence non-technical summary of what changed and the risk level."},"token_usage":5000}
+
+Use REAL file paths from the diff. If no security issues exist, return empty findings arrays. Be accurate — do not fabricate issues that aren't in the diff.`;
+}
+
+function normalizeReport(r) {
+  /**
+   * The backend ?fmt=full returns model_dump() of AnalysisReport:
+   *   r.risk        = RiskResult dict  { overall_risk, risk_score, gate_decision, rationale, ... }
+   *   r.remediation = RemediationResult dict { fix_suggestions, deployment_strategy, ... }
+   *   r.code_analysis, r.security, r.dependency, r.test_coverage, r.interface — agent result dicts
+   *   r.errors      = list of error strings
+   *
+   * The compact ?fmt=json summary uses different top-level keys:
+   *   r.gate        = "APPROVE"/"HOLD"/"BLOCK"
+   *   r.risk        = "low"/"medium"/"high"/"critical"   ← conflicts with full format!
+   *
+   * We detect which format we have and normalise into a single UI shape.
+   */
+  const isFull = r.code_analysis !== undefined || r.security !== undefined || r.errors !== undefined;
+
+  // ── Gate decision ──────────────────────────────────────────────────────────
+  let gate_decision, overall_risk, risk_score, rationale, riskObj, remObj;
+
+  if(isFull) {
+    // Full format: r.risk is a RiskResult object (or null)
+    const rr = r.risk || {};
+    gate_decision = rr.gate_decision || 'HOLD';
+    overall_risk  = rr.overall_risk  || 'medium';
+    risk_score    = rr.risk_score    || 0;
+    rationale     = rr.rationale     || (r.errors && r.errors[0]) || '';
+    riskObj = {
+      deployment_guidance: rr.deployment_guidance || '',
+      rollback_feasibility: rr.rollback_feasibility || '?',
+      deployment_strategy: r.remediation?.deployment_strategy || 'standard',
+    };
+    remObj = r.remediation || null;
+  } else {
+    // Compact summary format: r.gate, r.risk are strings
+    gate_decision = r.gate || r.gate_decision || 'HOLD';
+    overall_risk  = r.risk || r.overall_risk  || 'medium';
+    risk_score    = r.risk_score || 0;
+    rationale     = r.rationale  || '';
+    riskObj = { deployment_strategy: 'standard', rollback_feasibility: '?', deployment_guidance: '' };
+    remObj  = null;
+  }
+
+  // ── Normalise security ─────────────────────────────────────────────────────
+  const sec = r.security || null;
+  const secNorm = sec ? {
+    overall_severity: sec.overall_severity || 'low',
+    secrets_detected: sec.secrets_detected || false,
+    findings: (sec.findings || []).map(f => ({
+      cwe: f.cwe_id || f.cwe || '',
+      severity: f.severity || 'low',
+      description: f.description || '',
+      file: f.file_path || f.file || '',
+    })),
+  } : null;
+
+  // ── Normalise code analysis ────────────────────────────────────────────────
+  const ca = r.code_analysis || null;
+  const caNorm = ca ? {
+    summary: ca.summary || '',
+    change_type: ca.change_type || 'unknown',
+    complexity_delta: ca.complexity_delta || 0,
+    findings: (ca.findings || []).map(f => ({
+      severity: f.severity || 'low',
+      description: f.description || '',
+      file: f.file_path || f.file || '',
+    })),
+  } : null;
+
+  // ── Normalise dependency ───────────────────────────────────────────────────
+  const dep = r.dependency || null;
+  const depNorm = dep ? {
+    blast_radius_score: dep.blast_radius_score || 0,
+    affected_services: dep.affected_services || [],
+    changed_packages: dep.changed_packages || [],
+  } : null;
+
+  // ── Normalise test coverage ────────────────────────────────────────────────
+  const tc = r.test_coverage || null;
+  const tcNorm = tc ? {
+    coverage_delta: tc.coverage_delta || 0,
+    regression_risk: tc.regression_risk || 'low',
+    uncovered_paths: (tc.uncovered_paths || []).map(u => ({
+      file: u.file_path || u.file || '',
+      description: u.suggested_test || u.description || u.uncovered_path || '',
+    })),
+  } : null;
+
+  // ── Normalise interface ────────────────────────────────────────────────────
+  const iface = r.interface || null;
+  const ifaceNorm = iface ? {
+    breaking_changes: (iface.breaking_changes || []).map(b => ({
+      type: b.interface_type || b.type || 'REST',
+      path: b.path || '',
+      break_type: b.break_type || 'changed',
+      severity: b.severity || 'high',
+    })),
+  } : null;
+
+  // ── Normalise schema ───────────────────────────────────────────────────────
+  const sc = r.schema_change || null;
+  const scNorm = sc ? {
+    has_destructive: sc.has_destructive || false,
+    has_irreversible: sc.has_irreversible || false,
+    changes: (sc.changes || []).map(c => ({
+      change_type: c.change_type || 'alter',
+      table: c.table_name || c.table || '',
+      severity: c.severity || 'medium',
+      reversible: c.reversible !== false,
+    })),
+  } : null;
+
+  // ── Normalise remediation ──────────────────────────────────────────────────
+  const remNorm = remObj ? {
+    fix_suggestions: remObj.fix_suggestions || [],
+    validation_checklist: remObj.validation_checklist || [],
+    deployment_strategy: remObj.deployment_strategy || 'standard',
+    executive_summary: remObj.executive_summary || '',
+  } : null;
+
+  return {
+    gate_decision,
+    overall_risk,
+    risk_score,
+    rationale,
+    code_analysis:  caNorm,
+    security:       secNorm,
+    dependency:     depNorm,
+    test_coverage:  tcNorm,
+    interface:      ifaceNorm,
+    schema_change:  scNorm,
+    risk:           riskObj,
+    remediation:    remNorm,
+    token_usage:    r.total_tokens || (Array.isArray(r.token_usage) ? r.token_usage.reduce((s,u)=>s+(u.tokens_used||0),0) : r.token_usage) || 0,
+    errors:         r.errors || [],
+  };
+}
+
+function saveHistory(report, target) {
+  const entry = { id: Date.now(), ts: new Date().toISOString(), repo: repoName(state.primaryRepo), target: target.changeType+' '+target.source, gate: report.gate_decision, risk: report.overall_risk, score: report.risk_score };
+  state.history.unshift(entry);
+  if(state.history.length>50) state.history.length=50;
+  localStorage.setItem('analysisHistory', JSON.stringify(state.history));
+}
+
+function resetAnalysis() { state.report=null; state.selectedPR=null; state.sourceBranch=''; state.commitSha=''; showView('configure'); }
+
+async function submitToBackend() {
+  if(!state.backendUrl) { alert('No backend URL configured. Go to Settings.'); return; }
+  alert('Report is ready. In a real deployment, your backend would have already stored it when the analysis was run.\n\nBackend URL: '+state.backendUrl);
+}
+
+// ── HISTORY ──────────────────────────────────────────────────────────────────
+function renderHistory(el) {
+  el.innerHTML = `<div class="card">
+    <div class="card-title"><i class="ti ti-history"></i>Past analyses</div>
+    ${state.history.length===0?'<div class="empty-state"><i class="ti ti-history"></i>No analyses run yet</div>':state.history.map(h=>`
+    <div class="history-item">
+      <i class="ti ${h.gate==='APPROVE'?'ti-circle-check':h.gate==='BLOCK'?'ti-ban':'ti-alert-triangle'}" style="font-size:20px;color:${h.gate==='APPROVE'?'var(--green)':h.gate==='BLOCK'?'var(--red)':'#8a5200'};flex-shrink:0"></i>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;font-weight:500;color:#0d1117;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(h.repo)}</div>
+        <div style="font-size:11px;color:#7a8494;margin-top:2px">${escHtml(h.target)} · ${new Date(h.ts).toLocaleString()}</div>
+      </div>
+      <span class="badge badge-${h.gate==='APPROVE'?'green':h.gate==='BLOCK'?'red':'amber'}">${h.gate}</span>
+      <span style="font-size:13px;font-weight:600;font-family:var(--mono);color:#0d1117;min-width:28px;text-align:right">${h.score}</span>
+    </div>`).join('')}
+    ${state.history.length>0?`<div style="margin-top:12px;text-align:right"><button class="btn btn-sm" onclick="state.history=[];localStorage.removeItem('analysisHistory');renderView('history')"><i class="ti ti-trash"></i>Clear history</button></div>`:''}
+  </div>`;
+}
+
+// ── SETTINGS ─────────────────────────────────────────────────────────────────
+function renderSettings(el) {
+  el.innerHTML = `
+  <div class="card">
+    <div class="card-title"><i class="ti ti-server"></i>Backend API connection</div>
+    <div class="field">
+      <label>Backend URL</label>
+      <input type="url" id="s-url" value="${state.backendUrl}" placeholder="http://localhost:8080"/>
+      <div class="field-hint">The URL where your impact-analyzer backend is running.</div>
+    </div>
+    <div class="field">
+      <label>API Key</label>
+      <input type="password" id="s-key" value="${state.backendKey}" placeholder="Leave blank if SKIP_AUTH=true"/>
+      <div class="field-hint">Matches <code>API_KEYS</code> in your backend .env file.</div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button class="btn btn-primary" onclick="saveSettings()"><i class="ti ti-device-floppy"></i>Save</button>
+      <button class="btn" onclick="testBackend()"><i class="ti ti-plug-connected"></i>Test connection</button>
+      <span id="settings-msg" style="font-size:12px;color:#7a8494"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><i class="ti ti-info-circle"></i>How to start the backend</div>
+    <div style="font-size:13px;line-height:1.8;color:#7a8494">
+      <div style="margin-bottom:8px">1. Extract <code>impact-analyzer-complete.zip</code> and navigate to the folder</div>
+      <div style="margin-bottom:8px">2. Copy <code>.env.example</code> to <code>.env</code> and set <code>ANTHROPIC_API_KEY</code> and <code>SKIP_AUTH=true</code></div>
+      <div style="margin-bottom:8px">3. Run: <code>pip install -r requirements.txt</code></div>
+      <div style="margin-bottom:8px">4. Run: <code>python main.py</code></div>
+      <div>5. Backend starts at <code>http://localhost:8080</code> — configure it above</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><i class="ti ti-docker"></i>Docker (recommended)</div>
+    <div style="font-size:13px;color:#7a8494;line-height:1.8">
+      <div><code>cp .env.example .env</code> &nbsp;→ set your API key</div>
+      <div><code>docker-compose up -d</code></div>
+      <div style="margin-top:6px">Full stack (app + Redis + ChromaDB + Neo4j) starts on port 8080.</div>
+    </div>
+  </div>`;
+}
+
+function saveSettings() {
+  state.backendUrl = document.getElementById('s-url').value.replace(/\/$/, '');
+  state.backendKey = document.getElementById('s-key').value;
+  localStorage.setItem('backendUrl', state.backendUrl);
+  localStorage.setItem('backendKey', state.backendKey);
+  document.getElementById('backend-url-display').textContent = state.backendUrl ? '⚡ '+state.backendUrl : '';
+  document.getElementById('settings-msg').textContent = 'Saved.';
+  setTimeout(()=>{ const m=document.getElementById('settings-msg'); if(m) m.textContent=''; },2000);
+}
+
+async function testBackend() {
+  const msg = document.getElementById('settings-msg');
+  const url = document.getElementById('s-url').value.replace(/\/$/,'');
+  msg.textContent = 'Testing...'; msg.style.color='#7a8494';
+  try {
+    const r = await fetch(url+'/health', { signal: AbortSignal.timeout(5000) });
+    if(r.ok) { const d=await r.json(); msg.textContent='✓ Connected — Phase '+d.phase; msg.style.color='#0c7c4b'; }
+    else throw new Error('HTTP '+r.status);
+  } catch(e) { msg.textContent='✗ '+e.message; msg.style.color='#b81c1c'; }
+}
+
+// ── Human-in-the-loop review ──────────────────────────────────────────────────
+
+let _pendingReviewDecision = '';  // 'APPROVED' | 'REJECTED'
+
+function showHumanReviewModal(decision) {
+  _pendingReviewDecision = decision;
+  const modal = document.getElementById('review-modal');
+  if (!modal) return;
+
+  const title = document.getElementById('modal-title');
+  const sub   = document.getElementById('modal-sub');
+  const btn   = document.getElementById('modal-submit-btn');
+
+  if (decision === 'APPROVED') {
+    title.textContent = 'Approve Deployment';
+    title.style.color = '#0c7c4b';
+    if (sub) sub.textContent = 'You are approving this deployment despite the HOLD/BLOCK gate. This decision is permanently logged.';
+    if (btn) { btn.className = 'btn btn-success'; btn.textContent = 'Confirm Approval'; }
+    // Highlight approve button
+    const ap = document.getElementById('btn-approve-panel');
+    const rj = document.getElementById('btn-reject-panel');
+    if (ap) ap.style.border = '2px solid #0c7c4b';
+    if (rj) rj.style.border = '1px solid #e8eaed';
+  } else {
+    title.textContent = 'Reject Deployment';
+    title.style.color = '#b81c1c';
+    if (sub) sub.textContent = 'You are explicitly rejecting this deployment. This creates an audit record and notifies the team.';
+    if (btn) { btn.className = 'btn btn-danger'; btn.textContent = 'Confirm Rejection'; }
+    const ap = document.getElementById('btn-approve-panel');
+    const rj = document.getElementById('btn-reject-panel');
+    if (rj) rj.style.border = '2px solid #b81c1c';
+    if (ap) ap.style.border = '1px solid #e8eaed';
+  }
+
+  modal.style.display = 'flex';
+  setTimeout(() => { const nameInput = document.getElementById('reviewer-name'); if (nameInput) nameInput.focus(); }, 100);
+}
+
+function closeReviewModal() {
+  const modal = document.getElementById('review-modal');
+  if (modal) modal.style.display = 'none';
+  _pendingReviewDecision = '';
+}
+
+async function submitHumanReview() {
+  const name   = (document.getElementById('reviewer-name')?.value || '').trim();
+  const reason = (document.getElementById('reviewer-reason')?.value || '').trim();
+  const notes  = (document.getElementById('reviewer-notes')?.value || '').trim();
+
+  if (!name)   { alert('Reviewer name is required.'); return; }
+  if (!reason || reason.length < 10) { alert('Reason must be at least 10 characters.'); return; }
+
+  const btn = document.getElementById('modal-submit-btn');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner" style="width:14px;height:14px;border-width:2px;margin-right:6px"></span>Submitting…'; }
+
+  // Save review locally first (always works)
+  const reviewRecord = {
+    decision:    _pendingReviewDecision,
+    reviewer:    name,
+    reason,
+    notes,
+    timestamp:   new Date().toISOString(),
+    request_id:  state.lastRequestId || '',
+    gate:        state.report?.gate_decision || state.report?.gate || '',
+  };
+
+  // Attempt to send to backend gate override endpoint
+  let backendSuccess = false;
+  if (state.backendUrl && state.lastRequestId) {
+    try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (state.backendKey) headers['X-API-Key'] = state.backendKey;
+
+      const override_to = _pendingReviewDecision === 'APPROVED' ? 'APPROVE' : 'BLOCK';
+      const resp = await fetch(`${state.backendUrl}/api/v1/gate/${state.lastRequestId}/override`, {
+        method:  'POST',
+        headers,
+        body:    JSON.stringify({ override_to, reason: `[${_pendingReviewDecision}] ${reason} — ${name}${notes ? ' | Notes: ' + notes : ''}` }),
+      });
+
+      if (resp.ok) {
+        backendSuccess = true;
+      } else {
+        const errData = await resp.json().catch(() => ({}));
+        console.warn('Gate override backend error:', errData);
+      }
+    } catch (e) {
+      console.warn('Gate override request failed (stored locally):', e.message);
+    }
+  }
+
+  // Update UI to show decision
+  closeReviewModal();
+  _applyReviewDecisionToUI(reviewRecord, backendSuccess);
+}
+
+function _applyReviewDecisionToUI(review, backendSaved) {
+  const panel = document.getElementById('human-review-panel');
+  if (!panel) return;
+
+  const isApproved = review.decision === 'APPROVED';
+  const color = isApproved ? '#0c7c4b' : '#b81c1c';
+  const bgColor = isApproved ? '#edfaf3' : '#fff1f1';
+  const icon  = isApproved ? 'ti-circle-check' : 'ti-ban';
+  const label = isApproved ? 'Approved by reviewer' : 'Rejected by reviewer';
+
+  panel.style.background  = bgColor;
+  panel.style.borderColor = color;
+  panel.innerHTML = `
+    <div style="display:flex;align-items:center;gap:12px">
+      <div style="width:40px;height:40px;border-radius:10px;background:${isApproved ? '#0c7c4b' : '#b81c1c'};display:flex;align-items:center;justify-content:center;flex-shrink:0">
+        <i class="ti ${icon}" style="font-size:20px;color:#fff"></i>
+      </div>
+      <div style="flex:1">
+        <div style="font-size:15px;font-weight:700;color:${color};font-family:'Instrument Serif',serif">${label}</div>
+        <div style="font-size:12px;color:#7a8494;margin-top:2px">By <strong>${escHtml(review.reviewer)}</strong> at ${new Date(review.timestamp).toLocaleString()}</div>
+      </div>
+      ${backendSaved ? '<span style="font-size:11px;background:#edfaf3;color:#0c7c4b;border:1px solid #b5e8cf;border-radius:12px;padding:2px 8px">✓ Audit logged</span>' : '<span style="font-size:11px;background:#fff8ec;color:#8a5200;border:1px solid #fad98a;border-radius:12px;padding:2px 8px">⚠ Locally saved</span>'}
+    </div>
+    <div style="margin-top:12px;padding:10px 13px;background:rgba(0,0,0,.03);border-radius:8px;font-size:13px;color:#3d4652;line-height:1.5">
+      <strong>Reason:</strong> ${escHtml(review.reason)}
+      ${review.notes ? `<br><strong>Notes:</strong> ${escHtml(review.notes)}` : ''}
+    </div>
+    <div style="margin-top:10px;font-size:11px;color:#9fadbf;display:flex;align-items:center;gap:5px">
+      <i class="ti ti-shield-lock"></i>
+      Decision recorded. Request ID: <code style="font-size:10px">${escHtml(review.request_id||'—')}</code>
+    </div>`;
+
+  // Also update the gate banner color to reflect human decision
+  const banner = document.querySelector('.gate-banner');
+  if (banner && isApproved) {
+    banner.className = 'gate-banner gate-approve';
+    const title = banner.querySelector('.gate-title');
+    if (title) title.innerHTML = title.innerHTML.replace(/HOLD|BLOCK/, 'APPROVED (override)');
+    const icon2 = banner.querySelector('.gate-icon');
+    if (icon2) { icon2.className = 'ti ti-circle-check gate-icon'; }
+  }
+}
+
+// ── Backend proxy API helper ───────────────────────────────────────────────────
+
+function _gitConfig() {
+  /** Build the GitConfig payload from current state for proxy calls */
+  return {
+    provider:  state.provider,
+    base_url:  state.baseUrl || '',
+    auth_mode: state.authMode,
+    token:     state.token || '',
+    username:  state.username || '',
+    password:  state.password || '',
+    workspace: state.workspace || '',
+  };
+}
+
+async function _proxyPost(path, body, opts = {}) {
+  /** POST to the backend git proxy. Returns parsed JSON. */
+  if (!state.backendUrl) throw new Error('Backend URL not configured. Go to Settings.');
+  const headers = { 'Content-Type': 'application/json' };
+  if (state.backendKey) headers['X-API-Key'] = state.backendKey;
+  const r = await fetch(`${state.backendUrl}${path}`, {
+    method: 'POST', headers, body: JSON.stringify(body),
+    signal: AbortSignal.timeout(opts.timeout || 30000),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({ detail: r.statusText }));
+    throw new Error(err.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+// ── Helper function overrides for proxy-based architecture ─────────────────────
+
+function repoName(r) { return r ? (r.full_name || r.slug || r.name || '') : ''; }
+function shortName(r) { const n = repoName(r); return n.includes('/') ? n.split('/')[1] : n; }
+function repoLang(r)  { return r ? (r.language || '') : ''; }
+
+function prNum(p)    { return `#${p.number || p.id}`; }
+function prTitle(p)  { return p.title || ''; }
+function prHead(p)   { return (p.head?.ref) || (p.source?.branch?.name) || ''; }
+function prBase(p)   { return (p.base?.ref) || (p.destination?.branch?.name) || ''; }
+function prAuthor(p) { return p.user?.login || p.author?.login || p.author?.display_name || p.author?.nickname || ''; }
+function branchName(b) { return b.name || ''; }
+
+function commitSha(c) {
+  const sha = c.sha || c.hash || c.id || '';
+  return sha.slice(0, 7);
+}
+function commitMsg(c) {
+  return c.commit?.message || c.message || '';
+}
+function commitAuthor(c) {
+  return c.commit?.author?.name || c.author?.login || c.author?.user?.display_name || c.author?.raw || '';
+}
+function escHtml(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+const esc = escHtml;
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function updateConnIndicator(ok, name) {
+  const dot = document.getElementById('conn-dot');
+  const txt = document.getElementById('conn-text');
+  if (dot) dot.className = 'conn-dot' + (ok ? ' live' : '');
+  if (txt) txt.textContent = ok ? name : 'Not connected';
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+const bdEl = document.getElementById('backend-url-display');
+if (bdEl) bdEl.textContent = state.backendUrl ? '⚡ ' + state.backendUrl : '';
+showView('configure');
+
+</script>
+</body>
+</html>

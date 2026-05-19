@@ -1,0 +1,186 @@
+/*
+ * Jenkinsfile — AI Impact Analysis Gate
+ * ----------------------------------------
+ * Add this as a post-checkout stage in your existing Jenkinsfile,
+ * or use it standalone via a shared library.
+ *
+ * Required Jenkins credentials:
+ *   IMPACT_ANALYZER_URL      — environment variable (Jenkins Global Config)
+ *   impact-analyzer-api-key  — Jenkins Secret Text credential
+ *
+ * Required plugins:
+ *   Pipeline, HTTP Request, Credentials Binding, Pipeline Utility Steps
+ */
+
+pipeline {
+    agent any
+
+    environment {
+        IMPACT_ANALYZER_URL = "${env.IMPACT_ANALYZER_URL ?: 'http://impact-analyzer:8080'}"
+        POLL_TIMEOUT_SECONDS = 300
+        POLL_INTERVAL_SECONDS = 10
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Generate Diff') {
+            steps {
+                script {
+                    def targetBranch = env.CHANGE_TARGET ?: 'main'
+                    sh """
+                        git fetch origin ${targetBranch}
+                        git diff origin/${targetBranch}...HEAD > /tmp/impact-analysis.diff || true
+                        echo "Diff lines: \$(wc -l < /tmp/impact-analysis.diff)"
+                    """
+                }
+            }
+        }
+
+        stage('Submit Impact Analysis') {
+            steps {
+                withCredentials([string(credentialsId: 'impact-analyzer-api-key', variable: 'API_KEY')]) {
+                    script {
+                        def diffContent = sh(
+                            script: "python3 -c \"import sys,json; print(json.dumps(open('/tmp/impact-analysis.diff').read()))\"",
+                            returnStdout: true
+                        ).trim()
+
+                        def prId    = env.CHANGE_ID ?: ''
+                        def prTitle = env.CHANGE_TITLE ?: env.JOB_NAME
+                        def author  = env.CHANGE_AUTHOR ?: env.BUILD_USER ?: 'jenkins'
+                        def srcRef  = env.CHANGE_BRANCH ?: env.GIT_BRANCH ?: 'HEAD'
+                        def dstRef  = env.CHANGE_TARGET  ?: 'main'
+                        def repoUrl = env.GIT_URL ?: ''
+
+                        def payload = """
+                        {
+                            "repo_url":   "${repoUrl}",
+                            "source_ref": "${srcRef}",
+                            "target_ref": "${dstRef}",
+                            "change_type": "pull_request",
+                            "diff_text": ${diffContent},
+                            "metadata": {
+                                "pr_id":     "${prId}",
+                                "pr_title":  "${prTitle}",
+                                "author":    "${author}",
+                                "build_url": "${env.BUILD_URL}",
+                                "provider":  "jenkins"
+                            }
+                        }
+                        """
+
+                        def response = httpRequest(
+                            url:         "${IMPACT_ANALYZER_URL}/api/v1/analyse",
+                            httpMode:    'POST',
+                            contentType: 'APPLICATION_JSON',
+                            requestBody: payload,
+                            customHeaders: [[name: 'X-API-Key', value: API_KEY]],
+                            validResponseCodes: '200:202',
+                        )
+
+                        def respJson = readJSON text: response.content
+                        env.ANALYSIS_REQUEST_ID = respJson.request_id
+                        echo "Analysis submitted: ${env.ANALYSIS_REQUEST_ID}"
+                    }
+                }
+            }
+        }
+
+        stage('Poll Analysis Result') {
+            steps {
+                withCredentials([string(credentialsId: 'impact-analyzer-api-key', variable: 'API_KEY')]) {
+                    script {
+                        def timeout  = env.POLL_TIMEOUT_SECONDS.toInteger()
+                        def interval = env.POLL_INTERVAL_SECONDS.toInteger()
+                        def elapsed  = 0
+                        def gate     = null
+
+                        while (elapsed < timeout) {
+                            try {
+                                def response = httpRequest(
+                                    url:         "${IMPACT_ANALYZER_URL}/api/v1/report/${env.ANALYSIS_REQUEST_ID}",
+                                    httpMode:    'GET',
+                                    customHeaders: [[name: 'X-API-Key', value: API_KEY]],
+                                    validResponseCodes: '200:404',
+                                )
+                                if (response.status == 200) {
+                                    def result = readJSON text: response.content
+                                    gate          = result.gate
+                                    env.GATE      = gate
+                                    env.RISK      = result.risk
+                                    env.TOKENS    = result.total_tokens.toString()
+                                    echo "Analysis complete — Gate: ${gate} | Risk: ${env.RISK}"
+                                    break
+                                }
+                            } catch (e) {
+                                echo "Poll attempt failed: ${e.message}"
+                            }
+                            sleep interval
+                            elapsed += interval
+                            echo "Waiting for analysis... (${elapsed}/${timeout}s)"
+                        }
+
+                        if (!gate) {
+                            echo "WARNING: Analysis timed out after ${timeout}s"
+                            env.GATE = "TIMEOUT"
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Enforce Gate Decision') {
+            steps {
+                script {
+                    def gate = env.GATE
+                    switch (gate) {
+                        case 'APPROVE':
+                            echo "✅ Impact Analysis: APPROVE — proceeding with deployment"
+                            break
+                        case 'HOLD':
+                            // Post to Slack then unstable (does not block deploy by default)
+                            currentBuild.result = 'UNSTABLE'
+                            echo "⚠️ Impact Analysis: HOLD — manual review required before deploying"
+                            break
+                        case 'BLOCK':
+                            error "🚫 Impact Analysis: BLOCK — critical findings must be resolved before deployment. Request ID: ${env.ANALYSIS_REQUEST_ID}"
+                            break
+                        case 'TIMEOUT':
+                            echo "⏱️ Impact Analysis timed out — proceeding without gate enforcement"
+                            break
+                        default:
+                            echo "Unknown gate decision: ${gate} — proceeding"
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                def gate   = env.GATE ?: 'UNKNOWN'
+                def risk   = env.RISK ?: 'unknown'
+                def tokens = env.TOKENS ?: '0'
+                def reqId  = env.ANALYSIS_REQUEST_ID ?: 'N/A'
+                echo """
+                ┌─────────────────────────────────────────────┐
+                │  Impact Analysis Summary                      │
+                │  Gate:    ${gate.padRight(35)}│
+                │  Risk:    ${risk.padRight(35)}│
+                │  Tokens:  ${tokens.padRight(35)}│
+                │  ID:      ${reqId.padRight(35)}│
+                └─────────────────────────────────────────────┘
+                """
+            }
+        }
+        failure {
+            echo "Build failed — check impact analysis report: ${IMPACT_ANALYZER_URL}/api/v1/report/${env.ANALYSIS_REQUEST_ID}?fmt=md"
+        }
+    }
+}

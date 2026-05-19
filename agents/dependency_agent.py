@@ -1,0 +1,197 @@
+"""
+agents/dependency_agent.py
+---------------------------
+Phase 2 agent: computes blast radius via dependency graph traversal.
+
+Two execution paths:
+  1. Graph path  — NetworkX BFS traversal when a service graph is provided (no LLM tokens)
+  2. LLM path    — Haiku analyses changed manifests when no graph is available
+
+Fallback: empty result (no graph available, budget exhausted).
+"""
+from __future__ import annotations
+import re
+from typing import Any
+
+from core.models import (
+    AgentName, AnalysisRequest,
+    DependencyResult, DependencyNode,
+)
+from core.token_manager import trim_diff_for_budget
+from agents.base_agent import BaseAgent
+
+try:
+    import networkx as nx
+    HAS_NX = True
+except ImportError:
+    HAS_NX = False
+
+# Manifest file names that signal dependency changes
+_MANIFEST_FILES = {
+    "pom.xml", "build.gradle", "build.gradle.kts",
+    "package.json", "package-lock.json",
+    "requirements.txt", "Pipfile", "Pipfile.lock",
+    "go.mod", "go.sum", "Cargo.toml",
+}
+
+
+class DependencyMappingAgent(BaseAgent[DependencyResult]):
+
+    agent_name   = AgentName.DEPENDENCY
+    output_model = DependencyResult
+
+    system_prompt = (
+        "You are a dependency analysis expert for large-scale banking microservices.\n"
+        "Given changed dependency manifests, identify:\n"
+        "  1. changed_packages: list of package names/versions that changed\n"
+        "  2. affected_services: downstream services transitively impacted\n"
+        "  3. blast_radius_score: 0-100 (100 = all services affected)\n"
+        "  4. cve_hits: list of CVE IDs if any changed package is known-vulnerable\n"
+        "  5. dependency_nodes: list of impacted nodes with team ownership\n\n"
+        "Output ONLY compact JSON. No preamble."
+    )
+
+    def __init__(self, api_key: str | None = None, service_graph: Any | None = None) -> None:
+        super().__init__(api_key)
+        self._graph = service_graph
+
+    # ── Graph-based analysis (preferred, token-free) ──────────────────────────
+
+    def analyse_with_graph(self, changed_packages: list[str]) -> DependencyResult:
+        """
+        BFS traversal on the service dependency graph.
+        Use this when a pre-built NetworkX or Neo4j graph is available.
+        """
+        if not HAS_NX or self._graph is None:
+            return self._empty_result(changed_packages)
+
+        affected: set[str] = set()
+        for pkg in changed_packages:
+            if pkg in self._graph:
+                affected.update(nx.descendants(self._graph, pkg))
+
+        nodes = []
+        for node in affected:
+            data      = self._graph.nodes.get(node, {})
+            consumers = list(self._graph.predecessors(node)) if HAS_NX else []
+            nodes.append(DependencyNode(
+                name=node,
+                version=data.get("version", ""),
+                team=data.get("team", ""),
+                critical=len(consumers) >= 3,
+            ))
+
+        total_nodes  = self._graph.number_of_nodes() or 1
+        blast_radius = min(100, int(len(affected) / total_nodes * 100))
+
+        return DependencyResult(
+            affected_services=sorted(affected),
+            blast_radius_score=blast_radius,
+            dependency_nodes=nodes,
+            cve_hits=[],
+            changed_packages=changed_packages,
+        )
+
+    # ── LLM path (when no graph available) ───────────────────────────────────
+
+    def build_user_prompt(self, request: AnalysisRequest, context: dict[str, Any]) -> str:
+        manifest_hunks = [h for h in request.hunks if _is_manifest(h.file_path)]
+        if not manifest_hunks:
+            # No manifest changed — nothing to analyse
+            return (
+                f"No dependency manifest files changed in this diff.\n"
+                f"Repository: {request.repo_url}\n"
+                f"Changed files: {request.changed_files}"
+            )
+
+        diff    = "\n\n".join(h.content for h in manifest_hunks)
+        trimmed = trim_diff_for_budget(diff, max_tokens_approx=1500)
+        svc_map = context.get("service_map", {})
+
+        return (
+            f"Repository: {request.repo_url}\n"
+            f"Service dependency map: {svc_map}\n\n"
+            f"Changed manifests:\n{trimmed}"
+        )
+
+    def run(self, request: AnalysisRequest, budget, context: dict | None = None) -> DependencyResult:
+        ctx              = context or {}
+        changed_packages = ctx.get("changed_packages", _extract_changed_packages(request))
+
+        # Prefer graph traversal (no LLM cost)
+        if self._graph is not None:
+            return self.analyse_with_graph(changed_packages)
+
+        # Skip LLM if no manifest files changed
+        if not any(_is_manifest(h.file_path) for h in request.hunks):
+            return self._empty_result(changed_packages)
+
+        return super().run(request, budget, ctx)
+
+    def fallback_result(self, request: AnalysisRequest) -> DependencyResult:
+        return self._empty_result(_extract_changed_packages(request))
+
+    @staticmethod
+    def _empty_result(changed_packages: list[str] | None = None) -> DependencyResult:
+        return DependencyResult(
+            affected_services=[],
+            blast_radius_score=0,
+            dependency_nodes=[],
+            cve_hits=[],
+            changed_packages=changed_packages or [],
+        )
+
+
+# ── Graph builder ─────────────────────────────────────────────────────────────
+
+def build_service_graph(manifest_data: dict[str, list[str]]) -> Any:
+    """
+    Build a directed dependency graph from a manifest dict.
+
+    manifest_data: {service_name: [list_of_dependencies]}
+
+    Edges: dependency → service  (i.e., "dependency is consumed by service")
+    nx.descendants(G, pkg) returns all services transitively depending on pkg.
+    """
+    if not HAS_NX:
+        raise ImportError("pip install networkx to enable graph analysis")
+
+    G = nx.DiGraph()
+    for service, deps in manifest_data.items():
+        G.add_node(service, type="service")
+        for dep in deps:
+            if not G.has_node(dep):
+                G.add_node(dep, type="library")
+            G.add_edge(dep, service)
+    return G
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _is_manifest(path: str) -> bool:
+    return any(path.endswith(m) for m in _MANIFEST_FILES)
+
+
+def _extract_changed_packages(request: AnalysisRequest) -> list[str]:
+    """Heuristically extract package names from manifest diffs."""
+    packages: list[str] = []
+    for hunk in request.hunks:
+        if not _is_manifest(hunk.file_path):
+            continue
+        for line in hunk.content.splitlines():
+            if not line.startswith("+") or line.startswith("+++"):
+                continue
+            # Maven: <artifactId>spring-core</artifactId>
+            m = re.search(r"<artifactId>([^<]+)</artifactId>", line)
+            if m:
+                packages.append(m.group(1))
+                continue
+            # npm/pip: "some-package": "1.2.3" or some-package==1.2.3
+            m = re.search(r'"([a-zA-Z0-9@/_-]+)"\s*:', line)
+            if m:
+                packages.append(m.group(1))
+                continue
+            m = re.search(r'^[+]\s*([a-zA-Z0-9_-]+)[>=!<]', line)
+            if m:
+                packages.append(m.group(1))
+    return list(dict.fromkeys(packages))   # deduplicate, preserve order

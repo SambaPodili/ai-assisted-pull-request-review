@@ -1,0 +1,148 @@
+// Jenkinsfile — AI Impact Analysis Gate
+// Copy this into your existing Jenkinsfile or use as a shared library step.
+//
+// Required Jenkins credentials:
+//   IMPACT_ANALYZER_URL  — env var or credential (e.g. http://impact-analyzer:8080)
+//   IMPACT_ANALYZER_KEY  — secret text credential
+
+pipeline {
+    agent any
+
+    environment {
+        IMPACT_API_URL = credentials('IMPACT_ANALYZER_URL')
+        IMPACT_API_KEY = credentials('IMPACT_ANALYZER_KEY')
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        // ── AI Impact Analysis gate ──────────────────────────────────────────
+
+        stage('Impact Analysis') {
+            steps {
+                script {
+                    def sourceBranch = env.CHANGE_BRANCH ?: env.GIT_BRANCH
+                    def targetBranch = env.CHANGE_TARGET  ?: 'main'
+                    def repoUrl      = env.GIT_URL        ?: scm.userRemoteConfigs[0].url
+
+                    echo "Running AI Impact Analysis: ${sourceBranch} → ${targetBranch}"
+
+                    // Compute the diff
+                    sh """
+                        git fetch origin ${targetBranch}:${targetBranch} 2>/dev/null || true
+                        git diff --unified=5 ${targetBranch}...${env.GIT_COMMIT} > /tmp/changes.diff || true
+                    """
+
+                    // Submit analysis
+                    def diffContent = sh(
+                        script: "cat /tmp/changes.diff | python3 -c \"import sys,json; print(json.dumps(sys.stdin.read()))\"",
+                        returnStdout: true
+                    ).trim()
+
+                    def payload = """{
+                        "repo_url": "${repoUrl}",
+                        "source_ref": "${sourceBranch}",
+                        "target_ref": "${targetBranch}",
+                        "change_type": "pull_request",
+                        "diff_text": ${diffContent},
+                        "metadata": {
+                            "build_number": "${env.BUILD_NUMBER}",
+                            "build_url": "${env.BUILD_URL}",
+                            "author": "${env.CHANGE_AUTHOR ?: env.GIT_AUTHOR_NAME}",
+                            "provider": "jenkins"
+                        }
+                    }"""
+
+                    def submitResp = sh(
+                        script: """
+                            curl -s -X POST \\
+                                -H 'Content-Type: application/json' \\
+                                -H 'X-API-Key: ${IMPACT_API_KEY}' \\
+                                ${IMPACT_API_URL}/api/v1/analyse \\
+                                -d '${payload}'
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    def requestId = sh(
+                        script: "echo '${submitResp}' | python3 -c \"import sys,json; print(json.load(sys.stdin).get('request_id',''))\"",
+                        returnStdout: true
+                    ).trim()
+
+                    echo "Analysis submitted: ${requestId}"
+                    env.IMPACT_REQUEST_ID = requestId
+
+                    // Wait for gate decision using the CLI tool
+                    def exitCode = sh(
+                        script: """
+                            pip install requests -q
+                            python3 -m cicd.pipeline_gate \\
+                                --request-id ${requestId} \\
+                                --api-url ${IMPACT_API_URL} \\
+                                --api-key ${IMPACT_API_KEY} \\
+                                --timeout 300 \\
+                                --output /tmp/impact-report.json
+                        """,
+                        returnStatus: true
+                    )
+
+                    // Archive the report
+                    archiveArtifacts artifacts: '/tmp/impact-report.json', allowEmptyArchive: true
+
+                    if (exitCode == 2) {
+                        // BLOCK — fail the build
+                        def report = readJSON file: '/tmp/impact-report.json'
+                        error("🚫 Impact Analysis: BLOCK — ${report.risk ?: 'high risk'}. See report for details.")
+                    } else if (exitCode == 1) {
+                        // HOLD — mark unstable, allow human decision
+                        unstable(message: "⚠️ Impact Analysis: HOLD — manual review required before deployment")
+                    } else if (exitCode == 0) {
+                        echo "✅ Impact Analysis: APPROVE — safe to proceed"
+                    } else {
+                        // Error — warn but don't fail (don't block deployments on analysis errors)
+                        unstable(message: "Impact Analysis did not complete — manual review recommended")
+                    }
+                }
+            }
+        }
+
+        // ── Remaining pipeline stages ─────────────────────────────────────────
+        // Add your existing build, test, and deploy stages here
+
+        stage('Build') {
+            steps {
+                echo "Build stage — add your build steps here"
+            }
+        }
+
+        stage('Deploy') {
+            when {
+                // Only deploy if impact analysis approved or held
+                expression { currentBuild.result != 'FAILURE' }
+            }
+            steps {
+                echo "Deploy stage — add your deploy steps here"
+            }
+        }
+    }
+
+    post {
+        always {
+            // Post analysis summary to PR/commit
+            script {
+                if (fileExists('/tmp/impact-report.json')) {
+                    def report = readJSON file: '/tmp/impact-report.json'
+                    echo "=== Impact Analysis Summary ==="
+                    echo "Gate: ${report.gate}"
+                    echo "Risk: ${report.risk} (score: ${report.risk_score}/100)"
+                    echo "Tokens: ${report.total_tokens}"
+                }
+            }
+        }
+    }
+}

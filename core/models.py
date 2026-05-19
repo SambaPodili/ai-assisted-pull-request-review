@@ -1,0 +1,410 @@
+"""
+core/models.py
+--------------
+Single source of truth for all data contracts.
+Every agent input/output is a Pydantic model defined here.
+"""
+from __future__ import annotations
+from enum import Enum
+from typing import Any
+from pydantic import BaseModel, Field
+from datetime import datetime
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Enumerations
+# ═════════════════════════════════════════════════════════════════════════════
+
+class RiskLevel(str, Enum):
+    LOW      = "low"
+    MEDIUM   = "medium"
+    HIGH     = "high"
+    CRITICAL = "critical"
+
+    def as_score(self) -> int:
+        return {"low": 10, "medium": 40, "high": 70, "critical": 95}[self.value]
+
+    def __gt__(self, other: "RiskLevel") -> bool:
+        order = [self.LOW, self.MEDIUM, self.HIGH, self.CRITICAL]
+        return order.index(self) > order.index(other)
+
+
+class ChangeType(str, Enum):
+    PR       = "pull_request"
+    BRANCH   = "branch_diff"
+    COMMIT   = "commit_diff"
+    DEPLOY   = "pre_deploy"
+
+
+class GateDecision(str, Enum):
+    APPROVE = "APPROVE"
+    HOLD    = "HOLD"
+    BLOCK   = "BLOCK"
+
+
+class AgentName(str, Enum):
+    ORCHESTRATOR  = "orchestrator"
+    CODE_ANALYSIS = "code_analysis"
+    DEPENDENCY    = "dependency"
+    SECURITY      = "security"
+    TEST_COVERAGE = "test_coverage"
+    INTERFACE     = "interface"
+    RISK          = "risk"
+    REMEDIATION   = "remediation"
+
+
+class DeploymentStrategy(str, Enum):
+    STANDARD     = "standard"
+    CANARY       = "canary"
+    BLUE_GREEN   = "blue_green"
+    PHASED       = "phased"
+    FEATURE_FLAG = "feature_flag"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Input Contracts
+# ═════════════════════════════════════════════════════════════════════════════
+
+class DiffHunk(BaseModel):
+    """A single file's contribution to a unified diff."""
+    file_path:  str
+    language:   str = "unknown"
+    additions:  int = 0
+    deletions:  int = 0
+    content:    str     # raw unified diff text
+
+    @property
+    def churn(self) -> int:
+        return self.additions + self.deletions
+
+
+class PRMetadata(BaseModel):
+    """Optional pull-request metadata supplied by the webhook or API caller."""
+    pr_number:  int    = 0
+    pr_title:   str    = ""
+    author:     str    = ""
+    labels:     list[str] = []
+    base_sha:   str    = ""
+    head_sha:   str    = ""
+
+
+class AnalysisRequest(BaseModel):
+    """Canonical input to the orchestrator."""
+    request_id:   str
+    change_type:  ChangeType
+    repo_url:     str
+    source_ref:   str
+    target_ref:   str
+    hunks:        list[DiffHunk] = []
+    metadata:     dict[str, Any] = {}
+    pr:           PRMetadata     = Field(default_factory=PRMetadata)
+    model_config_: dict[str, Any] = {}   # per-request LLM provider override
+    created_at:   datetime = Field(default_factory=datetime.utcnow)
+
+    @property
+    def total_churn(self) -> int:
+        return sum(h.churn for h in self.hunks)
+
+    @property
+    def changed_files(self) -> list[str]:
+        return [h.file_path for h in self.hunks]
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Agent Result Base
+# ═════════════════════════════════════════════════════════════════════════════
+
+class AgentResultBase(BaseModel):
+    """Base fields present on every agent result."""
+    token_usage:   int  = 0
+    model_used:    str  = ""
+    fallback_used: bool = False
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Phase 1 — Code Analysis & Security
+# ═════════════════════════════════════════════════════════════════════════════
+
+class CodeFinding(BaseModel):
+    file_path:   str
+    line_range:  str
+    severity:    RiskLevel
+    category:    str       # complexity | smell | logic | dead_code | anti_pattern
+    description: str
+    suggestion:  str = ""
+
+
+class CodeAnalysisResult(AgentResultBase):
+    summary:          str
+    change_type:      str   # refactor | feature | bugfix | config | mixed
+    complexity_delta: int = 0
+    findings:         list[CodeFinding] = []
+
+
+class SecurityFinding(BaseModel):
+    file_path:   str
+    line_range:  str
+    severity:    RiskLevel
+    cwe_id:      str = ""
+    owasp_cat:   str = ""
+    mas_trm_ref: str = ""
+    description: str
+    remediation: str
+
+
+class SecurityResult(AgentResultBase):
+    findings:          list[SecurityFinding] = []
+    secrets_detected:  bool = False
+    compliance_flags:  list[str] = []
+    overall_severity:  RiskLevel = RiskLevel.LOW
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Phase 2 — Dependency, Test Coverage, Interface
+# ═════════════════════════════════════════════════════════════════════════════
+
+class DependencyNode(BaseModel):
+    name:     str
+    version:  str  = ""
+    team:     str  = ""
+    critical: bool = False   # used by 3+ downstream services
+
+
+class DependencyResult(AgentResultBase):
+    affected_services:   list[str] = []
+    blast_radius_score:  int = 0     # 0-100
+    dependency_nodes:    list[DependencyNode] = []
+    cve_hits:            list[str] = []
+    changed_packages:    list[str] = []
+
+
+class TestGap(BaseModel):
+    file_path:       str
+    uncovered_path:  str
+    suggested_test:  str
+
+
+class TestCoverageResult(AgentResultBase):
+    coverage_delta:   float = 0.0
+    uncovered_paths:  list[TestGap] = []
+    regression_risk:  RiskLevel = RiskLevel.LOW
+    generated_stubs:  list[str] = []
+
+
+class ContractBreak(BaseModel):
+    interface_type: str    # REST | gRPC | AsyncAPI | MQ
+    path:           str
+    break_type:     str    # removed | renamed | type_change | required_added
+    consumers:      list[str] = []
+    severity:       RiskLevel = RiskLevel.HIGH
+
+
+class InterfaceResult(AgentResultBase):
+    breaking_changes:   list[ContractBreak] = []
+    schema_diffs:       list[str] = []
+    affected_consumers: list[str] = []
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Phase 3 — Risk & Remediation
+# ═════════════════════════════════════════════════════════════════════════════
+
+class RiskResult(AgentResultBase):
+    overall_risk:          RiskLevel
+    risk_score:            int = 0       # 0-100
+    deployment_guidance:   str = ""
+    rollback_feasibility:  str = ""      # easy | moderate | complex | infeasible
+    gate_decision:         GateDecision = GateDecision.HOLD
+    rationale:             str = ""
+
+
+class RemediationResult(AgentResultBase):
+    fix_suggestions:      list[str] = []
+    validation_checklist: list[str] = []
+    deployment_strategy:  DeploymentStrategy = DeploymentStrategy.STANDARD
+    executive_summary:    str = ""
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Advanced Detection Results
+# ═════════════════════════════════════════════════════════════════════════════
+
+class EntropyFinding(BaseModel):
+    file_path:   str
+    line:        int
+    value:       str        # redacted — first 6 chars only
+    entropy:     float      # Shannon bits/char
+    kind:        str        # high_entropy | known_prefix | base64_blob | hex_key
+    severity:    RiskLevel
+    variable:    str = ""   # variable name it was assigned to
+
+class SecretsEntropyResult(AgentResultBase):
+    findings:           list[EntropyFinding] = []
+    high_entropy_count: int = 0
+    known_prefix_count: int = 0
+    overall_severity:   RiskLevel = RiskLevel.LOW
+
+
+class ASTFinding(BaseModel):
+    file_path:    str
+    line:         int
+    function:     str
+    kind:         str       # dead_code | null_risk | type_confusion | complexity_spike | unreachable
+    severity:     RiskLevel
+    description:  str
+    suggestion:   str = ""
+
+class FunctionProfile(BaseModel):
+    name:           str
+    file_path:      str
+    line:           int
+    callers:        list[str] = []   # functions that call this one
+    callees:        list[str] = []   # functions this one calls
+    cyclomatic:     int = 1
+    param_count:    int = 0
+    has_null_check: bool = True
+
+class ASTAnalysisResult(AgentResultBase):
+    findings:         list[ASTFinding] = []
+    function_profiles: list[FunctionProfile] = []
+    avg_complexity:   float = 0.0
+    max_complexity:   int = 0
+    hot_functions:    list[str] = []   # functions changed + many callers
+
+
+class TaintSource(BaseModel):
+    file_path: str
+    line:      int
+    variable:  str
+    source:    str   # request_param | env_var | file_read | db_read | cli_arg
+
+class TaintSink(BaseModel):
+    file_path: str
+    line:      int
+    variable:  str
+    sink:      str   # sql_query | exec | file_write | http_response | log
+
+class TaintPath(BaseModel):
+    source:     TaintSource
+    sink:       TaintSink
+    steps:      list[str] = []   # intermediate variable assignments
+    cwe:        str = ""
+    severity:   RiskLevel = RiskLevel.HIGH
+    description: str = ""
+
+class TaintAnalysisResult(AgentResultBase):
+    taint_paths:    list[TaintPath] = []
+    sources_found:  int = 0
+    sinks_found:    int = 0
+    has_injection:  bool = False
+    has_path_traversal: bool = False
+    has_ssrf:       bool = False
+
+
+class IaCFinding(BaseModel):
+    file_path:  str
+    line:       int
+    resource:   str      # e.g. "aws_security_group.web", "Deployment/payments"
+    kind:       str      # open_ingress | privileged | root_container | missing_encryption | public_bucket | wildcard_iam
+    severity:   RiskLevel
+    description: str
+    cis_ref:    str = "" # CIS benchmark reference
+    fix:        str = ""
+
+class IaCAnalysisResult(AgentResultBase):
+    findings:          list[IaCFinding] = []
+    terraform_issues:  int = 0
+    kubernetes_issues: int = 0
+    docker_issues:     int = 0
+    overall_severity:  RiskLevel = RiskLevel.LOW
+
+
+class FileChangePattern(BaseModel):
+    file_path:      str
+    change_count:   int     # times changed in last 30 days
+    last_changed:   str     # ISO date
+    avg_risk_score: float
+    incident_correlated: bool = False  # changed before known incidents
+
+class TemporalRiskResult(AgentResultBase):
+    hot_files:          list[FileChangePattern] = []
+    escalating_pattern: bool = False    # risk increasing over time
+    security_erosion:   bool = False    # security controls being removed incrementally
+    change_fatigue:     list[str] = []  # files changed too frequently
+    risk_trend:         str = "stable"  # improving | stable | degrading | critical
+    window_days:        int = 30
+
+
+# ── Update AnalysisReport to include new agents ────────────────────────────
+
+
+
+class AgentTokenUsage(BaseModel):
+    agent:       AgentName
+    tokens_used: int
+    model:       str
+
+
+class AnalysisReport(BaseModel):
+    request_id:   str
+    change_type:  ChangeType
+    repo_url:     str
+    source_ref:   str
+    target_ref:   str
+    phase_run:    int = 1
+    completed_at: datetime = Field(default_factory=datetime.utcnow)
+    duration_s:   float = 0.0
+
+    # Phase 1
+    code_analysis: CodeAnalysisResult | None = None
+    security:      SecurityResult     | None = None
+
+    # Phase 2
+    dependency:    DependencyResult   | None = None
+    test_coverage: TestCoverageResult | None = None
+    interface:     InterfaceResult    | None = None
+
+    # Advanced detection agents
+    ast_analysis:     ASTAnalysisResult     | None = None
+    secrets_entropy:  SecretsEntropyResult  | None = None
+    taint_analysis:   TaintAnalysisResult   | None = None
+    iac_analysis:     IaCAnalysisResult     | None = None
+    temporal_risk:    TemporalRiskResult    | None = None
+
+    # Phase 3
+    risk:          RiskResult         | None = None
+    remediation:   RemediationResult  | None = None
+
+    token_budget:  int = 0
+    token_usage:   list[AgentTokenUsage] = []
+    errors:        list[str] = []
+
+    # Stored gate/risk — set by orchestrator at finalization so the values
+    # are stable in the stored report and don't require re-deriving at read time
+    _gate_decision: GateDecision | None = None
+    _final_risk:    RiskLevel    | None = None
+
+    @property
+    def total_tokens(self) -> int:
+        return sum(t.tokens_used for t in self.token_usage)
+
+    @property
+    def gate_decision(self) -> GateDecision:
+        if self._gate_decision is not None:
+            return self._gate_decision
+        if self.risk:
+            return self.risk.gate_decision
+        if self.security and self.security.overall_severity == RiskLevel.CRITICAL:
+            return GateDecision.BLOCK
+        return GateDecision.HOLD
+
+    @property
+    def final_risk(self) -> RiskLevel:
+        if self._final_risk is not None:
+            return self._final_risk
+        return self.risk.overall_risk if self.risk else RiskLevel.LOW
+
+    def freeze_gate(self) -> None:
+        """Snapshot the computed gate/risk into stored fields so they persist."""
+        object.__setattr__(self, "_gate_decision", self.gate_decision)
+        object.__setattr__(self, "_final_risk",    self.final_risk)

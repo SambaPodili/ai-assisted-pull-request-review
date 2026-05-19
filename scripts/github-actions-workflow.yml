@@ -1,0 +1,165 @@
+name: Impact Analysis Gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main, develop, release/**]
+
+env:
+  IMPACT_ANALYZER_URL: ${{ vars.IMPACT_ANALYZER_URL }}
+  IMPACT_ANALYZER_API_KEY: ${{ secrets.IMPACT_ANALYZER_API_KEY }}
+  POLL_TIMEOUT_SECONDS: 300
+  POLL_INTERVAL_SECONDS: 10
+
+jobs:
+  impact-analysis:
+    name: AI Impact Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # Full history needed for accurate diff
+
+      - name: Generate unified diff
+        id: diff
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch origin ${{ github.base_ref }}
+            DIFF=$(git diff origin/${{ github.base_ref }}...HEAD)
+          else
+            DIFF=$(git diff HEAD~1..HEAD)
+          fi
+          # Write diff to file to avoid shell escaping issues
+          echo "$DIFF" > /tmp/analysis.diff
+          echo "diff_lines=$(echo "$DIFF" | wc -l)" >> $GITHUB_OUTPUT
+
+      - name: Submit analysis
+        id: submit
+        run: |
+          DIFF_CONTENT=$(cat /tmp/analysis.diff | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")
+          
+          RESPONSE=$(curl -s -X POST "$IMPACT_ANALYZER_URL/api/v1/analyse" \
+            -H "X-API-Key: $IMPACT_ANALYZER_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"repo_url\":   \"${{ github.server_url }}/${{ github.repository }}\",
+              \"source_ref\": \"${{ github.head_ref || github.ref_name }}\",
+              \"target_ref\": \"${{ github.base_ref || github.ref_name }}\",
+              \"change_type\": \"pull_request\",
+              \"diff_text\": $DIFF_CONTENT,
+              \"metadata\": {
+                \"pr_id\":    \"${{ github.event.pull_request.number }}\",
+                \"pr_title\": \"${{ github.event.pull_request.title }}\",
+                \"author\":   \"${{ github.actor }}\",
+                \"sha\":      \"${{ github.sha }}\",
+                \"provider\": \"github\"
+              }
+            }")
+          
+          REQUEST_ID=$(echo $RESPONSE | python3 -c "import sys,json; print(json.load(sys.stdin)['request_id'])")
+          echo "request_id=$REQUEST_ID" >> $GITHUB_OUTPUT
+          echo "Submitted analysis: $REQUEST_ID"
+
+      - name: Poll for result
+        id: result
+        run: |
+          REQUEST_ID="${{ steps.submit.outputs.request_id }}"
+          TIMEOUT=$POLL_TIMEOUT_SECONDS
+          ELAPSED=0
+
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            RESPONSE=$(curl -s "$IMPACT_ANALYZER_URL/api/v1/report/$REQUEST_ID" \
+              -H "X-API-Key: $IMPACT_ANALYZER_API_KEY")
+            
+            GATE=$(echo $RESPONSE | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('gate',''))" 2>/dev/null)
+            
+            if [ -n "$GATE" ]; then
+              RISK=$(echo $RESPONSE | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('risk',''))" 2>/dev/null)
+              TOKENS=$(echo $RESPONSE | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('total_tokens',0))" 2>/dev/null)
+              
+              echo "gate=$GATE"         >> $GITHUB_OUTPUT
+              echo "risk=$RISK"         >> $GITHUB_OUTPUT
+              echo "tokens=$TOKENS"     >> $GITHUB_OUTPUT
+              echo "request_id=$REQUEST_ID" >> $GITHUB_OUTPUT
+              
+              echo "Analysis complete — Gate: $GATE | Risk: $RISK | Tokens: $TOKENS"
+              break
+            fi
+            
+            echo "Waiting for analysis... ($ELAPSED/$TIMEOUT s)"
+            sleep $POLL_INTERVAL_SECONDS
+            ELAPSED=$((ELAPSED + POLL_INTERVAL_SECONDS))
+          done
+
+          if [ -z "$GATE" ]; then
+            echo "Analysis timed out after ${TIMEOUT}s"
+            echo "gate=TIMEOUT" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Post PR comment with analysis summary
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const gate    = '${{ steps.result.outputs.gate }}';
+            const risk    = '${{ steps.result.outputs.risk }}';
+            const tokens  = '${{ steps.result.outputs.tokens }}';
+            const reqId   = '${{ steps.result.outputs.request_id }}';
+            const baseUrl = process.env.IMPACT_ANALYZER_URL;
+            
+            const icons = { APPROVE: '✅', HOLD: '⚠️', BLOCK: '🚫', TIMEOUT: '⏱️' };
+            const icon  = icons[gate] || '❓';
+            
+            const body = `<!-- impact-analyzer-bot -->
+            ## ${icon} Impact Analysis — **${gate}**
+
+            | Metric | Value |
+            |--------|-------|
+            | Risk Level | **${risk}** |
+            | Gate Decision | **${gate}** |
+            | Tokens Used | ${tokens} |
+            | Request ID | \`${reqId}\` |
+
+            [View full report](${baseUrl}/api/v1/report/${reqId}?fmt=md)
+            `;
+
+            // Find and update existing bot comment
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.data.find(c => c.body.includes('impact-analyzer-bot'));
+            
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                comment_id: existing.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: context.issue.number, body,
+              });
+            }
+
+      - name: Enforce gate decision
+        run: |
+          GATE="${{ steps.result.outputs.gate }}"
+          if [ "$GATE" = "BLOCK" ]; then
+            echo "::error::Impact Analysis BLOCKED this change. Review the report and remediate all critical findings before merging."
+            exit 1
+          elif [ "$GATE" = "HOLD" ]; then
+            echo "::warning::Impact Analysis flagged this change for review (HOLD). Manual approval required."
+            # Uncomment to make HOLD also fail the pipeline:
+            # exit 1
+          elif [ "$GATE" = "TIMEOUT" ]; then
+            echo "::warning::Impact Analysis timed out. Proceeding without gate enforcement."
+          else
+            echo "Impact Analysis: APPROVE ✅"
+          fi

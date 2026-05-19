@@ -1,0 +1,125 @@
+name: AI Impact Analysis Gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main, develop, release/**]
+
+jobs:
+  impact-analysis:
+    name: AI Impact Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    # Only block merge if gate fails — don't block on analysis errors
+    continue-on-error: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0    # full history for accurate diff
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install gate CLI
+        run: pip install requests
+
+      # ── Submit analysis request ────────────────────────────────────────────
+
+      - name: Submit impact analysis
+        id: submit
+        env:
+          IMPACT_API_URL: ${{ vars.IMPACT_ANALYZER_URL }}
+          IMPACT_API_KEY: ${{ secrets.IMPACT_ANALYZER_API_KEY }}
+        run: |
+          # Compute diff between base and head
+          git diff --unified=5 origin/${{ github.base_ref }}...${{ github.sha }} > /tmp/changes.diff || true
+
+          # Submit to analysis API
+          RESPONSE=$(curl -s -X POST \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: ${IMPACT_API_KEY}" \
+            "${IMPACT_API_URL}/api/v1/analyse" \
+            -d @- << EOF
+          {
+            "repo_url": "${{ github.repository }}",
+            "source_ref": "${{ github.head_ref || github.sha }}",
+            "target_ref": "${{ github.base_ref || 'main' }}",
+            "change_type": "pull_request",
+            "diff_text": $(cat /tmp/changes.diff | jq -Rs .),
+            "metadata": {
+              "pr_id": "${{ github.event.pull_request.number }}",
+              "pr_title": "${{ github.event.pull_request.title }}",
+              "author": "${{ github.actor }}",
+              "provider": "github",
+              "workflow_run": "${{ github.run_id }}"
+            }
+          }
+          EOF
+          )
+          REQUEST_ID=$(echo "$RESPONSE" | jq -r .request_id)
+          echo "request_id=$REQUEST_ID" >> $GITHUB_OUTPUT
+          echo "Submitted analysis: $REQUEST_ID"
+
+      # ── Wait for gate decision ─────────────────────────────────────────────
+
+      - name: Wait for gate decision
+        id: gate
+        env:
+          IMPACT_API_URL: ${{ vars.IMPACT_ANALYZER_URL }}
+          IMPACT_API_KEY: ${{ secrets.IMPACT_ANALYZER_API_KEY }}
+        run: |
+          python -m cicd.pipeline_gate \
+            --request-id "${{ steps.submit.outputs.request_id }}" \
+            --api-url "${IMPACT_API_URL}" \
+            --api-key "${IMPACT_API_KEY}" \
+            --timeout 300 \
+            --output /tmp/impact-report.json
+
+      # ── Upload report artifact ─────────────────────────────────────────────
+
+      - name: Upload analysis report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: impact-analysis-report
+          path: /tmp/impact-report.json
+          retention-days: 30
+
+      # ── Post PR comment ────────────────────────────────────────────────────
+
+      - name: Post PR comment
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = JSON.parse(fs.readFileSync('/tmp/impact-report.json', 'utf8'));
+            const gate   = report.gate || 'UNKNOWN';
+            const icon   = gate === 'APPROVE' ? '✅' : gate === 'HOLD' ? '⚠️' : '🚫';
+            const m      = report.metrics || {};
+
+            const body = `## ${icon} AI Impact Analysis — **${gate}**
+            > Risk: **${(report.risk || '').toUpperCase()}** | Score: ${report.risk_score || 0}/100 | Tokens: ${report.total_tokens || 0}
+
+            | Metric | Value |
+            |--------|-------|
+            | Security findings | ${m.security_findings || 0} |
+            | Secrets detected | ${m.secrets_detected ? '🚨 YES' : 'None'} |
+            | Blast radius | ${m.blast_radius || 0}/100 |
+            | Breaking API changes | ${m.breaking_changes || 0} |
+            | Coverage delta | ${(m.coverage_delta || 0).toFixed(1)}% |
+
+            <sub>Request ID: \`${report.request_id}\`</sub>`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
