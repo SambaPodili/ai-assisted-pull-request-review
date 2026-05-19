@@ -56,7 +56,7 @@ AVG_RISK_ESCALATION_DELTA    = 15   # risk score increase over trend → escalat
 
 class TemporalRiskAgent(BaseAgent[TemporalRiskResult]):
 
-    agent_name   = AgentName.RISK
+    agent_name   = AgentName.TEMPORAL_RISK
     output_model = TemporalRiskResult
 
     system_prompt = (

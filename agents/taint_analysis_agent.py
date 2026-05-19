@@ -103,7 +103,7 @@ _PROPAGATION = re.compile(r'(\w+)\s*=\s*(?!=)')
 
 class TaintAnalysisAgent(BaseAgent[TaintAnalysisResult]):
 
-    agent_name   = AgentName.SECURITY
+    agent_name   = AgentName.TAINT_ANALYSIS
     output_model = TaintAnalysisResult
 
     system_prompt = (

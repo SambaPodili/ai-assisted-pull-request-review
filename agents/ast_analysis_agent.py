@@ -56,7 +56,7 @@ except ImportError:
 
 class ASTAnalysisAgent(BaseAgent[ASTAnalysisResult]):
 
-    agent_name   = AgentName.CODE_ANALYSIS
+    agent_name   = AgentName.AST_ANALYSIS
     output_model = ASTAnalysisResult
 
     system_prompt = (

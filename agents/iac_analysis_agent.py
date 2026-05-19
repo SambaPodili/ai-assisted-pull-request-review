@@ -413,7 +413,7 @@ def _extract_k8s_kind(content: str) -> str:
 
 class IaCAnalysisAgent(BaseAgent[IaCAnalysisResult]):
 
-    agent_name   = AgentName.CODE_ANALYSIS
+    agent_name   = AgentName.IAC_ANALYSIS
     output_model = IaCAnalysisResult
 
     system_prompt = (

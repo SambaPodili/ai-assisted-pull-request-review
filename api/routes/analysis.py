@@ -18,7 +18,7 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from core.models import (
     AnalysisRequest, AnalysisReport, ChangeType,
@@ -78,6 +78,8 @@ _in_flight = _InFlight()
 # ── Request / Response models ─────────────────────────────────────────────────
 
 class AnalyseRequest(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     repo_url:     str
     source_ref:   str
     target_ref:   str
@@ -156,6 +158,20 @@ async def submit_analysis(
 
     background.add_task(_run)
     return {"request_id": request_id, "status": "queued"}
+
+
+@router.get("/progress/{request_id}")
+def get_agent_progress(request_id: str):
+    """
+    Per-agent live status while analysis is running.
+    Returns the status, elapsed time, and tokens for every agent seen so far.
+    Poll this every 1-2 seconds from the UI for a live progress display.
+    """
+    from core.progress import get_progress_store
+    run = get_progress_store().get(request_id)
+    if not run:
+        return {"request_id": request_id, "agents": []}
+    return {"request_id": request_id, "agents": run.snapshot()}
 
 
 @router.get("/status/{request_id}")

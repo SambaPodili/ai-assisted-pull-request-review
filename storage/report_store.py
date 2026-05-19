@@ -253,29 +253,34 @@ class RedisReportStore:
 
 # ── Factory ────────────────────────────────────────────────────────────────────
 
+_DEFAULT_SQLITE_PATH = "data/reports.db"
+
+
 def make_report_store(settings=None) -> ReportStore:
     from config.settings import get_settings
     cfg = settings or get_settings()
 
-    # Redis (highest priority — multi-process safe)
+    # Redis (highest priority — multi-process safe, explicitly configured)
     if cfg.redis_url and HAS_REDIS:
         try:
             store = RedisReportStore(cfg.redis_url)
             store._r.ping()
-            log.info("Using Redis report store")
+            log.info("Report store: Redis (%s)", cfg.redis_url)
             return store
         except Exception as e:
-            log.warning("Redis unavailable (%s) — trying SQLite", e)
+            log.warning(
+                "Redis configured but unavailable (%s) — falling back to SQLite", e
+            )
 
-    # SQLite (single-node production)
-    sqlite_path = getattr(cfg, "sqlite_path", "")
-    if sqlite_path:
-        try:
-            store = SQLiteReportStore(sqlite_path)
-            log.info("Using SQLite report store at %s", sqlite_path)
-            return store
-        except Exception as e:
-            log.warning("SQLite store failed (%s) — falling back to in-memory", e)
+    # SQLite — explicit path takes priority, then default dev path
+    sqlite_path = getattr(cfg, "sqlite_path", "") or _DEFAULT_SQLITE_PATH
+    try:
+        import os
+        os.makedirs(os.path.dirname(sqlite_path) or ".", exist_ok=True)
+        store = SQLiteReportStore(sqlite_path)
+        log.info("Report store: SQLite (%s)", sqlite_path)
+        return store
+    except Exception as e:
+        log.warning("SQLite store unavailable (%s) — using in-memory (reports lost on restart)", e)
 
-    log.info("Using in-memory report store (reports will not survive restarts)")
     return InMemoryReportStore()

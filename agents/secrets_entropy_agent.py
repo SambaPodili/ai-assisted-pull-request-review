@@ -110,7 +110,7 @@ HIGH_SEVERITY_ENTROPY = 4.5   # above this = CRITICAL
 
 class SecretsEntropyAgent(BaseAgent[SecretsEntropyResult]):
 
-    agent_name   = AgentName.SECURITY   # reuses security slot in AgentName
+    agent_name   = AgentName.SECRETS_ENTROPY
     output_model = SecretsEntropyResult
 
     system_prompt = (

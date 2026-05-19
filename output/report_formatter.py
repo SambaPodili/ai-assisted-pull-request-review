@@ -121,6 +121,28 @@ def to_markdown(report: AnalysisReport) -> str:
                 lines.append(f"```java\n{stub}\n```")
         lines.append("")
 
+    # ── Schema Changes ─────────────────────────────────────────────────────────
+    if report.schema_change and report.schema_change.changes:
+        sc = report.schema_change
+        icon_sc = "🚫" if sc.has_destructive else ("⚠️" if sc.changes else "ℹ️")
+        lines += [
+            "---",
+            "## 🗄️ Schema Changes",
+            f"- **Gate contribution:** {sc.gate_contribution}",
+            f"- **Rollback risk:** {sc.rollback_risk.value}",
+            f"- **Destructive:** {'Yes 🚨' if sc.has_destructive else 'No'}",
+            f"- **Irreversible:** {'Yes 🚨' if sc.has_irreversible else 'No'}",
+            f"- **Migration files:** {', '.join(sc.migration_files) or 'None'}",
+            f"- **Summary:** {sc.summary}",
+        ]
+        if sc.changes:
+            lines.append("\n| File | Table | Change Type | Severity | Reversible | Description |")
+            lines.append("|------|-------|-------------|----------|------------|-------------|")
+            for c in sc.changes[:15]:
+                rev = "✅" if c.reversible else "❌"
+                lines.append(f"| `{c.file_path}` | {c.table_name or '—'} | {c.change_type} | {c.severity.value} | {rev} | {c.description} |")
+        lines.append("")
+
     # ── Risk ───────────────────────────────────────────────────────────────────
     if report.risk:
         r = report.risk
@@ -160,13 +182,13 @@ def to_markdown(report: AnalysisReport) -> str:
     # ── Token usage ────────────────────────────────────────────────────────────
     lines += [
         "---",
-        "## 📊 Token Usage",
-        f"| Agent | Model | Tokens |",
-        f"|-------|-------|--------|",
+        "## 📊 Token & Timing",
+        f"| Agent | Tokens | Time (s) | Model |",
+        f"|-------|--------|----------|-------|",
     ]
     for u in report.token_usage:
-        lines.append(f"| {u.agent.value} | {u.model} | {u.tokens_used} |")
-    lines.append(f"| **TOTAL** | — | **{report.total_tokens}** |")
+        lines.append(f"| {u.agent.value} | {u.tokens_used} | {u.duration_s:.2f} | {u.model} |")
+    lines.append(f"| **TOTAL** | **{report.total_tokens}** | **{report.duration_s:.2f}** | — |")
 
     return "\n".join(lines)
 
@@ -196,5 +218,11 @@ def to_summary_json(report: AnalysisReport) -> dict:
             "taint_paths":        len(report.taint_analysis.taint_paths)  if report.taint_analysis else 0,
             "iac_findings":       len(report.iac_analysis.findings)       if report.iac_analysis   else 0,
             "entropy_findings":   len(report.secrets_entropy.findings)    if report.secrets_entropy else 0,
+            "schema_changes":     len(report.schema_change.changes)       if report.schema_change   else 0,
+            "schema_destructive": report.schema_change.has_destructive    if report.schema_change   else False,
         },
+        "agent_timings": [
+            {"agent": u.agent.value, "tokens": u.tokens_used, "duration_s": u.duration_s, "model": u.model}
+            for u in report.token_usage
+        ],
     }

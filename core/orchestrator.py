@@ -38,6 +38,7 @@ from agents.secrets_entropy_agent  import SecretsEntropyAgent
 from agents.taint_analysis_agent   import TaintAnalysisAgent
 from agents.iac_analysis_agent     import IaCAnalysisAgent
 from agents.temporal_risk_agent    import TemporalRiskAgent
+from agents.schema_change_agent    import SchemaChangeAgent
 from governance.audit_logger    import make_audit_logger, NullAuditLogger
 from governance.circuit_breaker import get_breaker_registry
 from governance.diff_cache      import get_diff_cache
@@ -97,6 +98,7 @@ class ImpactAnalysisOrchestrator:
         self._taint    = TaintAnalysisAgent(api_key)
         self._iac      = IaCAnalysisAgent(api_key)
         self._temporal = TemporalRiskAgent(api_key)
+        self._schema   = SchemaChangeAgent(api_key)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -163,6 +165,7 @@ class ImpactAnalysisOrchestrator:
             repo_url=request.repo_url,
             source_ref=request.source_ref,
             target_ref=request.target_ref,
+            pr=request.pr,
             phase_run=self.phase,
         )
 
@@ -183,6 +186,7 @@ class ImpactAnalysisOrchestrator:
         report.taint_analysis  = p1b.get("taint")
         report.iac_analysis    = p1b.get("iac")
         report.temporal_risk   = p1b.get("temporal")
+        report.schema_change   = p1b.get("schema")
         self._record_advanced_usage(report, p1b)
 
         if self.phase < 2:
@@ -240,12 +244,13 @@ class ImpactAnalysisOrchestrator:
             context:       dict
             res_code:      Optional[Any]
             res_security:  Optional[Any]
-            # Advanced detection
+            # Advanced detection (Phase 1b)
             res_ast:       Optional[Any]
             res_entropy:   Optional[Any]
             res_taint:     Optional[Any]
             res_iac:       Optional[Any]
             res_temporal:  Optional[Any]
+            res_schema:    Optional[Any]
             # Phase 2
             res_dep:       Optional[Any]
             res_test:      Optional[Any]
@@ -278,6 +283,9 @@ class ImpactAnalysisOrchestrator:
         def node_temporal(state: PipelineState) -> dict:
             return {"res_temporal": orch._temporal.run(state["request"], state["budget"], {})}
 
+        def node_schema(state: PipelineState) -> dict:
+            return {"res_schema": orch._schema.run(state["request"], state["budget"], {})}
+
         def node_dependency(state: PipelineState) -> dict:
             ctx = state["context"].get(AgentName.DEPENDENCY, {})
             return {"res_dep": orch._dep.run(state["request"], state["budget"], ctx)}
@@ -307,6 +315,7 @@ class ImpactAnalysisOrchestrator:
                 taint_analysis=state.get("res_taint"),
                 iac_analysis=state.get("res_iac"),
                 temporal_risk=state.get("res_temporal"),
+                schema_change=state.get("res_schema"),
             )
             state["budget"].donate_unused("dependency", "risk")
             ctx = build_partial_report_context(partial)
@@ -329,6 +338,7 @@ class ImpactAnalysisOrchestrator:
                 taint_analysis=state.get("res_taint"),
                 iac_analysis=state.get("res_iac"),
                 temporal_risk=state.get("res_temporal"),
+                schema_change=state.get("res_schema"),
                 risk=state.get("res_risk"),
             )
             ctx = build_full_report_context(full)
@@ -343,10 +353,13 @@ class ImpactAnalysisOrchestrator:
         builder.add_node("taint",    node_taint)
         builder.add_node("iac",      node_iac)
         builder.add_node("temporal", node_temporal)
+        builder.add_node("schema",   node_schema)
+
+        _advanced = ("security", "ast", "entropy", "taint", "iac", "temporal", "schema")
 
         # Fan-out from code: security + all advanced detection run in parallel
         builder.set_entry_point("code")
-        for node in ("security", "ast", "entropy", "taint", "iac", "temporal"):
+        for node in _advanced:
             builder.add_edge("code", node)
 
         if self.phase >= 2:
@@ -355,7 +368,7 @@ class ImpactAnalysisOrchestrator:
             builder.add_node("interface",  node_interface)
             builder.add_node("risk",       node_risk)
             # Fan-in: phase-2 agents wait for security + advanced to complete
-            for src in ("security", "ast", "entropy", "taint", "iac", "temporal"):
+            for src in _advanced:
                 for dst in ("dependency", "test", "interface"):
                     builder.add_edge(src, dst)
             for src in ("dependency", "test", "interface"):
@@ -368,8 +381,8 @@ class ImpactAnalysisOrchestrator:
             else:
                 builder.add_edge("risk", END)
         else:
-            # Phase 1 only: all 7 nodes fan-out from code, no further steps
-            for node in ("security", "ast", "entropy", "taint", "iac", "temporal"):
+            # Phase 1 only: all 8 nodes fan-out from code, no further steps
+            for node in _advanced:
                 builder.add_edge(node, END)
 
         graph  = builder.compile()
@@ -384,7 +397,7 @@ class ImpactAnalysisOrchestrator:
             "request": request, "budget": budget, "context": ctx,
             "res_code": None, "res_security": None,
             "res_ast": None, "res_entropy": None, "res_taint": None,
-            "res_iac": None, "res_temporal": None,
+            "res_iac": None, "res_temporal": None, "res_schema": None,
             "res_dep": None, "res_test": None, "res_iface": None,
             "res_risk": None, "res_rem": None,
         }
@@ -396,6 +409,7 @@ class ImpactAnalysisOrchestrator:
             repo_url=request.repo_url,
             source_ref=request.source_ref,
             target_ref=request.target_ref,
+            pr=request.pr,
             phase_run=self.phase,
             code_analysis=final.get("res_code"),
             security=final.get("res_security"),
@@ -404,6 +418,7 @@ class ImpactAnalysisOrchestrator:
             taint_analysis=final.get("res_taint"),
             iac_analysis=final.get("res_iac"),
             temporal_risk=final.get("res_temporal"),
+            schema_change=final.get("res_schema"),
             dependency=final.get("res_dep"),
             test_coverage=final.get("res_test"),
             interface=final.get("res_iface"),
@@ -412,19 +427,26 @@ class ImpactAnalysisOrchestrator:
         )
 
         slot_names = [
-            (AgentName.CODE_ANALYSIS, "res_code"),
-            (AgentName.SECURITY,      "res_security"),
-            (AgentName.DEPENDENCY,    "res_dep"),
-            (AgentName.TEST_COVERAGE, "res_test"),
-            (AgentName.INTERFACE,     "res_iface"),
-            (AgentName.RISK,          "res_risk"),
-            (AgentName.REMEDIATION,   "res_rem"),
+            (AgentName.CODE_ANALYSIS,   "res_code"),
+            (AgentName.SECURITY,        "res_security"),
+            (AgentName.AST_ANALYSIS,    "res_ast"),
+            (AgentName.SECRETS_ENTROPY, "res_entropy"),
+            (AgentName.TAINT_ANALYSIS,  "res_taint"),
+            (AgentName.IAC_ANALYSIS,    "res_iac"),
+            (AgentName.TEMPORAL_RISK,   "res_temporal"),
+            (AgentName.SCHEMA_CHANGE,   "res_schema"),
+            (AgentName.DEPENDENCY,      "res_dep"),
+            (AgentName.TEST_COVERAGE,   "res_test"),
+            (AgentName.INTERFACE,       "res_iface"),
+            (AgentName.RISK,            "res_risk"),
+            (AgentName.REMEDIATION,     "res_rem"),
         ]
         for name, slot in slot_names:
             result = final.get(slot)
             if result and getattr(result, "token_usage", 0):
                 report.token_usage.append(AgentTokenUsage(
-                    agent=name, tokens_used=result.token_usage, model=result.model_used
+                    agent=name, tokens_used=result.token_usage, model=result.model_used,
+                    duration_s=getattr(result, "duration_s", 0.0),
                 ))
 
         return self._finalize(report, budget)
@@ -444,8 +466,9 @@ class ImpactAnalysisOrchestrator:
             "taint":    self._taint,
             "iac":      self._iac,
             "temporal": self._temporal,
+            "schema":   self._schema,
         }
-        with ThreadPoolExecutor(max_workers=5) as pool:
+        with ThreadPoolExecutor(max_workers=6) as pool:
             futures = {
                 pool.submit(agent.run, request, budget, ctx): name
                 for name, agent in agents_map.items()
@@ -541,24 +564,27 @@ class ImpactAnalysisOrchestrator:
             r = results.get(name)
             if r and r.token_usage:
                 report.token_usage.append(AgentTokenUsage(
-                    agent=name, tokens_used=r.token_usage, model=r.model_used
+                    agent=name, tokens_used=r.token_usage, model=r.model_used,
+                    duration_s=getattr(r, "duration_s", 0.0),
                 ))
 
     @staticmethod
     def _record_single(report: AnalysisReport, result: Any, name: AgentName) -> None:
         if result and result.token_usage:
             report.token_usage.append(AgentTokenUsage(
-                agent=name, tokens_used=result.token_usage, model=result.model_used
+                agent=name, tokens_used=result.token_usage, model=result.model_used,
+                duration_s=getattr(result, "duration_s", 0.0),
             ))
 
     @staticmethod
     def _record_advanced_usage(report: AnalysisReport, results: dict) -> None:
         advanced_map = {
-            "ast":      AgentName.CODE_ANALYSIS,
-            "entropy":  AgentName.SECURITY,
-            "taint":    AgentName.SECURITY,
-            "iac":      AgentName.SECURITY,
-            "temporal": AgentName.RISK,
+            "ast":      AgentName.AST_ANALYSIS,
+            "entropy":  AgentName.SECRETS_ENTROPY,
+            "taint":    AgentName.TAINT_ANALYSIS,
+            "iac":      AgentName.IAC_ANALYSIS,
+            "temporal": AgentName.TEMPORAL_RISK,
+            "schema":   AgentName.SCHEMA_CHANGE,
         }
         for key, agent_name in advanced_map.items():
             result = results.get(key)
@@ -567,4 +593,5 @@ class ImpactAnalysisOrchestrator:
                     agent=agent_name,
                     tokens_used=result.token_usage,
                     model=result.model_used,
+                    duration_s=getattr(result, "duration_s", 0.0),
                 ))

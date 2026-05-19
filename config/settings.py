@@ -112,7 +112,8 @@ class Settings(BaseSettings):
     analysis_timeout_s: int = Field(default=300, alias="ANALYSIS_TIMEOUT_S")   # 5 min hard cap
 
     # ── Storage ───────────────────────────────────────────────────────────────
-    sqlite_path:      str  = Field(default="", alias="SQLITE_PATH")            # e.g. data/reports.db
+    sqlite_path:      str  = Field(default="", alias="SQLITE_PATH")
+    # When empty, make_report_store uses data/reports.db as the default.
 
     # ── Derived helpers ───────────────────────────────────────────────────────
     @property

@@ -324,6 +324,34 @@ h1, h2, h3 { font-family: 'Instrument Serif', serif; }
 .metric-value { font-family: 'JetBrains Mono', monospace; }
 .brand-name-text { font-family: 'Instrument Serif', serif; }
 
+/* Live agent pipeline */
+.pipeline-phase { font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:#9fadbf;font-weight:600;padding:10px 0 5px;display:flex;align-items:center;gap:8px }
+.pipeline-phase::after { content:'';flex:1;height:1px;background:#e8eaed }
+.agent-row { display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;border:1px solid #e8eaed;background:#fff;transition:all .2s;margin-bottom:5px }
+.agent-row.running { border-color:#bfdbfe;background:#eff6ff }
+.agent-row.done    { border-color:#bbf7d0;background:#f0fdf4 }
+.agent-row.fallback{ border-color:#fde68a;background:#fffbeb }
+.agent-row.skipped { opacity:.45 }
+.agent-dot { width:9px;height:9px;border-radius:50%;flex-shrink:0 }
+.agent-dot.pending  { background:#d1d5db }
+.agent-dot.running  { background:#3b82f6;box-shadow:0 0 0 3px rgba(59,130,246,.25);animation:pulse-dot 1.2s infinite }
+.agent-dot.done     { background:#10b981 }
+.agent-dot.fallback { background:#f59e0b }
+.agent-dot.skipped  { background:#d1d5db }
+@keyframes pulse-dot { 0%,100%{box-shadow:0 0 0 3px rgba(59,130,246,.25)} 50%{box-shadow:0 0 0 6px rgba(59,130,246,.08)} }
+.agent-name { font-size:13px;font-weight:500;flex:1;color:#0d1117 }
+.agent-name.pending  { color:#7a8494;font-weight:400 }
+.agent-badge { font-size:10px;border-radius:10px;padding:2px 8px;font-weight:500;flex-shrink:0 }
+.agent-badge.running  { background:#dbeafe;color:#1e40af }
+.agent-badge.done     { background:#dcfce7;color:#15803d }
+.agent-badge.fallback { background:#fef3c7;color:#92400e }
+.agent-badge.pending  { background:#f1f5f9;color:#94a3b8 }
+.agent-stat { font-family:'JetBrains Mono',monospace;font-size:12px;color:#0d1117;font-weight:600;min-width:44px;text-align:right;flex-shrink:0 }
+.agent-stat.dim { color:#9fadbf;font-weight:400 }
+.agent-tok  { font-family:'JetBrains Mono',monospace;font-size:11px;color:#7a8494;min-width:70px;text-align:right;flex-shrink:0 }
+.agent-bar  { width:60px;height:5px;background:#e8eaed;border-radius:3px;overflow:hidden;flex-shrink:0 }
+.agent-bar-fill { height:100%;border-radius:3px;transition:width .5s ease }
+
 </style>
 </head>
 <body>
@@ -423,6 +451,24 @@ const state = {
   humanReview: null,  // pending human review state
   history: JSON.parse(localStorage.getItem('analysisHistory') || '[]'),
 };
+
+// ── Agent metadata (display names, icons, pipeline phases) ───────────────────
+const AGENT_META = {
+  code_analysis:   { label:'Code Analysis',       icon:'ti-code',              phase:'Phase 1',  color:'#1a6cf6' },
+  security:        { label:'Security Review',      icon:'ti-shield-lock',       phase:'Phase 1',  color:'#ef4444' },
+  ast_analysis:    { label:'AST Analysis',         icon:'ti-binary-tree',       phase:'Phase 1b', color:'#8b5cf6' },
+  secrets_entropy: { label:'Entropy / Secrets',    icon:'ti-key',               phase:'Phase 1b', color:'#ec4899' },
+  taint_analysis:  { label:'Taint Analysis',       icon:'ti-arrows-diff',       phase:'Phase 1b', color:'#f97316' },
+  iac_analysis:    { label:'IaC Scan',             icon:'ti-server',            phase:'Phase 1b', color:'#14b8a6' },
+  temporal_risk:   { label:'Temporal Risk',        icon:'ti-clock-record',      phase:'Phase 1b', color:'#a855f7' },
+  schema_change:   { label:'Schema Changes',       icon:'ti-database',          phase:'Phase 1b', color:'#06b6d4' },
+  dependency:      { label:'Dependency Mapping',   icon:'ti-topology-star-3',   phase:'Phase 2',  color:'#f59e0b' },
+  test_coverage:   { label:'Test Coverage',        icon:'ti-test-pipe',         phase:'Phase 2',  color:'#10b981' },
+  interface:       { label:'Interface / API',      icon:'ti-api',               phase:'Phase 2',  color:'#3b82f6' },
+  risk:            { label:'Risk Assessment',      icon:'ti-scale',             phase:'Phase 2',  color:'#0ea5e9' },
+  remediation:     { label:'Remediation',          icon:'ti-tool',              phase:'Phase 3',  color:'#84cc16' },
+};
+const AGENT_ORDER = ['code_analysis','security','ast_analysis','secrets_entropy','taint_analysis','iac_analysis','temporal_risk','schema_change','dependency','test_coverage','interface','risk','remediation'];
 
 function saveState() {
   ['provider','authMode','token','username','workspace','baseUrl',
@@ -1117,43 +1163,44 @@ function canProceedFromTarget() {
 // ── RESULTS ──────────────────────────────────────────────────────────────────
 function renderResults(el) {
   if(!state.report) {
-    // ── Professional agent progress view ────────────────────────────────────
     el.innerHTML = `
-    <div style="max-width:680px;margin:0 auto;padding:20px 0">
+    <div style="max-width:700px;margin:0 auto;padding:20px 0">
       <!-- Header -->
-      <div style="display:flex;align-items:center;gap:16px;margin-bottom:28px;padding-bottom:20px;border-bottom:1px solid #e8eaed">
+      <div style="display:flex;align-items:center;gap:16px;margin-bottom:22px;padding-bottom:18px;border-bottom:1px solid #e8eaed">
         <div style="width:44px;height:44px;background:#0d1117;border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
           <span class="spinner" style="width:22px;height:22px;border-color:rgba(255,255,255,.2);border-top-color:#fff"></span>
         </div>
-        <div>
+        <div style="flex:1;min-width:0">
           <div style="font-size:18px;font-weight:600;color:#0d1117;font-family:'Instrument Serif',serif;letter-spacing:-.01em">Running Impact Analysis</div>
           <div style="font-size:13px;color:#7a8494;margin-top:2px" id="agent-status">Initialising agents…</div>
         </div>
-        <div style="margin-left:auto;text-align:right">
-          <div style="font-size:11px;color:#7a8494;margin-bottom:4px">Progress</div>
-          <div style="font-size:18px;font-weight:600;font-family:'JetBrains Mono',monospace;color:#0d1117" id="progress-pct">0%</div>
+        <div style="text-align:right;flex-shrink:0">
+          <div style="font-size:22px;font-weight:700;font-family:'JetBrains Mono',monospace;color:#0d1117;line-height:1" id="elapsed-counter">0s</div>
+          <div style="font-size:10px;color:#9fadbf;margin-top:2px">elapsed</div>
         </div>
       </div>
 
-      <!-- Progress bar -->
-      <div style="height:4px;background:#e8eaed;border-radius:2px;overflow:hidden;margin-bottom:24px">
-        <div id="progress-fill" style="height:100%;background:linear-gradient(to right,#1a6cf6,#0c7c4b);border-radius:2px;transition:width .5s ease;width:0%"></div>
+      <!-- Overall progress bar -->
+      <div style="margin-bottom:18px">
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:#9fadbf;margin-bottom:5px">
+          <span id="progress-label">Waiting for agents…</span>
+          <span id="progress-pct">0%</span>
+        </div>
+        <div style="height:6px;background:#e8eaed;border-radius:3px;overflow:hidden">
+          <div id="progress-fill" style="height:100%;background:linear-gradient(to right,#1a6cf6,#10b981);border-radius:3px;transition:width .6s ease;width:0%"></div>
+        </div>
       </div>
 
-      <!-- Agent pipeline cards -->
-      <div id="agent-pipeline" style="display:flex;flex-direction:column;gap:8px"></div>
-
-      <!-- Diff info -->
-      <div id="diff-info" style="display:none;margin-top:16px;padding:10px 14px;background:#f7f8fa;border:1px solid #e8eaed;border-radius:8px;font-size:12px;color:#7a8494;display:flex;align-items:center;gap:8px">
-        <i class="ti ti-file-code" style="font-size:15px"></i>
+      <!-- Diff info pill -->
+      <div id="diff-info" style="display:none;margin-bottom:14px;padding:8px 12px;background:#f7f8fa;border:1px solid #e8eaed;border-radius:7px;font-size:12px;color:#7a8494;display:flex;align-items:center;gap:7px">
+        <i class="ti ti-file-code" style="font-size:14px"></i>
         <span id="diff-info-text"></span>
       </div>
 
-      <!-- Elapsed time -->
-      <div style="margin-top:20px;text-align:center;font-size:11px;color:#9fadbf">
-        <span id="elapsed-time"></span>
-        <span style="margin-left:6px;opacity:.6">• Backend agents typically take 30–90 seconds</span>
-      </div>
+      <!-- Live agent pipeline -->
+      <div id="agent-pipeline"></div>
+
+      <div style="margin-top:14px;text-align:center;font-size:11px;color:#c0c9d8" id="sim-hint"></div>
     </div>`;
     runAnalysis();
     return;
@@ -1258,11 +1305,11 @@ function renderResults(el) {
     </div>
 
     <div class="metrics-grid">
-      ${[['Security findings',(r.security?.findings?.length||0)],['Secrets',r.security?.secrets_detected?'⚠ YES':'None'],['Blast radius',`${r.dependency?.blast_radius_score||0}/100`],['Breaking changes',(r.interface?.breaking_changes?.length||0)],['Coverage delta',`${((r.test_coverage?.coverage_delta||0)>0?'+':'')+parseFloat(r.test_coverage?.coverage_delta||0).toFixed(1)}%`],['Schema changes',(r.schema_change?.changes?.length||0)],['Deploy strategy',(r.risk?.deployment_strategy||'standard')],['Rollback',(r.risk?.rollback_feasibility||'?')]].map(([l,v])=>`<div class="metric"><div class="metric-label">${l}</div><div class="metric-value" style="font-size:16px">${v}</div></div>`).join('')}
+      ${[['Security findings',(r.security?.findings?.length||0)],['Secrets',r.security?.secrets_detected?'⚠ YES':'None'],['Blast radius',`${r.dependency?.blast_radius_score||0}/100`],['Breaking changes',(r.interface?.breaking_changes?.length||0)],['Coverage delta',`${((r.test_coverage?.coverage_delta||0)>0?'+':'')+parseFloat(r.test_coverage?.coverage_delta||0).toFixed(1)}%`],['Schema changes',(r.schema_change?.changes?.length||0)],['Total tokens',(r.token_usage||0).toLocaleString()],['Run time',r.duration_s?`${r.duration_s.toFixed(1)}s`:'—']].map(([l,v])=>`<div class="metric"><div class="metric-label">${l}</div><div class="metric-value" style="font-size:16px">${v}</div></div>`).join('')}
     </div>
 
     <div class="tabs" id="result-tabs">
-      ${['summary','security','dependency','interface','schema','remediation'].map(t=>`<button class="tab ${t==='summary'?'active':''}" onclick="switchResultTab('${t}')">${t.charAt(0).toUpperCase()+t.slice(1)}</button>`).join('')}
+      ${['summary','security','dependency','interface','schema','remediation','timings'].map(t=>`<button class="tab ${t==='summary'?'active':''}" onclick="switchResultTab('${t}')">${t==='timings'?'⏱ Timings':t.charAt(0).toUpperCase()+t.slice(1)}</button>`).join('')}
     </div>
 
     <div id="result-tab-content">${renderResultTab('summary',r)}</div>
@@ -1347,6 +1394,109 @@ function renderResultTab(tab, r) {
       ${(r.remediation?.validation_checklist||[]).map(c=>`<div class="checklist-item"><i class="ti ti-square"></i>${escHtml(c)}</div>`).join('')}
     </div>`;
 
+  if(tab==='timings') {
+    const timings = r.agent_timings || [];
+    const totalTokens = r.token_usage || 0;
+    const totalTime   = r.duration_s  || 0;
+    const maxTime     = timings.length ? Math.max(...timings.map(t=>t.duration_s||0), 0.1) : 1;
+    const maxTokens   = timings.length ? Math.max(...timings.map(t=>t.tokens||0), 1) : 1;
+
+    const AGENT_COLORS = {
+      code_analysis:'#1a6cf6', security:'#ef4444', test_coverage:'#10b981',
+      dependency:'#f59e0b',    interface:'#8b5cf6', risk:'#0ea5e9',
+      remediation:'#f97316',   schema_change:'#06b6d4',
+    };
+    const agentColor = name => AGENT_COLORS[name] || '#7a8494';
+    const shortName  = name => name.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
+
+    if(!timings.length) return `
+      <div class="card">
+        <div class="section-heading"><i class="ti ti-clock"></i>Agent timings</div>
+        <div class="empty-state"><i class="ti ti-clock-off"></i>No timing data — run analysis with a connected backend to see per-agent metrics</div>
+      </div>`;
+
+    const bars = timings.map(t => {
+      const timePct   = Math.round(((t.duration_s||0)/maxTime)*100);
+      const tokenPct  = Math.round(((t.tokens||0)/maxTokens)*100);
+      const col = agentColor(t.agent);
+      const isFallback = !t.tokens || t.tokens===0;
+      return `
+        <div style="margin-bottom:14px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
+            <div style="display:flex;align-items:center;gap:7px">
+              <div style="width:10px;height:10px;border-radius:2px;background:${col};flex-shrink:0"></div>
+              <span style="font-size:13px;font-weight:500;color:#0d1117">${shortName(t.agent)}</span>
+              ${isFallback?`<span style="font-size:10px;background:#fff8ec;border:1px solid #f59e0b;border-radius:10px;padding:1px 7px;color:#8a5200">fallback</span>`:''}
+            </div>
+            <div style="display:flex;gap:14px;font-size:12px;font-family:'JetBrains Mono',monospace">
+              <span style="color:#7a8494"><span style="color:#0d1117;font-weight:600">${(t.duration_s||0).toFixed(2)}s</span></span>
+              <span style="color:#7a8494"><span style="color:#0d1117;font-weight:600">${(t.tokens||0).toLocaleString()}</span> tok</span>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:3px">
+            <div style="display:flex;align-items:center;gap:8px">
+              <div style="width:38px;font-size:10px;color:#9fadbf;text-align:right;flex-shrink:0">time</div>
+              <div style="flex:1;height:8px;background:#f0f2f5;border-radius:4px;overflow:hidden">
+                <div style="height:100%;width:${timePct}%;background:${col};border-radius:4px;transition:width .4s ease"></div>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <div style="width:38px;font-size:10px;color:#9fadbf;text-align:right;flex-shrink:0">tokens</div>
+              <div style="flex:1;height:8px;background:#f0f2f5;border-radius:4px;overflow:hidden">
+                <div style="height:100%;width:${tokenPct}%;background:${col};opacity:.45;border-radius:4px;transition:width .4s ease"></div>
+              </div>
+            </div>
+          </div>
+        </div>`;
+    }).join('');
+
+    const rows = timings.map(t => {
+      const col = agentColor(t.agent);
+      const model = (t.model||'').replace(/^[^/]+\//,'');
+      return `<tr>
+        <td style="padding:9px 10px;display:flex;align-items:center;gap:8px">
+          <div style="width:8px;height:8px;border-radius:2px;background:${col};flex-shrink:0"></div>
+          <span style="font-size:13px">${shortName(t.agent)}</span>
+        </td>
+        <td style="padding:9px 10px;text-align:right;font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600">${(t.duration_s||0).toFixed(2)}s</td>
+        <td style="padding:9px 10px;text-align:right;font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600">${(t.tokens||0).toLocaleString()}</td>
+        <td style="padding:9px 10px;font-size:11px;color:#7a8494;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(model)}</td>
+      </tr>`;
+    }).join('');
+
+    return `
+      <div class="card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
+          <div class="section-heading" style="margin-bottom:0"><i class="ti ti-clock-bolt"></i>Agent timings &amp; token usage</div>
+          <div style="display:flex;gap:16px;font-size:12px;color:#7a8494">
+            <span>Total: <strong style="color:#0d1117;font-family:'JetBrains Mono',monospace">${totalTime.toFixed(1)}s</strong></span>
+            <span>Tokens: <strong style="color:#0d1117;font-family:'JetBrains Mono',monospace">${totalTokens.toLocaleString()}</strong></span>
+          </div>
+        </div>
+        <div style="margin-bottom:20px">${bars}</div>
+        <div style="border-top:1px solid #e8eaed;padding-top:14px">
+          <table style="width:100%;border-collapse:collapse">
+            <thead>
+              <tr style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#9fadbf">
+                <th style="padding:6px 10px;text-align:left;font-weight:500">Agent</th>
+                <th style="padding:6px 10px;text-align:right;font-weight:500">Time</th>
+                <th style="padding:6px 10px;text-align:right;font-weight:500">Tokens</th>
+                <th style="padding:6px 10px;text-align:left;font-weight:500">Model</th>
+              </tr>
+            </thead>
+            <tbody style="border-top:1px solid #e8eaed">${rows}
+              <tr style="border-top:2px solid #e8eaed;background:#f7f8fa">
+                <td style="padding:9px 10px;font-size:13px;font-weight:600">Total</td>
+                <td style="padding:9px 10px;text-align:right;font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:700">${totalTime.toFixed(2)}s</td>
+                <td style="padding:9px 10px;text-align:right;font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:700">${totalTokens.toLocaleString()}</td>
+                <td style="padding:9px 10px;font-size:11px;color:#7a8494">— wall clock</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>`;
+  }
+
   return '';
 }
 
@@ -1367,165 +1517,278 @@ async function fetchRealDiff(target) {
   }
 }
 
-async function runAnalysis() {
-  const AGENTS = ['Fetching diff','Code Analysis','Security Review','Dependency Mapping','Test Coverage','Interface / API','Schema Change','Risk Assessment','Remediation'];
-  const listEl = document.getElementById('agent-list');
-  const statusEl = document.getElementById('agent-status');
-  const progEl = document.getElementById('progress-fill');
+// ── Live pipeline renderer ────────────────────────────────────────────────────
+function renderLivePipeline(agentMap) {
+  // agentMap: { agent_key: {status, tokens, duration_s, elapsed_s, model, fallback} }
+  const phases = ['Phase 1','Phase 1b','Phase 2','Phase 3'];
+  const byPhase = {};
+  phases.forEach(p => byPhase[p] = []);
 
-  function updateAgentList(currentIdx) {
-    if(!listEl) return;
-    listEl.innerHTML = AGENTS.map((a,i) => {
-      const done = i < currentIdx; const active = i === currentIdx;
-      return `<div style="display:flex;align-items:center;gap:8px;font-size:12px;color:${done?'#0c7c4b':active?'#0d1117':'#7a8494'}">
-        ${done?'<i class="ti ti-circle-check" style="font-size:14px"></i>':active?'<span class="spinner" style="width:14px;height:14px"></span>':'<i class="ti ti-circle" style="font-size:14px"></i>'}
-        ${a}
+  AGENT_ORDER.forEach(key => {
+    const meta = AGENT_META[key];
+    if(!meta) return;
+    const entry = agentMap[key] || { status:'pending', tokens:0, duration_s:0, elapsed_s:0 };
+    (byPhase[meta.phase] || byPhase['Phase 2']).push({ key, meta, entry });
+  });
+
+  const maxTok = Math.max(1, ...Object.values(agentMap).map(e => e.tokens||0));
+
+  let html = '';
+  phases.forEach(phase => {
+    const rows = byPhase[phase];
+    if(!rows || !rows.length) return;
+    html += `<div class="pipeline-phase">${phase}</div>`;
+    rows.forEach(({ key, meta, entry }) => {
+      const st = entry.status;
+      const isRunning  = st === 'running';
+      const isDone     = st === 'done';
+      const isFallback = st === 'fallback';
+      const isPending  = st === 'pending';
+
+      const timeVal = isRunning
+        ? `<span class="agent-stat" data-elapsed="${key}" style="color:#1a6cf6">${(entry.elapsed_s||0).toFixed(1)}s</span>`
+        : (isDone||isFallback)
+          ? `<span class="agent-stat">${(entry.duration_s||0).toFixed(2)}s</span>`
+          : `<span class="agent-stat dim">—</span>`;
+
+      const tokVal = (isDone && entry.tokens)
+        ? `<span class="agent-tok">${entry.tokens.toLocaleString()} tok</span>`
+        : isFallback
+          ? `<span class="agent-tok" style="color:#f59e0b">fallback</span>`
+          : `<span class="agent-tok" style="color:#e8eaed">—</span>`;
+
+      const tokPct = isDone ? Math.round((entry.tokens/maxTok)*100) : 0;
+      const barFill = isDone
+        ? `<div class="agent-bar-fill" style="width:${tokPct}%;background:${meta.color}"></div>`
+        : isRunning
+          ? `<div class="agent-bar-fill" style="width:30%;background:#bfdbfe;animation:pulse-dot 1.2s infinite"></div>`
+          : '';
+
+      html += `<div class="agent-row ${isPending?'':''+st}">
+        <div class="agent-dot ${st}"></div>
+        <i class="ti ${meta.icon}" style="font-size:14px;color:${isDone?meta.color:isFallback?'#f59e0b':isRunning?'#3b82f6':'#d1d5db'};flex-shrink:0"></i>
+        <span class="agent-name ${isPending?'pending':''}">${meta.label}</span>
+        ${isRunning ? `<span class="agent-badge running">running</span>` : ''}
+        ${isDone    ? `<span class="agent-badge done">done</span>` : ''}
+        ${isFallback? `<span class="agent-badge fallback">fallback</span>` : ''}
+        ${timeVal}
+        ${tokVal}
+        <div class="agent-bar">${barFill}</div>
       </div>`;
-    }).join('');
-  }
+    });
+  });
+  return html;
+}
+
+async function runAnalysis() {
+  const statusEl  = () => document.getElementById('agent-status');
+  const progEl    = () => document.getElementById('progress-fill');
+  const progLbl   = () => document.getElementById('progress-label');
+  const progPct   = () => document.getElementById('progress-pct');
+  const pipeEl    = () => document.getElementById('agent-pipeline');
+  const counterEl = () => document.getElementById('elapsed-counter');
+  const diffInfoEl= () => document.getElementById('diff-info');
+  const diffTxtEl = () => document.getElementById('diff-info-text');
+  const simHint   = () => document.getElementById('sim-hint');
 
   const target = buildAnalysisTarget();
+  const headers = { 'Content-Type':'application/json' };
+  if(state.backendKey) headers['X-API-Key'] = state.backendKey;
 
-  // ── Step 0: Fetch the real diff ────────────────────────────────────────────
-  updateAgentList(0);
-  if(statusEl) statusEl.textContent = 'Fetching diff from ' + (state.provider === 'github' ? 'GitHub' : 'Bitbucket') + '...';
-  if(progEl) progEl.style.width = '8%';
+  // Live wall-clock ticker
+  const runStart = Date.now();
+  const clockTimer = setInterval(() => {
+    const el = counterEl();
+    if(el) el.textContent = ((Date.now()-runStart)/1000).toFixed(0)+'s';
+  }, 500);
 
-  const diffText = await fetchRealDiff(target);
+  // ── Step 0: Fetch diff ─────────────────────────────────────────────────────
+  if(statusEl()) statusEl().textContent = 'Fetching diff…';
+  if(progEl())   progEl().style.width   = '5%';
+  if(progLbl())  progLbl().textContent  = 'Fetching diff…';
+
+  const diffText  = await fetchRealDiff(target);
   const diffLines = diffText ? diffText.split('\n').length : 0;
-  const diffKb = diffText ? Math.round(diffText.length / 1024) : 0;
+  const diffKb    = diffText ? Math.round(diffText.length/1024) : 0;
 
-  // Show diff size info
-  if(listEl) {
-    const diffInfo = document.createElement('div');
-    diffInfo.style.cssText = 'font-size:11px;color:#7a8494;margin-top:4px;margin-bottom:8px;padding-left:22px';
-    diffInfo.textContent = diffText
-      ? `✓ Fetched ${diffLines.toLocaleString()} lines (${diffKb}KB)`
-      : '⚠ No diff fetched — check token permissions';
-    if(listEl.parentNode) listEl.parentNode.insertBefore(diffInfo, listEl);
-  }
+  const di = diffInfoEl();
+  if(di) { di.style.display='flex'; }
+  if(diffTxtEl()) diffTxtEl().textContent = diffText
+    ? `Diff fetched — ${diffLines.toLocaleString()} lines · ${diffKb} KB`
+    : '⚠ No diff — check token permissions';
+
+  // Initialise pipeline with all agents pending
+  const agentMap = {};
+  if(pipeEl()) pipeEl().innerHTML = renderLivePipeline(agentMap);
 
   // ── Try real backend ───────────────────────────────────────────────────────
   if(state.backendUrl) {
     try {
-      for(let i=1;i<AGENTS.length;i++) {
-        updateAgentList(i);
-        if(statusEl) statusEl.textContent = AGENTS[i]+'...';
-        if(progEl) progEl.style.width = Math.round(8 + (i/AGENTS.length)*77)+'%';
-        await new Promise(r=>setTimeout(r,250+Math.random()*150));
-      }
-      const headers = { 'Content-Type':'application/json' };
-      if(state.backendKey) headers['X-API-Key'] = state.backendKey;
-
       const payload = {
-        repo_url:     repoName(state.primaryRepo),
-        source_ref:   target.source,
-        target_ref:   target.target,
-        change_type:  target.changeType,
-        diff_text:    diffText,
-        llm_config: getModelConfig(),     // ← per-request model selection
-        metadata: {
-          provider:        state.provider,
-          connected_repos: state.connectedRepos.map(repoName),
-          diff_lines:      diffLines,
-          ...target.meta
-        }
+        repo_url:    repoName(state.primaryRepo),
+        source_ref:  target.source,
+        target_ref:  target.target,
+        change_type: target.changeType,
+        diff_text:   diffText,
+        llm_config:  getModelConfig(),
+        metadata: { provider:state.provider, connected_repos:state.connectedRepos.map(repoName), diff_lines:diffLines, ...target.meta }
       };
 
-      const r = await fetch(state.backendUrl+'/api/v1/analyse', { method:'POST', headers, body:JSON.stringify(payload) });
-      if(r.status === 401) throw new Error('Backend returned 401 — set SKIP_AUTH=true in .env');
-      if(!r.ok) throw new Error(`Backend error ${r.status}`);
+      if(statusEl()) statusEl().textContent = 'Submitting to backend…';
+      if(progEl())   progEl().style.width   = '10%';
 
-      const d = await r.json();
-      const rid = d.request_id;
-      if(progEl) progEl.style.width = '90%';
+      const submitResp = await fetch(state.backendUrl+'/api/v1/analyse', { method:'POST', headers, body:JSON.stringify(payload) });
+      if(submitResp.status===401) throw new Error('Backend 401 — set SKIP_AUTH=true in .env');
+      if(!submitResp.ok)          throw new Error(`Backend error ${submitResp.status}`);
 
+      const { request_id: rid } = await submitResp.json();
+      state.lastRequestId = rid;
+      if(statusEl()) statusEl().textContent = 'Agents running…';
+      if(progEl())   progEl().style.width   = '15%';
+
+      // Progress poller — refreshes agent rows every 1.5 s
+      let lastProg = {};
+      const progTimer = setInterval(async () => {
+        try {
+          const pr = await fetch(state.backendUrl+'/api/v1/progress/'+rid, {headers});
+          if(!pr.ok) return;
+          const { agents } = await pr.json();
+          agents.forEach(a => { lastProg[a.agent] = a; });
+
+          const done     = Object.values(lastProg).filter(a=>a.status==='done'||a.status==='fallback').length;
+          const running  = Object.values(lastProg).filter(a=>a.status==='running').length;
+          const total    = AGENT_ORDER.length;
+          const pct      = Math.round(15 + (done/total)*75);
+
+          if(progEl())   progEl().style.width  = pct+'%';
+          if(progPct())  progPct().textContent  = pct+'%';
+          if(progLbl())  progLbl().textContent  = running
+            ? `Running: ${agents.filter(a=>a.status==='running').map(a=>AGENT_META[a.agent]?.label||a.agent).join(', ')}`
+            : done ? `${done}/${total} agents complete` : 'Agents initialising…';
+          if(statusEl()) statusEl().textContent = `${done} of ${total} agents complete`;
+          if(pipeEl())   pipeEl().innerHTML     = renderLivePipeline(lastProg);
+        } catch(_) {}
+      }, 1500);
+
+      // Tick elapsed timers for running agents
+      const tickTimer = setInterval(() => {
+        document.querySelectorAll('[data-elapsed]').forEach(el => {
+          const key   = el.dataset.elapsed;
+          const entry = lastProg[key];
+          if(entry && entry.status==='running' && entry.elapsed_s != null) {
+            el.textContent = (entry.elapsed_s + (Date.now()-runStart)/1000 - (lastProg._pollAge||0)).toFixed(1)+'s';
+          }
+        });
+      }, 200);
+
+      // Report poller — checks for completed report every 2 s
       let report = null;
-      const pollStart = Date.now();
-      for(let attempt=0;attempt<150;attempt++) {  // poll up to 5 minutes
-        await new Promise(res=>setTimeout(res,2000));
-        const elapsed = Math.round((Date.now()-pollStart)/1000);
-        if(statusEl) statusEl.textContent = `Agents running… ${elapsed}s (agents may take 30–90s)`;
-
+      for(let attempt=0; attempt<150; attempt++) {
+        await new Promise(r=>setTimeout(r,2000));
         try {
           const poll = await fetch(state.backendUrl+'/api/v1/report/'+rid+'?fmt=full', {headers});
-          if(poll.status === 200) {
-            report = await poll.json();
-            // If report has errors array with content and no useful data, still show it
-            break;
-          }
-          // 404 = still running (not saved yet) → keep polling, don't break early
-          // 202 = explicitly "still running" status → keep polling
-        } catch(pollErr) {
-          console.warn('Poll error (will retry):', pollErr.message);
-        }
+          if(poll.status===200) { report = await poll.json(); break; }
+        } catch(_) {}
       }
+
+      clearInterval(progTimer);
+      clearInterval(tickTimer);
+      clearInterval(clockTimer);
+
       if(report) {
+        // Final progress snapshot before switching view
+        try {
+          const finalPr = await fetch(state.backendUrl+'/api/v1/progress/'+rid, {headers});
+          if(finalPr.ok) {
+            const { agents } = await finalPr.json();
+            agents.forEach(a => { lastProg[a.agent] = a; });
+            if(pipeEl()) pipeEl().innerHTML = renderLivePipeline(lastProg);
+          }
+        } catch(_) {}
+
+        if(progEl())  progEl().style.width  = '100%';
+        if(progPct()) progPct().textContent  = '100%';
         state.report = normalizeReport(report);
-        // If the backend saved an error report, show a warning but still display
-        if(report.errors && report.errors.length && !report.risk) {
-          console.warn('Backend returned error report:', report.errors);
-        }
         saveHistory(state.report, target);
-        if(progEl) progEl.style.width='100%';
-        updateAgentList(AGENTS.length);
-        setTimeout(()=>renderView('results'),300);
+        await new Promise(r=>setTimeout(r,600));
+        renderView('results');
         return;
-      } else {
-        // Timed out waiting — fall through to AI simulation
-        console.warn('Timed out waiting for backend report after 5 minutes');
       }
+      throw new Error('Timed out waiting for report after 5 minutes');
+
     } catch(e) {
-      const isCORSorNetwork = e.message === 'Failed to fetch' || e.message.includes('NetworkError') || e.message.includes('CORS');
-      console.warn(isCORSorNetwork
-        ? 'Backend unreachable — using AI simulation'
-        : 'Backend error, using AI simulation: '+e.message);
+      clearInterval(clockTimer);
+      const isNetwork = e.message==='Failed to fetch'||e.message.includes('NetworkError')||e.message.includes('CORS');
+      if(!isNetwork) console.warn('Backend error:', e.message);
+      if(isNetwork) {
+        if(simHint()) simHint().innerHTML = `<span style="background:#fff8ec;border:1px solid #f59e0b;border-radius:7px;padding:6px 12px;color:#92400e;display:inline-flex;align-items:center;gap:6px"><i class="ti ti-info-circle"></i>Backend unreachable — switching to AI simulation</span>`;
+      }
     }
   }
 
   // ── AI simulation fallback ─────────────────────────────────────────────────
-  if(statusEl) statusEl.textContent = 'Running AI analysis...';
-  const notice = document.getElementById('agent-list');
-  if(notice && !document.getElementById('sim-notice')) {
-    const nb = document.createElement('div');
-    nb.id = 'sim-notice';
-    nb.style.cssText = 'margin-top:12px;font-size:12px;background:#fff8ec;border:1px solid #8a5200;border-radius:8px;padding:10px 14px;color:#8a5200;display:flex;align-items:flex-start;gap:8px;text-align:left;max-width:360px;margin-left:auto;margin-right:auto';
-    nb.innerHTML = '<i class="ti ti-info-circle" style="flex-shrink:0;margin-top:1px"></i><div><strong>AI Simulation mode</strong> — backend unreachable.<br/><span style="opacity:0.8">Ensure backend is running with <code>SKIP_AUTH=true</code>.</span></div>';
-    notice.parentNode && notice.parentNode.insertBefore(nb, notice.nextSibling);
+  if(simHint()) simHint().innerHTML = `<span style="background:#fff8ec;border:1px solid #f59e0b;border-radius:7px;padding:6px 12px;color:#92400e;display:inline-flex;align-items:center;gap:6px"><i class="ti ti-info-circle"></i><strong>AI Simulation mode</strong> — no backend. Set SKIP_AUTH=true in .env to use the real pipeline.</span>`;
+
+  // Simulate agents running one phase at a time
+  const simPhases = [
+    ['code_analysis','security'],
+    ['ast_analysis','secrets_entropy','taint_analysis','iac_analysis','temporal_risk','schema_change'],
+    ['dependency','test_coverage','interface','risk'],
+    ['remediation'],
+  ];
+  let simTok = 0;
+  for(const phase of simPhases) {
+    // Mark all as running
+    phase.forEach(k => { agentMap[k] = { status:'running', tokens:0, duration_s:0, elapsed_s:0 }; });
+    if(pipeEl()) pipeEl().innerHTML = renderLivePipeline(agentMap);
+    if(statusEl()) statusEl().textContent = `Running: ${phase.map(k=>AGENT_META[k]?.label||k).join(', ')}…`;
+
+    const phaseDelay = 600 + Math.random()*600;
+    await new Promise(r=>setTimeout(r,phaseDelay));
+
+    // Mark each done with simulated stats
+    phase.forEach(k => {
+      const tok = k.includes('analysis')||k==='security'||k==='risk' ? 800+Math.floor(Math.random()*600) : 0;
+      simTok += tok;
+      agentMap[k] = { status: tok?'done':'fallback', tokens:tok, duration_s: parseFloat((phaseDelay/1000*(0.7+Math.random()*0.5)).toFixed(2)), elapsed_s:0, model: tok?'anthropic/claude-sonnet-4-6':'' };
+    });
+    if(pipeEl()) pipeEl().innerHTML = renderLivePipeline(agentMap);
+
+    const done  = Object.values(agentMap).filter(a=>a.status==='done'||a.status==='fallback').length;
+    const pct   = Math.round(10+(done/AGENT_ORDER.length)*80);
+    if(progEl())  progEl().style.width  = pct+'%';
+    if(progPct()) progPct().textContent  = pct+'%';
   }
 
-  for(let i=1;i<AGENTS.length;i++) {
-    updateAgentList(i);
-    if(statusEl) statusEl.textContent = AGENTS[i]+'...';
-    if(progEl) progEl.style.width = Math.round(8 + (i/AGENTS.length)*77)+'%';
-    await new Promise(r=>setTimeout(r,400+Math.random()*300));
-  }
-  if(progEl) progEl.style.width='92%';
+  if(progEl())  progEl().style.width  = '92%';
 
   try {
+    if(statusEl()) statusEl().textContent = 'Generating analysis with AI…';
     const r = await fetch('https://api.anthropic.com/v1/messages',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({
-        model:'claude-sonnet-4-20250514',
-        max_tokens:1500,
-        messages:[{role:'user',content:buildAnalysisPrompt(target, diffText)}]
-      })
+      body:JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:1500,
+        messages:[{role:'user',content:buildAnalysisPrompt(target, diffText)}] })
     });
     if(!r.ok) throw new Error('Anthropic API error: '+r.status);
     const d = await r.json();
     let text = (d.content&&d.content[0]&&d.content[0].text)||'{}';
-    text = text.replace(/```json[\s\S]*?```|```[\s\S]*?```/g, m => m.slice(m.indexOf('\n')+1, m.lastIndexOf('```'))).trim();
+    text = text.replace(/```json[\s\S]*?```|```[\s\S]*?```/g, m=>m.slice(m.indexOf('\n')+1,m.lastIndexOf('```'))).trim();
     if(text.startsWith('```')) text = text.replace(/^```\w*\n?/,'').replace(/```$/,'').trim();
     state.report = JSON.parse(text);
-    saveHistory(state.report, target);
-    updateAgentList(AGENTS.length);
-    if(progEl) progEl.style.width='100%';
-    setTimeout(()=>renderView('results'),400);
   } catch(e) {
+    clearInterval(clockTimer);
     const el = document.getElementById('view-results');
-    if(el) el.innerHTML = `<div class="err-msg" style="margin:20px"><i class="ti ti-alert-circle"></i><div><strong>Analysis failed:</strong> ${escHtml(e.message)}<br/><span style="font-size:11px;opacity:0.8">Check your backend is running and ANTHROPIC_API_KEY is correct in .env</span></div></div><div style="display:flex;justify-content:flex-end;gap:8px;margin:0 20px"><button class="btn" onclick="showView('target')"><i class="ti ti-arrow-left"></i>Back</button><button class="btn btn-primary" onclick="state.report=null;renderView('results')"><i class="ti ti-refresh"></i>Retry</button></div>`;
+    if(el) el.innerHTML = `<div class="err-msg" style="margin:20px"><i class="ti ti-alert-circle"></i><div><strong>Analysis failed:</strong> ${escHtml(e.message)}<br/><span style="font-size:11px;opacity:.8">Check your backend is running and ANTHROPIC_API_KEY is correct in .env</span></div></div><div style="display:flex;justify-content:flex-end;gap:8px;margin:0 20px"><button class="btn" onclick="showView('target')"><i class="ti ti-arrow-left"></i>Back</button><button class="btn btn-primary" onclick="state.report=null;renderView('results')"><i class="ti ti-refresh"></i>Retry</button></div>`;
+    return;
   }
+
+  clearInterval(clockTimer);
+  saveHistory(state.report, target);
+  if(progEl())  progEl().style.width  = '100%';
+  if(progPct()) progPct().textContent  = '100%';
+  await new Promise(r=>setTimeout(r,400));
+  renderView('results');
 }
 
 function buildAnalysisTarget() {
@@ -1707,6 +1970,8 @@ function normalizeReport(r) {
     risk:           riskObj,
     remediation:    remNorm,
     token_usage:    r.total_tokens || (Array.isArray(r.token_usage) ? r.token_usage.reduce((s,u)=>s+(u.tokens_used||0),0) : r.token_usage) || 0,
+    duration_s:     r.duration_s || 0,
+    agent_timings:  Array.isArray(r.agent_timings) ? r.agent_timings : [],
     errors:         r.errors || [],
   };
 }

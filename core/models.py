@@ -7,7 +7,7 @@ Every agent input/output is a Pydantic model defined here.
 from __future__ import annotations
 from enum import Enum
 from typing import Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from datetime import datetime
 
 
@@ -43,14 +43,20 @@ class GateDecision(str, Enum):
 
 
 class AgentName(str, Enum):
-    ORCHESTRATOR  = "orchestrator"
-    CODE_ANALYSIS = "code_analysis"
-    DEPENDENCY    = "dependency"
-    SECURITY      = "security"
-    TEST_COVERAGE = "test_coverage"
-    INTERFACE     = "interface"
-    RISK          = "risk"
-    REMEDIATION   = "remediation"
+    ORCHESTRATOR    = "orchestrator"
+    CODE_ANALYSIS   = "code_analysis"
+    SECURITY        = "security"
+    AST_ANALYSIS    = "ast_analysis"
+    SECRETS_ENTROPY = "secrets_entropy"
+    TAINT_ANALYSIS  = "taint_analysis"
+    IAC_ANALYSIS    = "iac_analysis"
+    TEMPORAL_RISK   = "temporal_risk"
+    SCHEMA_CHANGE   = "schema_change"
+    DEPENDENCY      = "dependency"
+    TEST_COVERAGE   = "test_coverage"
+    INTERFACE       = "interface"
+    RISK            = "risk"
+    REMEDIATION     = "remediation"
 
 
 class DeploymentStrategy(str, Enum):
@@ -90,6 +96,8 @@ class PRMetadata(BaseModel):
 
 class AnalysisRequest(BaseModel):
     """Canonical input to the orchestrator."""
+    model_config = ConfigDict(protected_namespaces=())
+
     request_id:   str
     change_type:  ChangeType
     repo_url:     str
@@ -116,9 +124,12 @@ class AnalysisRequest(BaseModel):
 
 class AgentResultBase(BaseModel):
     """Base fields present on every agent result."""
-    token_usage:   int  = 0
-    model_used:    str  = ""
-    fallback_used: bool = False
+    model_config = ConfigDict(protected_namespaces=())
+
+    token_usage:   int   = 0
+    model_used:    str   = ""
+    fallback_used: bool  = False
+    duration_s:    float = 0.0   # wall-clock seconds for this agent's run
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -335,14 +346,31 @@ class TemporalRiskResult(AgentResultBase):
     window_days:        int = 30
 
 
-# ── Update AnalysisReport to include new agents ────────────────────────────
+class SchemaChange(BaseModel):
+    file_path:    str
+    change_type:  str        # add_column | drop_column | add_table | drop_table | alter_column | add_index | drop_index | rename
+    table_name:   str        = ""
+    column_name:  str        = ""
+    severity:     RiskLevel  = RiskLevel.MEDIUM
+    reversible:   bool       = True
+    description:  str        = ""
+    rollback_sql: str        = ""
 
+class SchemaChangeResult(AgentResultBase):
+    changes:           list[SchemaChange] = []
+    has_destructive:   bool      = False   # DROP TABLE / DROP COLUMN
+    has_irreversible:  bool      = False   # changes with no clean rollback
+    migration_files:   list[str] = []
+    rollback_risk:     RiskLevel = RiskLevel.LOW
+    gate_contribution: str       = "HOLD"
+    summary:           str       = ""
 
 
 class AgentTokenUsage(BaseModel):
     agent:       AgentName
     tokens_used: int
     model:       str
+    duration_s:  float = 0.0
 
 
 class AnalysisReport(BaseModel):
@@ -351,6 +379,7 @@ class AnalysisReport(BaseModel):
     repo_url:     str
     source_ref:   str
     target_ref:   str
+    pr:           PRMetadata = Field(default_factory=PRMetadata)
     phase_run:    int = 1
     completed_at: datetime = Field(default_factory=datetime.utcnow)
     duration_s:   float = 0.0
@@ -370,6 +399,7 @@ class AnalysisReport(BaseModel):
     taint_analysis:   TaintAnalysisResult   | None = None
     iac_analysis:     IaCAnalysisResult     | None = None
     temporal_risk:    TemporalRiskResult    | None = None
+    schema_change:    SchemaChangeResult    | None = None
 
     # Phase 3
     risk:          RiskResult         | None = None

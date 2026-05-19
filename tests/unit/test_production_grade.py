@@ -353,6 +353,106 @@ class TestReportFormatter:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  Schema Change Agent
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSchemaChangeAgent:
+
+    def _agent(self):
+        from agents.schema_change_agent import SchemaChangeAgent
+        return SchemaChangeAgent(api_key="test")
+
+    def _req_with_sql(self, sql: str) -> AnalysisRequest:
+        return AnalysisRequest(
+            request_id=str(uuid.uuid4()),
+            change_type=ChangeType.PR,
+            repo_url="https://github.com/bank/x",
+            source_ref="feature",
+            target_ref="main",
+            hunks=[DiffHunk(file_path="db/migrations/V2__add_table.sql",
+                            additions=3, deletions=0, content=f"+{sql}")],
+        )
+
+    def test_no_schema_changes_returns_approve(self):
+        req = AnalysisRequest(
+            request_id=str(uuid.uuid4()),
+            change_type=ChangeType.PR,
+            repo_url="https://github.com/bank/x",
+            source_ref="feature", target_ref="main",
+            hunks=[DiffHunk(file_path="src/Service.java", additions=5, deletions=2,
+                            content="+public void doSomething() {}")],
+        )
+        from core.token_manager import TokenBudgetManager
+        budget = TokenBudgetManager(req.request_id)
+        result = self._agent().run(req, budget, {})
+        assert result.gate_contribution == "APPROVE"
+        assert result.changes == []
+
+    def test_drop_table_is_block(self):
+        req = self._req_with_sql("DROP TABLE payments;")
+        budget = TokenBudgetManager(req.request_id)
+        result = self._agent().fallback_result(req)
+        assert result.has_destructive is True
+        assert result.has_irreversible is True
+        assert result.gate_contribution == "BLOCK"
+        assert any(c.change_type == "drop_table" for c in result.changes)
+
+    def test_drop_column_is_critical(self):
+        req = self._req_with_sql("ALTER TABLE accounts DROP COLUMN balance;")
+        result = self._agent().fallback_result(req)
+        assert result.has_destructive is True
+        assert any(c.severity.value == "critical" for c in result.changes)
+
+    def test_create_table_is_low_risk(self):
+        req = self._req_with_sql("CREATE TABLE audit_log (id INT PRIMARY KEY);")
+        result = self._agent().fallback_result(req)
+        assert not result.has_destructive
+        assert any(c.change_type == "add_table" for c in result.changes)
+        assert result.gate_contribution == "HOLD"
+
+    def test_agent_name_is_schema_change(self):
+        from core.models import AgentName
+        assert self._agent().agent_name == AgentName.SCHEMA_CHANGE
+
+    def test_analysis_report_has_schema_change_field(self):
+        from core.models import SchemaChangeResult, RiskLevel
+        report = _make_report()
+        assert report.schema_change is None
+        report.schema_change = SchemaChangeResult(
+            summary="1 change",
+            has_destructive=True,
+            gate_contribution="BLOCK",
+        )
+        assert report.schema_change.has_destructive is True
+
+    def test_analysis_report_has_pr_field(self):
+        from core.models import PRMetadata
+        report = _make_report()
+        assert report.pr.pr_number == 0
+        report.pr = PRMetadata(pr_number=42, pr_title="Fix payment flow", author="alice")
+        assert report.pr.pr_number == 42
+
+    def test_summary_json_includes_schema_metrics(self):
+        from output.report_formatter import to_summary_json
+        from core.models import SchemaChangeResult, SchemaChange, RiskLevel
+        report = _make_report()
+        report.schema_change = SchemaChangeResult(
+            changes=[SchemaChange(file_path="m.sql", change_type="drop_table",
+                                  severity=RiskLevel.CRITICAL, reversible=False)],
+            has_destructive=True,
+        )
+        summary = to_summary_json(report)
+        assert summary["metrics"]["schema_changes"] == 1
+        assert summary["metrics"]["schema_destructive"] is True
+
+    def test_truncate_detected_as_destructive(self):
+        req = self._req_with_sql("TRUNCATE TABLE transactions;")
+        result = self._agent().fallback_result(req)
+        assert result.has_destructive is True
+        assert result.has_irreversible is True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  Settings new fields
 # ─────────────────────────────────────────────────────────────────────────────
 

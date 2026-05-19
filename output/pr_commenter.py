@@ -26,7 +26,7 @@ class PRCommenter:
 
     def post(self, report: AnalysisReport) -> bool:
         """Post or update the bot comment. Returns True on success."""
-        pr_id = report.metadata.get("pr_id") if hasattr(report, "metadata") else None
+        pr_id = report.pr.pr_number if report.pr.pr_number else None
         if not pr_id:
             pr_id = report.request_id   # fallback for direct requests
 

@@ -20,8 +20,9 @@ from agents.base_agent import BaseAgent
 
 class TestCoverageAgent(BaseAgent[TestCoverageResult]):
 
-    agent_name   = AgentName.TEST_COVERAGE
-    output_model = TestCoverageResult
+    agent_name        = AgentName.TEST_COVERAGE
+    output_model      = TestCoverageResult
+    output_token_cap  = 5000   # stubs are verbose; allow more output than the default 4000
 
     system_prompt = (
         "You are a QA architect specialising in enterprise banking test strategy.\n"
@@ -30,7 +31,8 @@ class TestCoverageAgent(BaseAgent[TestCoverageResult]):
         "  • uncovered_paths: new code paths without corresponding tests\n"
         "    Each entry: file_path, uncovered_path (method or branch), suggested_test (1 sentence)\n"
         "  • regression_risk: low | medium | high | critical\n"
-        "  • generated_stubs: 2-4 complete JUnit 5 or pytest test method skeletons\n\n"
+        "  • generated_stubs: 1-2 SHORT test skeletons (method signature + 3 comment lines max)\n"
+        "    Keep each stub under 8 lines. No imports, no class wrapper.\n\n"
         "Focus on: transaction logic, error paths, boundary conditions, idempotency, rollback.\n"
         "Output ONLY compact JSON. No prose."
     )

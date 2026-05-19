@@ -23,34 +23,11 @@ import re
 from typing import Any
 
 from core.models import (
-    AgentName, AnalysisRequest, AgentResultBase, RiskLevel,
+    AgentName, AnalysisRequest, RiskLevel,
+    SchemaChange, SchemaChangeResult,
 )
 from core.token_manager import trim_diff_for_budget
 from agents.base_agent import BaseAgent
-from pydantic import BaseModel
-
-
-# ── Output model ──────────────────────────────────────────────────────────────
-
-class SchemaChange(BaseModel):
-    file_path:   str
-    change_type: str   # add_column | drop_column | add_table | drop_table | alter_column | add_index | drop_index | rename
-    table_name:  str   = ""
-    column_name: str   = ""
-    severity:    RiskLevel = RiskLevel.MEDIUM
-    reversible:  bool  = True
-    description: str   = ""
-    rollback_sql: str  = ""
-
-
-class SchemaChangeResult(AgentResultBase):
-    changes:           list[SchemaChange] = []
-    has_destructive:   bool = False    # DROP TABLE / DROP COLUMN
-    has_irreversible:  bool = False    # changes with no clean rollback
-    migration_files:   list[str] = []
-    rollback_risk:     RiskLevel = RiskLevel.LOW
-    gate_contribution: str = "HOLD"   # schema changes always HOLD unless APPROVE explicitly
-    summary:           str = ""
 
 
 # ── Regex DDL patterns ────────────────────────────────────────────────────────
@@ -76,7 +53,7 @@ _MIGRATION_PATHS = re.compile(
 
 class SchemaChangeAgent(BaseAgent[SchemaChangeResult]):
 
-    agent_name   = AgentName.CODE_ANALYSIS   # reuse slot; add to AgentName enum in production
+    agent_name   = AgentName.SCHEMA_CHANGE
     output_model = SchemaChangeResult
 
     system_prompt = (
