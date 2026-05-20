@@ -85,8 +85,14 @@ def init_tracing(otlp_endpoint: str = "") -> None:
         return
     provider = TracerProvider()
     if otlp_endpoint:
-        exporter = OTLPSpanExporter(endpoint=otlp_endpoint)
+        exporter = OTLPSpanExporter(endpoint=otlp_endpoint, timeout=5)
         provider.add_span_processor(BatchSpanProcessor(exporter))
+        # BatchSpanProcessor logs retries at WARNING when the collector is
+        # unreachable.  Demote those messages to ERROR so a missing/offline
+        # Jaeger instance doesn't flood application logs.
+        for _ln in ("opentelemetry.sdk.trace.export",
+                    "opentelemetry.exporter.otlp.proto.grpc.exporter"):
+            logging.getLogger(_ln).setLevel(logging.ERROR)
     trace.set_tracer_provider(provider)
     _tracer = trace.get_tracer("impact-analyzer")
     log.info("OpenTelemetry tracing initialised (endpoint=%s)", otlp_endpoint or "none")

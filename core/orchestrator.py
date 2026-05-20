@@ -39,6 +39,7 @@ from agents.taint_analysis_agent   import TaintAnalysisAgent
 from agents.iac_analysis_agent     import IaCAnalysisAgent
 from agents.temporal_risk_agent    import TemporalRiskAgent
 from agents.schema_change_agent    import SchemaChangeAgent
+from agents.qa_scenarios_agent     import QAScenariosAgent
 from governance.audit_logger    import make_audit_logger, NullAuditLogger
 from governance.circuit_breaker import get_breaker_registry
 from governance.diff_cache      import get_diff_cache
@@ -99,6 +100,7 @@ class ImpactAnalysisOrchestrator:
         self._iac      = IaCAnalysisAgent(api_key)
         self._temporal = TemporalRiskAgent(api_key)
         self._schema   = SchemaChangeAgent(api_key)
+        self._qa       = QAScenariosAgent(api_key)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -187,6 +189,7 @@ class ImpactAnalysisOrchestrator:
         report.iac_analysis    = p1b.get("iac")
         report.temporal_risk   = p1b.get("temporal")
         report.schema_change   = p1b.get("schema")
+        report.qa_scenarios    = p1b.get("qa")
         self._record_advanced_usage(report, p1b)
 
         if self.phase < 2:
@@ -251,6 +254,7 @@ class ImpactAnalysisOrchestrator:
             res_iac:       Optional[Any]
             res_temporal:  Optional[Any]
             res_schema:    Optional[Any]
+            res_qa:        Optional[Any]
             # Phase 2
             res_dep:       Optional[Any]
             res_test:      Optional[Any]
@@ -286,6 +290,9 @@ class ImpactAnalysisOrchestrator:
         def node_schema(state: PipelineState) -> dict:
             return {"res_schema": orch._schema.run(state["request"], state["budget"], {})}
 
+        def node_qa(state: PipelineState) -> dict:
+            return {"res_qa": orch._qa.run(state["request"], state["budget"], {})}
+
         def node_dependency(state: PipelineState) -> dict:
             ctx = state["context"].get(AgentName.DEPENDENCY, {})
             return {"res_dep": orch._dep.run(state["request"], state["budget"], ctx)}
@@ -316,6 +323,7 @@ class ImpactAnalysisOrchestrator:
                 iac_analysis=state.get("res_iac"),
                 temporal_risk=state.get("res_temporal"),
                 schema_change=state.get("res_schema"),
+                qa_scenarios=state.get("res_qa"),
             )
             state["budget"].donate_unused("dependency", "risk")
             ctx = build_partial_report_context(partial)
@@ -339,6 +347,7 @@ class ImpactAnalysisOrchestrator:
                 iac_analysis=state.get("res_iac"),
                 temporal_risk=state.get("res_temporal"),
                 schema_change=state.get("res_schema"),
+                qa_scenarios=state.get("res_qa"),
                 risk=state.get("res_risk"),
             )
             ctx = build_full_report_context(full)
@@ -354,8 +363,9 @@ class ImpactAnalysisOrchestrator:
         builder.add_node("iac",      node_iac)
         builder.add_node("temporal", node_temporal)
         builder.add_node("schema",   node_schema)
+        builder.add_node("qa",       node_qa)
 
-        _advanced = ("security", "ast", "entropy", "taint", "iac", "temporal", "schema")
+        _advanced = ("security", "ast", "entropy", "taint", "iac", "temporal", "schema", "qa")
 
         # Fan-out from code: security + all advanced detection run in parallel
         builder.set_entry_point("code")
@@ -398,6 +408,7 @@ class ImpactAnalysisOrchestrator:
             "res_code": None, "res_security": None,
             "res_ast": None, "res_entropy": None, "res_taint": None,
             "res_iac": None, "res_temporal": None, "res_schema": None,
+            "res_qa": None,
             "res_dep": None, "res_test": None, "res_iface": None,
             "res_risk": None, "res_rem": None,
         }
@@ -419,6 +430,7 @@ class ImpactAnalysisOrchestrator:
             iac_analysis=final.get("res_iac"),
             temporal_risk=final.get("res_temporal"),
             schema_change=final.get("res_schema"),
+            qa_scenarios=final.get("res_qa"),
             dependency=final.get("res_dep"),
             test_coverage=final.get("res_test"),
             interface=final.get("res_iface"),
@@ -435,6 +447,7 @@ class ImpactAnalysisOrchestrator:
             (AgentName.IAC_ANALYSIS,    "res_iac"),
             (AgentName.TEMPORAL_RISK,   "res_temporal"),
             (AgentName.SCHEMA_CHANGE,   "res_schema"),
+            (AgentName.QA_SCENARIOS,    "res_qa"),
             (AgentName.DEPENDENCY,      "res_dep"),
             (AgentName.TEST_COVERAGE,   "res_test"),
             (AgentName.INTERFACE,       "res_iface"),
@@ -467,8 +480,9 @@ class ImpactAnalysisOrchestrator:
             "iac":      self._iac,
             "temporal": self._temporal,
             "schema":   self._schema,
+            "qa":       self._qa,
         }
-        with ThreadPoolExecutor(max_workers=6) as pool:
+        with ThreadPoolExecutor(max_workers=7) as pool:
             futures = {
                 pool.submit(agent.run, request, budget, ctx): name
                 for name, agent in agents_map.items()
@@ -585,6 +599,7 @@ class ImpactAnalysisOrchestrator:
             "iac":      AgentName.IAC_ANALYSIS,
             "temporal": AgentName.TEMPORAL_RISK,
             "schema":   AgentName.SCHEMA_CHANGE,
+            "qa":       AgentName.QA_SCENARIOS,
         }
         for key, agent_name in advanced_map.items():
             result = results.get(key)

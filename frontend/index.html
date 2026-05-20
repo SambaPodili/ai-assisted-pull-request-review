@@ -156,6 +156,15 @@
   .finding-body { flex: 1; min-width: 0; }
   .finding-desc { font-size: 13px; color: #0d1117; }
   .finding-file { font-size: 11px; color: #7a8494; font-family: var(--mono); margin-top: 3px; }
+  .code-snippet { margin-top:7px; border-radius:6px; overflow:hidden; border:1px solid #e8eaed; font-family:var(--mono); font-size:11.5px; line-height:1.5; }
+  .code-snippet-line { display:flex; min-width:0; }
+  .code-snippet-line.add { background:#edfaf3; }
+  .code-snippet-line.del { background:#fff1f1; }
+  .code-snippet-line.ctx { background:#f7f8fa; }
+  .code-snippet-ln { min-width:36px; text-align:right; padding:1px 6px; color:#9fadbf; flex-shrink:0; user-select:none; border-right:1px solid #e8eaed; }
+  .code-snippet-line.add .code-snippet-ln { background:#d1fae5; color:#0c7c4b; }
+  .code-snippet-line.del .code-snippet-ln { background:#ffe4e6; color:#b81c1c; }
+  .code-snippet-content { padding:1px 8px; white-space:pre; overflow-x:auto; flex:1; }
   .sev { font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 10px; flex-shrink: 0; margin-top: 2px; text-transform: uppercase; letter-spacing: 0.05em; border: 1px solid; }
   .sev-critical { background: #fff1f1; color: #b81c1c; border-color: var(--red); }
   .sev-high { background: #fff8ec; color: #8a5200; border-color: #8a5200; }
@@ -379,6 +388,11 @@ h1, h2, h3 { font-family: 'Instrument Serif', serif; }
       <i class="ti ti-history"></i>Past analyses
     </div>
 
+    <div class="nav-section">Validation</div>
+    <div class="nav-item" onclick="showView('quality')" id="nav-quality">
+      <i class="ti ti-target-arrow"></i>Quality metrics
+    </div>
+
     <div class="nav-section">Settings</div>
     <div class="nav-item" onclick="showView('settings')" id="nav-settings">
       <i class="ti ti-settings"></i>Backend config
@@ -410,6 +424,7 @@ h1, h2, h3 { font-family: 'Instrument Serif', serif; }
     <div id="view-results" class="content" style="display:none"></div>
     <div id="view-history" class="content" style="display:none"></div>
     <div id="view-settings" class="content" style="display:none"></div>
+    <div id="view-quality" class="content" style="display:none"></div>
 
     <div class="footer-bar" id="footer-bar" style="display:none">
       <button class="btn" id="btn-back" onclick="goBack()"><i class="ti ti-arrow-left"></i>Back</button>
@@ -479,7 +494,7 @@ function saveState() {
 }
 
 const LANG_COLORS = {JavaScript:'#f1e05a',TypeScript:'#3178c6',Python:'#3572A5',Java:'#b07219',Go:'#00ADD8',Ruby:'#701516',Kotlin:'#A97BFF',Rust:'#dea584',C:'#555555',Scala:'#c22d40',Shell:'#89e051'};
-const VIEWS = ['configure','repos','target','results','history','settings'];
+const VIEWS = ['configure','repos','target','results','history','settings','quality'];
 const STEP_VIEWS = ['configure','repos','target','results'];
 const STEPS = ['Connect','Repositories','Target','Results'];
 
@@ -495,8 +510,8 @@ function showView(name) {
 }
 
 function updateTopbar(name) {
-  const titles = { configure:'Configure provider', repos:'Select repositories', target:'Analysis target', results:'Analysis results', history:'Past analyses', settings:'Backend settings' };
-  const subs = { configure:'Connect GitHub or Bitbucket', repos:'Choose primary repo and connected apps', target:'Pick PR, branch diff, or commit', results:'Review gate decision and findings', history:'Previous analysis runs', settings:'Configure backend API connection' };
+  const titles = { configure:'Configure provider', repos:'Select repositories', target:'Analysis target', results:'Analysis results', history:'Past analyses', settings:'Backend settings', quality:'Quality metrics' };
+  const subs = { configure:'Connect GitHub or Bitbucket', repos:'Choose primary repo and connected apps', target:'Pick PR, branch diff, or commit', results:'Review gate decision and findings', history:'Previous analysis runs', settings:'Configure backend API connection', quality:'Recall, precision & F1 across all detection agents' };
   document.getElementById('topbar-title').textContent = titles[name] || name;
   document.getElementById('topbar-sub').textContent = subs[name] || '';
   const u = document.getElementById('backend-url-display');
@@ -528,6 +543,7 @@ function renderView(name) {
   else if(name === 'results') renderResults(el);
   else if(name === 'history') renderHistory(el);
   else if(name === 'settings') renderSettings(el);
+  else if(name === 'quality') renderQuality(el);
 }
 
 // ── Step indicator ───────────────────────────────────────────────────────────
@@ -1305,24 +1321,88 @@ function renderResults(el) {
     </div>
 
     <div class="metrics-grid">
-      ${[['Security findings',(r.security?.findings?.length||0)],['Secrets',r.security?.secrets_detected?'⚠ YES':'None'],['Blast radius',`${r.dependency?.blast_radius_score||0}/100`],['Breaking changes',(r.interface?.breaking_changes?.length||0)],['Coverage delta',`${((r.test_coverage?.coverage_delta||0)>0?'+':'')+parseFloat(r.test_coverage?.coverage_delta||0).toFixed(1)}%`],['Schema changes',(r.schema_change?.changes?.length||0)],['Total tokens',(r.token_usage||0).toLocaleString()],['Run time',r.duration_s?`${r.duration_s.toFixed(1)}s`:'—']].map(([l,v])=>`<div class="metric"><div class="metric-label">${l}</div><div class="metric-value" style="font-size:16px">${v}</div></div>`).join('')}
+      ${[['Security findings',(r.security?.findings?.length||0)],['Secrets',r.security?.secrets_detected?'⚠ YES':'None'],['Blast radius',`${r.dependency?.blast_radius_score||0}/100`],['Breaking changes',(r.interface?.breaking_changes?.length||0)],['Coverage delta',`${((r.test_coverage?.coverage_delta||0)>0?'+':'')+parseFloat(r.test_coverage?.coverage_delta||0).toFixed(1)}%`],['QA scenarios',(r.qa_scenarios?.total_scenarios||0)],['Schema changes',(r.schema_change?.changes?.length||0)],['Total tokens',(r.token_usage||0).toLocaleString()],['Run time',r.duration_s?`${r.duration_s.toFixed(1)}s`:'—']].map(([l,v])=>`<div class="metric"><div class="metric-label">${l}</div><div class="metric-value" style="font-size:16px">${v}</div></div>`).join('')}
     </div>
 
     <div class="tabs" id="result-tabs">
-      ${['summary','security','dependency','interface','schema','remediation','timings'].map(t=>`<button class="tab ${t==='summary'?'active':''}" onclick="switchResultTab('${t}')">${t==='timings'?'⏱ Timings':t.charAt(0).toUpperCase()+t.slice(1)}</button>`).join('')}
+      ${['summary','security','advanced','dependency','interface','schema','qa','remediation','timings'].map(t=>`<button class="tab ${t==='summary'?'active':''}" data-tab="${t}" onclick="switchResultTab('${t}')">${{summary:'Summary',security:'Security',advanced:'⚗ Advanced',dependency:'Dependency',interface:'Interface',schema:'Schema',qa:'🧪 QA Scenarios',remediation:'Remediation',timings:'⏱ Timings'}[t]||t}</button>`).join('')}
     </div>
 
     <div id="result-tab-content">${renderResultTab('summary',r)}</div>
 
-    <div style="display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:16px">
-      <button class="btn" onclick="resetAnalysis()"><i class="ti ti-plus"></i>New analysis</button>
-      <button class="btn btn-primary" onclick="submitToBackend()"><i class="ti ti-upload"></i>Submit to backend</button>
+    <div id="judge-panel-results"></div>
+    <div id="review-summary-panel"></div>
+
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-top:16px">
+      <button class="btn btn-primary" onclick="toggleReviewSummary()" id="btn-review-summary">
+        <i class="ti ti-clipboard-text"></i>Review Summary
+      </button>
+      <div style="display:flex;align-items:center;gap:10px">
+        <button class="btn" onclick="resetAnalysis()"><i class="ti ti-plus"></i>New analysis</button>
+        <button class="btn" onclick="runJudgePanel()" id="btn-judge" title="Evaluate analysis quality with multiple LLM judges"><i class="ti ti-gavel"></i>Judge panel</button>
+        <button class="btn" onclick="submitToBackend()"><i class="ti ti-upload"></i>Submit to backend</button>
+      </div>
     </div>
   `;
 }
 
+// ── Diff code-snippet helpers ─────────────────────────────────────────────────
+
+function parseDiffToSnippets(diffText) {
+  const result = {};
+  if (!diffText) return result;
+  let currentFile = null, newLine = 0, oldLine = 0;
+  for (const raw of diffText.split('\n')) {
+    if (raw.startsWith('+++ b/')) {
+      currentFile = raw.slice(6).trim();
+      result[currentFile] = [];
+      continue;
+    }
+    if (raw.startsWith('--- ') || raw.startsWith('+++ ')) continue;
+    const hm = raw.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (hm) { oldLine = parseInt(hm[1]); newLine = parseInt(hm[2]); continue; }
+    if (!currentFile) continue;
+    if (raw.startsWith('+'))      result[currentFile].push({newLine:newLine++, oldLine:null,    content:raw.slice(1), type:'add'});
+    else if (raw.startsWith('-')) result[currentFile].push({newLine:null,    oldLine:oldLine++, content:raw.slice(1), type:'del'});
+    else                          result[currentFile].push({newLine:newLine++, oldLine:oldLine++, content:raw.length?raw.slice(1):raw, type:'ctx'});
+  }
+  return result;
+}
+
+let _snipDiffText = null, _snipCache = null;
+function getDiffSnippets() {
+  if (_snipDiffText !== (state.diffText||'')) {
+    _snipDiffText = state.diffText || '';
+    _snipCache = parseDiffToSnippets(_snipDiffText);
+  }
+  return _snipCache || {};
+}
+
+function getCodeSnippet(file, lineRef, ctx = 3) {
+  if (!file || !lineRef) return '';
+  const snips = getDiffSnippets();
+  let lines = snips[file];
+  if (!lines) {
+    const key = Object.keys(snips).find(k => k === file || k.endsWith('/'+file) || file.endsWith('/'+k.split('/').pop()));
+    lines = key ? snips[key] : null;
+  }
+  if (!lines || !lines.length) return '';
+  const m = String(lineRef).match(/^(\d+)(?:[,-](\d+))?$/);
+  if (!m) return '';
+  const s = parseInt(m[1]), e = m[2] ? parseInt(m[2]) : s;
+  const relevant = lines.filter(l => { const ln = l.newLine ?? l.oldLine; return ln != null && ln >= s - ctx && ln <= e + ctx; });
+  if (!relevant.length) return '';
+  const rows = relevant.map(l => {
+    const ln = l.newLine ?? l.oldLine ?? '';
+    const tc = l.type === 'add' ? 'add' : l.type === 'del' ? 'del' : 'ctx';
+    const pfx = l.type === 'add' ? '+' : l.type === 'del' ? '-' : ' ';
+    return `<div class="code-snippet-line ${tc}"><span class="code-snippet-ln">${ln}</span><span class="code-snippet-content">${pfx}${escHtml(l.content)}</span></div>`;
+  }).join('');
+  return `<div class="code-snippet">${rows}</div>`;
+}
+
 function switchResultTab(tab) {
-  document.querySelectorAll('#result-tabs .tab').forEach(t => t.classList.toggle('active', t.textContent.toLowerCase()===tab));
+  document.querySelectorAll('#result-tabs .tab').forEach(t => t.classList.toggle('active', (t.dataset.tab||t.textContent.trim().toLowerCase())===tab));
   document.getElementById('result-tab-content').innerHTML = renderResultTab(tab, state.report);
 }
 
@@ -1335,7 +1415,7 @@ function renderResultTab(tab, r) {
         <span class="badge badge-dim">${r.code_analysis?.change_type||'unknown'}</span>
         <span class="badge ${(r.code_analysis?.complexity_delta||0)>0?'badge-amber':'badge-dim'}">complexity ${(r.code_analysis?.complexity_delta||0)>0?'+':''}${r.code_analysis?.complexity_delta||0}</span>
       </div>
-      ${(r.code_analysis?.findings||[]).map(f=>`<div class="finding"><span class="sev sev-${f.severity}">${f.severity}</span><div class="finding-body"><div class="finding-desc">${escHtml(f.description)}</div><div class="finding-file">${escHtml(f.file||'')}</div></div></div>`).join('')}
+      ${(r.code_analysis?.findings||[]).map(f=>`<div class="finding"><span class="sev sev-${f.severity}">${f.severity}</span><div class="finding-body"><div class="finding-desc">${escHtml(f.description)}</div><div class="finding-file">${escHtml(f.file||'')}${f.line_range?' · line '+escHtml(f.line_range):''}</div>${getCodeSnippet(f.file,f.line_range)}</div></div>`).join('')}
       <div style="margin-top:16px"><div class="section-heading"><i class="ti ti-test-pipe"></i>Test coverage</div>
       <div style="font-size:13px;margin-bottom:6px">Coverage delta: <strong>${((r.test_coverage?.coverage_delta||0)>0?'+':'')+parseFloat(r.test_coverage?.coverage_delta||0).toFixed(1)}%</strong> &nbsp;·&nbsp; Regression risk: <span class="badge badge-${r.test_coverage?.regression_risk==='high'?'amber':'dim'}">${r.test_coverage?.regression_risk||'low'}</span></div>
       ${(r.test_coverage?.uncovered_paths||[]).map(u=>`<div class="finding"><span class="sev sev-medium">gap</span><div class="finding-body"><div class="finding-desc">${escHtml(u.description||u.file||'')}</div><div class="finding-file">${escHtml(u.file||'')}</div></div></div>`).join('')}
@@ -1349,7 +1429,7 @@ function renderResultTab(tab, r) {
         <span class="badge badge-${r.security?.overall_severity==='critical'||r.security?.overall_severity==='high'?'red':r.security?.overall_severity==='medium'?'amber':'dim'}">${r.security?.overall_severity} overall</span>
       </div>
       ${r.security?.secrets_detected?`<div class="err-msg" style="margin-bottom:12px"><i class="ti ti-key"></i><strong>Secrets detected</strong> — immediate rotation required</div>`:''}
-      ${(r.security?.findings||[]).length===0?'<div class="empty-state"><i class="ti ti-shield-check"></i>No security findings</div>':(r.security?.findings||[]).map(f=>`<div class="finding"><span class="sev sev-${f.severity}">${f.severity}</span><div class="finding-body"><div class="finding-desc"><code>${f.cwe||''}</code> ${escHtml(f.description)}</div><div class="finding-file">${escHtml(f.file||'')}</div></div></div>`).join('')}
+      ${(r.security?.findings||[]).length===0?'<div class="empty-state"><i class="ti ti-shield-check"></i>No security findings</div>':(r.security?.findings||[]).map(f=>`<div class="finding"><span class="sev sev-${f.severity}">${f.severity}</span><div class="finding-body"><div class="finding-desc"><code>${f.cwe||''}</code> ${escHtml(f.description)}</div><div class="finding-file">${escHtml(f.file||'')}${f.line_range?' · line '+escHtml(f.line_range):''}</div>${getCodeSnippet(f.file,f.line_range)}</div></div>`).join('')}
     </div>`;
 
   if(tab==='dependency') return `
@@ -1393,6 +1473,105 @@ function renderResultTab(tab, r) {
       <div class="section-heading"><i class="ti ti-checklist"></i>Validation checklist</div>
       ${(r.remediation?.validation_checklist||[]).map(c=>`<div class="checklist-item"><i class="ti ti-square"></i>${escHtml(c)}</div>`).join('')}
     </div>`;
+
+  if(tab==='advanced') {
+    const se  = r.secrets_entropy  || null;
+    const ast = r.ast_analysis     || null;
+    const ta  = r.taint_analysis   || null;
+    const iac = r.iac_analysis     || null;
+    const tr  = r.temporal_risk    || null;
+
+    const agentSection = (icon, color, title, body) =>
+      `<div style="margin-bottom:20px;padding-bottom:20px;border-bottom:1px solid #e8eaed">
+         <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+           <i class="ti ${icon}" style="font-size:16px;color:${color}"></i>
+           <span style="font-size:13px;font-weight:600;color:#0d1117">${title}</span>
+         </div>${body}</div>`;
+
+    const emptyState = (msg) =>
+      `<div style="font-size:12px;color:#9fadbf;padding:8px 0"><i class="ti ti-circle-check" style="margin-right:5px"></i>${msg}</div>`;
+
+    // ── Secrets & Entropy ─────────────────────────────────────────────────
+    const seBody = !se ? emptyState('Agent did not run') :
+      (se.findings||[]).length === 0 ? emptyState('No secrets or high-entropy strings found') :
+      `<div style="display:flex;gap:10px;margin-bottom:10px">
+        ${se.known_prefix_count?`<span class="badge badge-red"><i class="ti ti-key" style="font-size:11px"></i>${se.known_prefix_count} known prefix</span>`:''}
+        ${se.high_entropy_count?`<span class="badge badge-amber">${se.high_entropy_count} high entropy</span>`:''}
+      </div>` +
+      (se.findings||[]).map(f=>`<div class="finding">
+        <span class="sev sev-${f.severity}">${f.severity}</span>
+        <div class="finding-body">
+          <div class="finding-desc"><code>${escHtml(f.variable||f.kind||'')}</code> — ${escHtml(f.kind||'')} (entropy: ${(f.entropy||0).toFixed(2)})</div>
+          <div class="finding-file">value: <code>${escHtml(f.value||'')}</code> · line ${f.line||'?'}</div>
+          ${getCodeSnippet(f.file, f.line, 2)}
+        </div></div>`).join('');
+
+    // ── AST Analysis ─────────────────────────────────────────────────────
+    const astBody = !ast ? emptyState('Agent did not run') :
+      (ast.findings||[]).length === 0 ? emptyState(`No AST issues — max complexity: ${ast.max_complexity||0}`) :
+      `<div style="display:flex;gap:10px;margin-bottom:10px">
+        <span class="badge badge-dim">avg complexity ${(ast.avg_complexity||0).toFixed(1)}</span>
+        <span class="badge ${(ast.max_complexity||0)>10?'badge-red':(ast.max_complexity||0)>6?'badge-amber':'badge-dim'}">max ${ast.max_complexity||0}</span>
+      </div>` +
+      (ast.findings||[]).map(f=>`<div class="finding">
+        <span class="sev sev-${f.severity}">${f.severity}</span>
+        <div class="finding-body">
+          <div class="finding-desc"><code>${escHtml(f.kind||'')}</code> in <code>${escHtml(f.function||'')}</code></div>
+          <div class="finding-file">${escHtml(f.description||'')}${f.suggestion?` — ${escHtml(f.suggestion)}`:''}${f.line?' · line '+f.line:''}</div>
+          ${getCodeSnippet(f.file, f.line, 3)}
+        </div></div>`).join('');
+
+    // ── Taint Analysis ────────────────────────────────────────────────────
+    const taBody = !ta ? emptyState('Agent did not run') :
+      (ta.taint_paths||[]).length === 0 ? emptyState(`No taint paths — ${ta.sources_found||0} sources, ${ta.sinks_found||0} sinks scanned`) :
+      `<div style="display:flex;gap:10px;margin-bottom:10px">
+        ${ta.has_injection?`<span class="badge badge-red"><i class="ti ti-alert-triangle" style="font-size:11px"></i>Injection risk</span>`:''}
+        <span class="badge badge-dim">${ta.sources_found||0} sources · ${ta.sinks_found||0} sinks</span>
+      </div>` +
+      (ta.taint_paths||[]).map(p=>`<div class="finding">
+        <span class="sev sev-${p.severity}">${p.severity}</span>
+        <div class="finding-body">
+          <div class="finding-desc">${p.cwe?`<code>${escHtml(p.cwe)}</code> `:''}${escHtml(p.description||`${p.source_var||'input'} → ${p.sink_kind||'sink'}`)}</div>
+          <div class="finding-file">source: <code>${escHtml(p.source_var||'?')} (${escHtml(p.source_kind||'?')})</code> → sink: <code>${escHtml(p.sink_var||'?')} (${escHtml(p.sink_kind||'?')})</code></div>
+          ${p.source_file&&p.source_line?`<div style="font-size:10px;color:#9fadbf;margin-top:5px;font-family:var(--mono)">source: ${escHtml(p.source_file)} · line ${p.source_line}</div>${getCodeSnippet(p.source_file, p.source_line, 2)}`:''}
+          ${p.sink_file&&p.sink_line?`<div style="font-size:10px;color:#9fadbf;margin-top:5px;font-family:var(--mono)">sink: ${escHtml(p.sink_file)} · line ${p.sink_line}</div>${getCodeSnippet(p.sink_file, p.sink_line, 2)}`:''}
+        </div></div>`).join('');
+
+    // ── IaC Security ──────────────────────────────────────────────────────
+    const iacBody = !iac ? emptyState('Agent did not run') :
+      (iac.findings||[]).length === 0 ? emptyState('No IaC security issues found') :
+      (iac.findings||[]).map(f=>`<div class="finding">
+        <span class="sev sev-${f.severity}">${f.severity}</span>
+        <div class="finding-body">
+          <div class="finding-desc"><code>${escHtml(f.kind||'')}</code> — ${escHtml(f.description||'')}</div>
+          <div class="finding-file">resource: <code>${escHtml(f.resource||'')}</code>${f.cis_ref?` · CIS ${escHtml(f.cis_ref)}`:''}${f.line?' · line '+f.line:''}</div>
+          ${getCodeSnippet(f.file, f.line, 3)}
+        </div></div>`).join('');
+
+    // ── Temporal Risk ─────────────────────────────────────────────────────
+    const trendColor = {improving:'#0c7c4b',stable:'#7a8494',degrading:'#8a5200',critical:'#b81c1c'}[tr?.risk_trend||'stable']||'#7a8494';
+    const trBody = !tr ? emptyState('Agent did not run') :
+      `<div style="display:flex;gap:10px;margin-bottom:10px">
+        <span class="badge" style="background:#f7f8fa;color:${trendColor};border-color:${trendColor}">trend: ${tr.risk_trend||'stable'}</span>
+        ${tr.escalating_pattern?`<span class="badge badge-amber">Escalating pattern</span>`:''}
+        ${tr.security_erosion?`<span class="badge badge-red">Security erosion</span>`:''}
+      </div>` +
+      ((tr.hot_files||[]).length===0 ? emptyState('No hot files in analysis window') :
+        (tr.hot_files||[]).map(f=>`<div class="finding">
+          <span class="sev sev-medium">hot</span>
+          <div class="finding-body">
+            <div class="finding-desc"><code>${escHtml(f.file_path||'')}</code></div>
+            <div class="finding-file">changed ${f.change_count||0}× · avg risk ${(f.avg_risk_score||0).toFixed(0)}</div>
+          </div></div>`).join(''));
+
+    return `<div class="card">
+      ${agentSection('ti-key','#ec4899','Entropy / Secrets',seBody)}
+      ${agentSection('ti-binary-tree','#8b5cf6','AST Analysis',astBody)}
+      ${agentSection('ti-arrows-diff','#f97316','Taint Analysis',taBody)}
+      ${agentSection('ti-server','#14b8a6','IaC Security',iacBody)}
+      <div>${agentSection('ti-clock-record','#a855f7','Temporal Risk',trBody)}</div>
+    </div>`;
+  }
 
   if(tab==='timings') {
     const timings = r.agent_timings || [];
@@ -1497,7 +1676,116 @@ function renderResultTab(tab, r) {
       </div>`;
   }
 
+  if(tab==='qa') {
+    const qa = r.qa_scenarios;
+    if(!qa || !qa.scenarios?.length) return `
+      <div class="card"><div class="empty-state"><i class="ti ti-checklist"></i>No QA scenarios generated yet.<br><span style="font-size:12px;color:#9fadbf">Run an analysis with a diff to generate test scenarios.</span></div></div>`;
+
+    const priColor = p => ({critical:'#b81c1c',high:'#8a5200',medium:'#1a6cf6',low:'#6b7280'})[p?.toLowerCase()]||'#6b7280';
+    const priLabel = p => (p||'').toUpperCase();
+    const typeIcon  = t => ({functional:'ti-click',security:'ti-shield-lock',regression:'ti-arrows-right-left',edge_case:'ti-test-pipe',integration:'ti-puzzle',performance:'ti-gauge',api:'ti-api',data:'ti-database'})[t]||'ti-checklist';
+
+    // Active filter state (stored on the element via closure)
+    const filterKey = 'qaFilter_'+Date.now();
+    window[filterKey] = 'all';
+
+    const priorities = ['all','critical','high','medium','low'];
+    const types = ['functional','security','regression','edge_case','integration','performance','api','data'];
+
+    const renderScenarios = (filter) => {
+      const filtered = filter==='all' ? qa.scenarios
+        : qa.scenarios.filter(s => s.priority?.toLowerCase()===filter || s.type===filter);
+      if(!filtered.length) return `<div class="empty-state" style="padding:20px"><i class="ti ti-filter-off"></i>No scenarios match this filter.</div>`;
+      return filtered.map(s => `
+        <div class="card" style="margin-bottom:12px;border-left:3px solid ${priColor(s.priority)}">
+          <div style="display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+            <span style="font-family:'JetBrains Mono',monospace;font-size:11px;background:#f0f2f5;padding:2px 7px;border-radius:10px;color:#7a8494;white-space:nowrap">${escHtml(s.id)}</span>
+            <span style="display:inline-flex;align-items:center;gap:3px;padding:2px 8px;background:${priColor(s.priority)}18;color:${priColor(s.priority)};border-radius:10px;font-size:11px;font-weight:700">${priLabel(s.priority)}</span>
+            <span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;background:#f0f2f5;color:#4b5563;border-radius:10px;font-size:11px"><i class="ti ${typeIcon(s.type)}" style="font-size:12px"></i>${escHtml((s.type||'').replace(/_/g,' '))}</span>
+            <div style="flex:1;min-width:200px;font-size:14px;font-weight:600;color:#0d1117">${escHtml(s.title)}</div>
+          </div>
+          <p style="font-size:13px;color:#4b5563;margin-bottom:12px;line-height:1.6">${escHtml(s.description)}</p>
+          ${s.steps?.length ? `
+          <div style="margin-bottom:10px">
+            <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:#9fadbf;margin-bottom:6px">Test steps</div>
+            <ol style="margin:0;padding-left:20px;font-size:13px;color:#374151;line-height:1.8">
+              ${s.steps.map(step=>`<li>${escHtml(step)}</li>`).join('')}
+            </ol>
+          </div>` : ''}
+          ${s.expected_result ? `
+          <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:8px 12px;margin-bottom:8px;font-size:12px;color:#166534">
+            <strong>Expected:</strong> ${escHtml(s.expected_result)}
+          </div>` : ''}
+          <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin-top:8px">
+            ${s.affected_files?.length ? `<div style="font-size:11px;color:#7a8494"><i class="ti ti-file-code" style="font-size:12px"></i> ${s.affected_files.map(f=>`<code style="background:#f0f2f5;padding:1px 5px;border-radius:4px">${escHtml(f)}</code>`).join(' ')}</div>` : ''}
+            ${s.automation_hint ? `<div style="font-size:11px;color:#6b7280"><i class="ti ti-robot" style="font-size:12px"></i> ${escHtml(s.automation_hint)}</div>` : ''}
+          </div>
+        </div>`).join('');
+    };
+
+    const critN = qa.scenarios.filter(s=>s.priority?.toLowerCase()==='critical').length;
+    const highN  = qa.scenarios.filter(s=>s.priority?.toLowerCase()==='high').length;
+
+    return `
+    <div class="card" style="margin-bottom:12px">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+        <div>
+          <div class="card-title" style="margin-bottom:4px"><i class="ti ti-checklist"></i>QA Test Scenarios</div>
+          <div style="font-size:12px;color:#7a8494">${escHtml(qa.summary||'')}</div>
+        </div>
+        <div style="display:flex;gap:12px;font-size:12px">
+          ${critN?`<span style="color:#b81c1c;font-weight:700"><i class="ti ti-alert-circle"></i> ${critN} critical</span>`:''}
+          ${highN?`<span style="color:#8a5200;font-weight:700"><i class="ti ti-alert-triangle"></i> ${highN} high</span>`:''}
+          <span style="color:#7a8494">${qa.total_scenarios} total</span>
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap" id="qa-filter-bar">
+        ${priorities.map(p=>`<button class="btn${p==='all'?' btn-primary':''}" style="font-size:11px;padding:4px 10px" onclick="qaFilterClick('${p}','${filterKey}')">${p==='all'?'All':p.charAt(0).toUpperCase()+p.slice(1)}</button>`).join('')}
+        <span style="width:1px;background:#e8eaed;margin:0 4px"></span>
+        ${types.map(t=>`<button class="btn" style="font-size:11px;padding:4px 10px" onclick="qaFilterClick('${t}','${filterKey}')">${t.replace(/_/g,' ')}</button>`).join('')}
+      </div>
+    </div>
+    <div id="qa-scenario-list">${renderScenarios('all')}</div>`;
+  }
+
   return '';
+}
+
+function qaFilterClick(filter, key) {
+  window[key] = filter;
+  // Update button highlight
+  document.querySelectorAll('#qa-filter-bar button').forEach(b => {
+    b.className = b.textContent.trim().toLowerCase().replace(/ /g,'_') === filter || (filter==='all' && b.textContent.trim()==='All')
+      ? 'btn btn-primary' : 'btn';
+    b.style.fontSize='11px'; b.style.padding='4px 10px';
+  });
+  // Re-render list using current report
+  const qa = state.report?.qa_scenarios;
+  if(!qa) return;
+  const priColor = p => ({critical:'#b81c1c',high:'#8a5200',medium:'#1a6cf6',low:'#6b7280'})[p?.toLowerCase()]||'#6b7280';
+  const priLabel = p => (p||'').toUpperCase();
+  const typeIcon  = t => ({functional:'ti-click',security:'ti-shield-lock',regression:'ti-arrows-right-left',edge_case:'ti-test-pipe',integration:'ti-puzzle',performance:'ti-gauge',api:'ti-api',data:'ti-database'})[t]||'ti-checklist';
+  const filtered = filter==='all' ? qa.scenarios
+    : qa.scenarios.filter(s => s.priority?.toLowerCase()===filter || s.type===filter);
+  const listEl = document.getElementById('qa-scenario-list');
+  if(!listEl) return;
+  if(!filtered.length) { listEl.innerHTML=`<div class="empty-state" style="padding:20px"><i class="ti ti-filter-off"></i>No scenarios match this filter.</div>`; return; }
+  listEl.innerHTML = filtered.map(s => `
+    <div class="card" style="margin-bottom:12px;border-left:3px solid ${priColor(s.priority)}">
+      <div style="display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;background:#f0f2f5;padding:2px 7px;border-radius:10px;color:#7a8494;white-space:nowrap">${escHtml(s.id)}</span>
+        <span style="display:inline-flex;align-items:center;gap:3px;padding:2px 8px;background:${priColor(s.priority)}18;color:${priColor(s.priority)};border-radius:10px;font-size:11px;font-weight:700">${priLabel(s.priority)}</span>
+        <span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;background:#f0f2f5;color:#4b5563;border-radius:10px;font-size:11px"><i class="ti ${typeIcon(s.type)}" style="font-size:12px"></i>${escHtml((s.type||'').replace(/_/g,' '))}</span>
+        <div style="flex:1;min-width:200px;font-size:14px;font-weight:600;color:#0d1117">${escHtml(s.title)}</div>
+      </div>
+      <p style="font-size:13px;color:#4b5563;margin-bottom:12px;line-height:1.6">${escHtml(s.description)}</p>
+      ${s.steps?.length ? `<div style="margin-bottom:10px"><div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:#9fadbf;margin-bottom:6px">Test steps</div><ol style="margin:0;padding-left:20px;font-size:13px;color:#374151;line-height:1.8">${s.steps.map(step=>`<li>${escHtml(step)}</li>`).join('')}</ol></div>` : ''}
+      ${s.expected_result ? `<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:8px 12px;margin-bottom:8px;font-size:12px;color:#166534"><strong>Expected:</strong> ${escHtml(s.expected_result)}</div>` : ''}
+      <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin-top:8px">
+        ${s.affected_files?.length ? `<div style="font-size:11px;color:#7a8494"><i class="ti ti-file-code" style="font-size:12px"></i> ${s.affected_files.map(f=>`<code style="background:#f0f2f5;padding:1px 5px;border-radius:4px">${escHtml(f)}</code>`).join(' ')}</div>` : ''}
+        ${s.automation_hint ? `<div style="font-size:11px;color:#6b7280"><i class="ti ti-robot" style="font-size:12px"></i> ${escHtml(s.automation_hint)}</div>` : ''}
+      </div>
+    </div>`).join('');
 }
 
 async function fetchRealDiff(target) {
@@ -1608,6 +1896,7 @@ async function runAnalysis() {
   if(progLbl())  progLbl().textContent  = 'Fetching diff…';
 
   const diffText  = await fetchRealDiff(target);
+  state.diffText  = diffText || '';
   const diffLines = diffText ? diffText.split('\n').length : 0;
   const diffKb    = diffText ? Math.round(diffText.length/1024) : 0;
 
@@ -1889,6 +2178,7 @@ function normalizeReport(r) {
       severity: f.severity || 'low',
       description: f.description || '',
       file: f.file_path || f.file || '',
+      line_range: f.line_range || '',
     })),
   } : null;
 
@@ -1902,6 +2192,7 @@ function normalizeReport(r) {
       severity: f.severity || 'low',
       description: f.description || '',
       file: f.file_path || f.file || '',
+      line_range: f.line_range || '',
     })),
   } : null;
 
@@ -1956,19 +2247,85 @@ function normalizeReport(r) {
     executive_summary: remObj.executive_summary || '',
   } : null;
 
+  // ── Phase 1b agents ────────────────────────────────────────────────────────
+  const se = r.secrets_entropy || null;
+  const seNorm = se ? {
+    findings: (se.findings||[]).map(f=>({ variable:f.variable||'', value:f.value||'', kind:f.kind||'', entropy:f.entropy||0, severity:(f.severity||'low').toLowerCase(), line:f.line||0, file:f.file_path||'' })),
+    high_entropy_count: se.high_entropy_count||0,
+    known_prefix_count: se.known_prefix_count||0,
+    overall_severity: (se.overall_severity||'low').toLowerCase(),
+  } : null;
+
+  const ast = r.ast_analysis || null;
+  const astNorm = ast ? {
+    findings: (ast.findings||[]).map(f=>({ function:f.function||'', kind:f.kind||'', severity:(f.severity||'low').toLowerCase(), description:f.description||'', suggestion:f.suggestion||'', line:f.line||0, file:f.file_path||'' })),
+    avg_complexity: ast.avg_complexity||0,
+    max_complexity: ast.max_complexity||0,
+  } : null;
+
+  const ta = r.taint_analysis || null;
+  const taNorm = ta ? {
+    taint_paths: (ta.taint_paths||[]).map(p=>({ source_var:p.source?.variable||'', source_kind:p.source?.source||'', source_file:p.source?.file_path||'', source_line:p.source?.line||0, sink_var:p.sink?.variable||'', sink_kind:p.sink?.sink||'', sink_file:p.sink?.file_path||'', sink_line:p.sink?.line||0, cwe:p.cwe||'', severity:(p.severity||'high').toLowerCase(), description:p.description||'' })),
+    sources_found: ta.sources_found||0,
+    sinks_found: ta.sinks_found||0,
+    has_injection: ta.has_injection||false,
+  } : null;
+
+  const iac = r.iac_analysis || null;
+  const iacNorm = iac ? {
+    findings: (iac.findings||[]).map(f=>({ resource:f.resource||'', kind:f.kind||'', severity:(f.severity||'medium').toLowerCase(), description:f.description||'', cis_ref:f.cis_ref||'', file:f.file_path||'', line:f.line||0 })),
+    overall_severity: (iac.overall_severity||'low').toLowerCase(),
+  } : null;
+
+  const tr = r.temporal_risk || null;
+  const trNorm = tr ? {
+    hot_files: (tr.hot_files||[]).map(f=>({ file_path:f.file_path||'', change_count:f.change_count||0, avg_risk_score:f.avg_risk_score||0 })),
+    risk_trend: tr.risk_trend||'stable',
+    escalating_pattern: tr.escalating_pattern||false,
+    security_erosion: tr.security_erosion||false,
+    change_fatigue: tr.change_fatigue||[],
+  } : null;
+
+  // ── Normalise QA scenarios ─────────────────────────────────────────────────
+  const qar = r.qa_scenarios || null;
+  const qaNorm = qar ? {
+    scenarios: (qar.scenarios||[]).map(s => ({
+      id:              s.id              || '',
+      title:           s.title          || '',
+      type:            s.type           || 'functional',
+      priority:        s.priority       || 'medium',
+      description:     s.description    || '',
+      steps:           s.steps          || [],
+      expected_result: s.expected_result|| '',
+      affected_files:  s.affected_files || [],
+      automation_hint: s.automation_hint|| '',
+    })),
+    total_scenarios: qar.total_scenarios || (qar.scenarios||[]).length,
+    critical_count:  qar.critical_count  || 0,
+    high_count:      qar.high_count      || 0,
+    coverage_areas:  qar.coverage_areas  || [],
+    summary:         qar.summary         || '',
+  } : null;
+
   return {
     gate_decision,
     overall_risk,
     risk_score,
     rationale,
-    code_analysis:  caNorm,
-    security:       secNorm,
-    dependency:     depNorm,
-    test_coverage:  tcNorm,
-    interface:      ifaceNorm,
-    schema_change:  scNorm,
-    risk:           riskObj,
-    remediation:    remNorm,
+    code_analysis:    caNorm,
+    security:         secNorm,
+    secrets_entropy:  seNorm,
+    ast_analysis:     astNorm,
+    taint_analysis:   taNorm,
+    iac_analysis:     iacNorm,
+    temporal_risk:    trNorm,
+    dependency:       depNorm,
+    test_coverage:    tcNorm,
+    interface:        ifaceNorm,
+    schema_change:    scNorm,
+    qa_scenarios:     qaNorm,
+    risk:             riskObj,
+    remediation:      remNorm,
     token_usage:    r.total_tokens || (Array.isArray(r.token_usage) ? r.token_usage.reduce((s,u)=>s+(u.tokens_used||0),0) : r.token_usage) || 0,
     duration_s:     r.duration_s || 0,
     agent_timings:  Array.isArray(r.agent_timings) ? r.agent_timings : [],
@@ -1988,6 +2345,286 @@ function resetAnalysis() { state.report=null; state.selectedPR=null; state.sourc
 async function submitToBackend() {
   if(!state.backendUrl) { alert('No backend URL configured. Go to Settings.'); return; }
   alert('Report is ready. In a real deployment, your backend would have already stored it when the analysis was run.\n\nBackend URL: '+state.backendUrl);
+}
+
+// ── REVIEW SUMMARY ────────────────────────────────────────────────────────────
+
+let _reviewSummaryOpen = false;
+
+function toggleReviewSummary() {
+  const panel = document.getElementById('review-summary-panel');
+  const btn   = document.getElementById('btn-review-summary');
+  if (!panel) return;
+  if (_reviewSummaryOpen) {
+    panel.innerHTML = '';
+    _reviewSummaryOpen = false;
+    if (btn) btn.innerHTML = '<i class="ti ti-clipboard-text"></i>Review Summary';
+    return;
+  }
+  _reviewSummaryOpen = true;
+  if (btn) btn.innerHTML = '<i class="ti ti-x"></i>Close Summary';
+  panel.innerHTML = buildReviewSummaryHTML(state.report);
+}
+
+function buildReviewSummaryHTML(r) {
+  if (!r) return '';
+
+  const esc = escHtml;
+  const pct = v => Math.round((v||0)*100)+'%';
+
+  // ── Gate banner ────────────────────────────────────────────────────────────
+  const gateColor  = { APPROVE:'#0c7c4b', HOLD:'#8a5200', BLOCK:'#b81c1c' }[r.gate_decision] || '#7a8494';
+  const gateIcon   = { APPROVE:'ti-circle-check', HOLD:'ti-alert-triangle', BLOCK:'ti-ban' }[r.gate_decision] || 'ti-help-circle';
+  const riskColor  = { low:'#0c7c4b', medium:'#8a5200', high:'#b81c1c', critical:'#b81c1c' }[r.overall_risk] || '#7a8494';
+
+  // ── Collect findings across all agents ────────────────────────────────────
+  const secFindings   = r.security?.findings || [];
+  const codeFindings  = r.code_analysis?.findings || [];
+  const astFindings   = r.ast_analysis?.findings || [];
+  const taintPaths    = r.taint_analysis?.taint_paths || [];
+  const iacFindings   = r.iac_analysis?.findings || [];
+  const entropyFinds  = r.secrets_entropy?.findings || [];
+  const breakingChgs  = r.interface?.breaking_changes || [];
+  const schemaChgs    = r.schema_change?.changes || [];
+  const qaScenarios   = r.qa_scenarios?.scenarios || [];
+  const fixSuggestions = r.remediation?.fix_suggestions || [];
+  const checklist     = r.remediation?.validation_checklist || [];
+
+  const sevRank = { critical:0, high:1, medium:2, low:3 };
+  const sortBySev = arr => [...arr].sort((a,b) => (sevRank[a.severity?.toLowerCase()]??9) - (sevRank[b.severity?.toLowerCase()]??9));
+
+  const sevBadge = (s) => {
+    const c = {critical:'#b81c1c',high:'#8a5200',medium:'#1a6cf6',low:'#6b7280'}[s?.toLowerCase()]||'#6b7280';
+    return `<span style="display:inline-block;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700;text-transform:uppercase;background:${c}18;color:${c};margin-right:6px;vertical-align:middle">${esc(s||'low')}</span>`;
+  };
+
+  const findingRow = (sev, text, file='') =>
+    `<div style="display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid #f0f2f5">
+       ${sevBadge(sev)}
+       <div style="flex:1;font-size:13px;color:#1a1f2e;line-height:1.5">${esc(text)}
+         ${file?`<div style="font-size:11px;color:#9fadbf;font-family:'JetBrains Mono',monospace;margin-top:2px">${esc(file)}</div>`:''}
+       </div>
+     </div>`;
+
+  const section = (icon, title, content, count, countColor='#7a8494') =>
+    `<div style="margin-bottom:20px">
+       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;padding-bottom:6px;border-bottom:2px solid #f0f2f5">
+         <i class="ti ${icon}" style="font-size:15px;color:${countColor}"></i>
+         <span style="font-size:13px;font-weight:600;color:#0d1117">${title}</span>
+         ${count!==null?`<span style="margin-left:auto;font-size:12px;font-weight:700;color:${countColor}">${count}</span>`:''}
+       </div>
+       ${content}
+     </div>`;
+
+  const emptyRow = (msg) => `<div style="font-size:12px;color:#9fadbf;padding:4px 0"><i class="ti ti-circle-check" style="color:#0c7c4b"></i> ${msg}</div>`;
+
+  // ── Security section ───────────────────────────────────────────────────────
+  const allSecRows = [
+    ...sortBySev(secFindings).map(f => findingRow(f.severity, `${f.cwe?'['+f.cwe+'] ':''}${f.description}`, f.file)),
+    ...sortBySev(entropyFinds).map(f => findingRow(f.severity, `Secret detected: ${f.kind||'unknown'} — ${f.variable||''}`, '')),
+    ...sortBySev(taintPaths).map(t => findingRow(t.severity||'high', `Taint: ${t.source_var||'?'} → ${t.sink_var||'?'}${t.cwe?' ['+t.cwe+']':''} ${t.description||''}`, '')),
+    ...sortBySev(iacFindings).map(f => findingRow(f.severity, `IaC: ${f.kind||''} on ${f.resource||''} — ${f.description}`, '')),
+  ];
+  const secContent = allSecRows.length
+    ? allSecRows.join('')
+    : emptyRow('No security issues detected');
+  const secCriticalHigh = [...secFindings,...entropyFinds,...taintPaths,...iacFindings]
+    .filter(f => ['critical','high'].includes((f.severity||'').toLowerCase())).length;
+
+  // ── Code quality section ───────────────────────────────────────────────────
+  const astRows = sortBySev(astFindings).map(f => findingRow(f.severity, `${f.kind||''}: ${f.function||''} — ${f.description}`, ''));
+  const codeRows = sortBySev(codeFindings).map(f => findingRow(f.severity, f.description, f.file));
+  const qualityContent = [...astRows,...codeRows].join('') || emptyRow('No code quality issues');
+  const complexityDelta = r.code_analysis?.complexity_delta || 0;
+
+  // ── Contracts & schema ─────────────────────────────────────────────────────
+  const contractRows = sortBySev(breakingChgs).map(b => findingRow(b.severity, `${b.type||''} — ${(b.break_type||'').replace(/_/g,' ')} change`, b.path));
+  const schemaRows   = sortBySev(schemaChgs).map(c => findingRow(c.severity, `${(c.change_type||'').replace(/_/g,' ')} on ${c.table||'?'} ${c.reversible===false?'(NOT reversible)':'(reversible)'}`, ''));
+  const contractContent = [...contractRows,...schemaRows].join('') || emptyRow('No breaking changes or schema issues');
+  const contractIssues  = breakingChgs.length + schemaChgs.length;
+
+  // ── Dependencies ──────────────────────────────────────────────────────────
+  const blastScore = r.dependency?.blast_radius_score || 0;
+  const affectedSvcs = r.dependency?.affected_services || [];
+  const depContent = `
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <div style="flex:1;height:8px;background:#f0f2f5;border-radius:4px;overflow:hidden">
+        <div style="height:100%;width:${blastScore}%;background:${blastScore>70?'#b81c1c':blastScore>40?'#8a5200':'#0c7c4b'};border-radius:4px"></div>
+      </div>
+      <span style="font-size:13px;font-weight:700;color:${blastScore>70?'#b81c1c':blastScore>40?'#8a5200':'#0c7c4b'};min-width:48px;text-align:right">${blastScore}/100</span>
+    </div>
+    ${affectedSvcs.length ? `<div style="font-size:12px;color:#4b5563">Affected services: ${affectedSvcs.map(s=>`<span style="background:#fff3cd;padding:1px 6px;border-radius:8px;margin-right:4px">${esc(s)}</span>`).join('')}</div>` : ''}
+    ${r.test_coverage?.coverage_delta!==undefined ? `<div style="font-size:12px;color:#4b5563;margin-top:6px">Test coverage delta: <strong style="color:${(r.test_coverage.coverage_delta||0)>=0?'#0c7c4b':'#b81c1c'}">${(r.test_coverage.coverage_delta||0)>0?'+':''}${parseFloat(r.test_coverage.coverage_delta||0).toFixed(1)}%</strong> &nbsp;·&nbsp; Regression risk: <strong>${r.test_coverage.regression_risk||'low'}</strong></div>` : ''}`;
+
+  // ── QA scenarios summary ───────────────────────────────────────────────────
+  const qaHighPlus = qaScenarios.filter(s => ['critical','high'].includes(s.priority?.toLowerCase()));
+  const qaContent = qaHighPlus.length
+    ? qaHighPlus.map(s =>
+        `<div style="display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid #f0f2f5">
+           ${sevBadge(s.priority)}
+           <div style="flex:1">
+             <div style="font-size:13px;font-weight:500;color:#1a1f2e">${esc(s.title)}</div>
+             <div style="font-size:11px;color:#9fadbf;margin-top:2px">${esc((s.type||'').replace(/_/g,' '))} · ${esc(s.id)}</div>
+           </div>
+         </div>`).join('') +
+        (qaScenarios.length > qaHighPlus.length
+          ? `<div style="font-size:12px;color:#9fadbf;padding-top:6px">+${qaScenarios.length-qaHighPlus.length} medium/low priority scenarios — see QA Scenarios tab</div>`
+          : '')
+    : emptyRow(`${qaScenarios.length} scenario(s) generated, none at critical/high priority`);
+
+  // ── Remediation & checklist ────────────────────────────────────────────────
+  const remContent = `
+    ${r.remediation?.executive_summary
+        ? `<p style="font-size:13px;color:#374151;line-height:1.7;margin-bottom:12px">${esc(r.remediation.executive_summary)}</p>` : ''}
+    ${fixSuggestions.length ? `
+      <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:#9fadbf;margin-bottom:6px">Fixes required</div>
+      ${fixSuggestions.slice(0,5).map(f => `<div style="font-size:13px;color:#1a1f2e;padding:4px 0;border-bottom:1px solid #f0f2f5">• ${esc(typeof f==='string'?f:f.description||JSON.stringify(f))}</div>`).join('')}
+      ${fixSuggestions.length>5?`<div style="font-size:12px;color:#9fadbf;padding-top:4px">+${fixSuggestions.length-5} more — see Remediation tab</div>`:''}` : ''}
+    ${checklist.length ? `
+      <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:#9fadbf;margin:10px 0 6px">Pre-release checklist</div>
+      ${checklist.slice(0,6).map(c => `<div style="font-size:13px;color:#374151;padding:3px 0;display:flex;gap:6px;align-items:flex-start"><span style="color:#9fadbf;flex-shrink:0">☐</span>${esc(typeof c==='string'?c:c.item||JSON.stringify(c))}</div>`).join('')}
+      ${checklist.length>6?`<div style="font-size:12px;color:#9fadbf;padding-top:4px">+${checklist.length-6} more items</div>`:''}` : ''}
+    ${!fixSuggestions.length&&!checklist.length&&!r.remediation?.executive_summary ? emptyRow('No remediation steps required') : ''}`;
+
+  // ── Markdown builder ───────────────────────────────────────────────────────
+  function buildMarkdown() {
+    const lines = [
+      `## Impact Analysis Review — ${r.gate_decision}`,
+      `**Risk:** ${(r.overall_risk||'').toUpperCase()}  |  **Score:** ${r.risk_score||0}/100  |  **Tokens:** ${(r.token_usage||0).toLocaleString()}`,
+      '',
+      `> ${r.rationale||''}`,
+      '',
+    ];
+
+    const pushFindings = (title, items, fmt) => {
+      if(!items.length) return;
+      lines.push(`### ${title}`);
+      items.forEach(f => lines.push(fmt(f)));
+      lines.push('');
+    };
+
+    pushFindings('🔒 Security & Secrets',
+      sortBySev([...secFindings,...entropyFinds]),
+      f => `- **[${(f.severity||'low').toUpperCase()}]** ${f.cwe?'['+f.cwe+'] ':''}${f.description||f.kind||''}${f.file?' — `'+f.file+'`':''}`);
+
+    pushFindings('🧬 Taint / Injection Paths',
+      sortBySev(taintPaths),
+      t => `- **[${(t.severity||'high').toUpperCase()}]** \`${t.source_var}\` → \`${t.sink_var}\`${t.cwe?' ['+t.cwe+']':''} — ${t.description||''}`);
+
+    pushFindings('🏗️ IaC Security',
+      sortBySev(iacFindings),
+      f => `- **[${(f.severity||'medium').toUpperCase()}]** ${f.kind} on \`${f.resource}\` — ${f.description}`);
+
+    pushFindings('⚙️ Code Quality (AST)',
+      sortBySev(astFindings),
+      f => `- **[${(f.severity||'medium').toUpperCase()}]** ${f.kind}: \`${f.function}\` — ${f.description}`);
+
+    pushFindings('🔌 Breaking Changes',
+      sortBySev(breakingChgs),
+      b => `- **[${(b.severity||'high').toUpperCase()}]** ${b.type} — ${(b.break_type||'').replace(/_/g,' ')} \`${b.path}\``);
+
+    pushFindings('🗄️ Schema Changes',
+      sortBySev(schemaChgs),
+      c => `- **[${(c.severity||'medium').toUpperCase()}]** ${(c.change_type||'').replace(/_/g,' ')} on \`${c.table}\` ${c.reversible===false?'⚠ NOT reversible':''}`);
+
+    if(blastScore||affectedSvcs.length) {
+      lines.push('### 📦 Dependencies');
+      lines.push(`- Blast radius: **${blastScore}/100**`);
+      if(affectedSvcs.length) lines.push(`- Affected services: ${affectedSvcs.map(s=>'`'+s+'`').join(', ')}`);
+      lines.push('');
+    }
+
+    if(r.test_coverage?.coverage_delta!==undefined) {
+      lines.push('### 🧪 Test Coverage');
+      lines.push(`- Coverage delta: **${(r.test_coverage.coverage_delta||0)>0?'+':''}${parseFloat(r.test_coverage.coverage_delta||0).toFixed(1)}%** | Regression risk: **${r.test_coverage.regression_risk||'low'}**`);
+      lines.push('');
+    }
+
+    if(qaHighPlus.length) {
+      lines.push(`### 🧪 QA Scenarios (Critical/High — ${qaHighPlus.length} of ${qaScenarios.length})`);
+      qaHighPlus.forEach(s => lines.push(`- **[${(s.priority||'').toUpperCase()}]** [${s.id}] ${s.title} *(${(s.type||'').replace(/_/g,' ')})*`));
+      lines.push('');
+    }
+
+    if(r.remediation?.executive_summary) {
+      lines.push('### 📋 Recommendation');
+      lines.push(r.remediation.executive_summary);
+      lines.push('');
+    }
+    if(fixSuggestions.length) {
+      lines.push('#### Fixes Required');
+      fixSuggestions.forEach(f => lines.push(`- [ ] ${typeof f==='string'?f:f.description||''}`));
+      lines.push('');
+    }
+    if(checklist.length) {
+      lines.push('#### Pre-release Checklist');
+      checklist.forEach(c => lines.push(`- [ ] ${typeof c==='string'?c:c.item||''}`));
+    }
+    return lines.join('\n');
+  }
+
+  window._reviewMarkdown = buildMarkdown;
+
+  // ── Assemble HTML ─────────────────────────────────────────────────────────
+  return `
+  <div class="card" style="margin-top:16px;border:2px solid ${gateColor}20">
+
+    <!-- Gate banner -->
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;padding:14px 18px;margin:-16px -16px 16px;background:${gateColor}0d;border-radius:var(--r) var(--r) 0 0;border-bottom:1px solid ${gateColor}30">
+      <div style="display:flex;align-items:center;gap:12px">
+        <i class="ti ${gateIcon}" style="font-size:28px;color:${gateColor}"></i>
+        <div>
+          <div style="font-size:18px;font-weight:800;color:${gateColor}">${r.gate_decision}</div>
+          <div style="font-size:12px;color:#7a8494;margin-top:1px">Risk: <strong style="color:${riskColor}">${(r.overall_risk||'').toUpperCase()}</strong> &nbsp;·&nbsp; Score: <strong>${r.risk_score||0}/100</strong> &nbsp;·&nbsp; ${(r.token_usage||0).toLocaleString()} tokens</div>
+        </div>
+      </div>
+      <button class="btn" onclick="copyReviewSummary(this)" style="font-size:12px"><i class="ti ti-clipboard"></i>Copy as Markdown</button>
+    </div>
+
+    ${r.rationale ? `<p style="font-size:13px;color:#374151;line-height:1.7;background:#f8f9fb;border-left:3px solid ${gateColor};padding:10px 14px;border-radius:0 6px 6px 0;margin-bottom:18px">${esc(r.rationale)}</p>` : ''}
+
+    <!-- Two-column layout on wide screens -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:20px">
+
+      <div>
+        ${section('ti-shield-lock','Security & Secrets',secContent,
+            secCriticalHigh ? secCriticalHigh+' critical/high' : 'clean',
+            secCriticalHigh ? '#b81c1c' : '#0c7c4b')}
+
+        ${section('ti-code','Code Quality',qualityContent,
+            astFindings.length + codeFindings.length || null,
+            complexityDelta > 5 ? '#8a5200' : '#7a8494')}
+
+        ${section('ti-plug-connected','Contracts & Schema',contractContent,
+            contractIssues || null,
+            contractIssues ? '#8a5200' : '#7a8494')}
+      </div>
+
+      <div>
+        ${section('ti-topology-star-3','Dependencies & Coverage',depContent, null)}
+
+        ${section('ti-checklist','QA Scenarios',qaContent,
+            `${qaScenarios.length} total`,
+            qaHighPlus.length ? '#8a5200' : '#0c7c4b')}
+
+        ${section('ti-speakerphone','Remediation',remContent, null)}
+      </div>
+
+    </div>
+  </div>`;
+}
+
+async function copyReviewSummary(btn) {
+  const md = window._reviewMarkdown ? window._reviewMarkdown() : '';
+  try {
+    await navigator.clipboard.writeText(md);
+    const orig = btn.innerHTML;
+    btn.innerHTML = '<i class="ti ti-check"></i>Copied!';
+    btn.style.color = '#0c7c4b';
+    setTimeout(() => { btn.innerHTML = orig; btn.style.color = ''; }, 2000);
+  } catch(e) {
+    prompt('Copy the Markdown below:', md);
+  }
 }
 
 // ── HISTORY ──────────────────────────────────────────────────────────────────
@@ -2048,6 +2685,25 @@ function renderSettings(el) {
       <div><code>docker-compose up -d</code></div>
       <div style="margin-top:6px">Full stack (app + Redis + ChromaDB + Neo4j) starts on port 8080.</div>
     </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><i class="ti ti-shield-check"></i>Reliability &amp; alerting env vars</div>
+    <div style="font-size:12px;line-height:2;color:#7a8494">
+      <table style="border-collapse:collapse;width:100%">
+        <thead><tr style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#9fadbf;border-bottom:1px solid #e8eaed">
+          <th style="padding:4px 8px;text-align:left;font-weight:500">Variable</th>
+          <th style="padding:4px 8px;text-align:left;font-weight:500">Default</th>
+          <th style="padding:4px 8px;text-align:left;font-weight:500">Description</th>
+        </tr></thead>
+        <tbody>
+          <tr style="border-bottom:1px solid #f0f2f5"><td style="padding:5px 8px"><code>LLM_RETRY_ATTEMPTS</code></td><td style="padding:5px 8px;font-family:'JetBrains Mono',monospace">3</td><td style="padding:5px 8px">Max retries on rate-limit / transient LLM errors (uses exponential backoff + jitter)</td></tr>
+          <tr style="border-bottom:1px solid #f0f2f5"><td style="padding:5px 8px"><code>LLM_RETRY_MAX_WAIT_S</code></td><td style="padding:5px 8px;font-family:'JetBrains Mono',monospace">60</td><td style="padding:5px 8px">Maximum wait (seconds) between retry attempts</td></tr>
+          <tr style="border-bottom:1px solid #f0f2f5"><td style="padding:5px 8px"><code>WEBHOOK_DEDUP_TTL_S</code></td><td style="padding:5px 8px;font-family:'JetBrains Mono',monospace">300</td><td style="padding:5px 8px">How long (seconds) to remember a webhook delivery ID to suppress duplicates</td></tr>
+          <tr><td style="padding:5px 8px"><code>QUALITY_RECALL_ALERT_THRESHOLD</code></td><td style="padding:5px 8px;font-family:'JetBrains Mono',monospace">0.0</td><td style="padding:5px 8px">Emit WARNING log + Slack alert when recall drops below this value (0 = disabled)</td></tr>
+        </tbody>
+      </table>
+    </div>
   </div>`;
 }
 
@@ -2067,8 +2723,16 @@ async function testBackend() {
   msg.textContent = 'Testing...'; msg.style.color='#7a8494';
   try {
     const r = await fetch(url+'/health', { signal: AbortSignal.timeout(5000) });
-    if(r.ok) { const d=await r.json(); msg.textContent='✓ Connected — Phase '+d.phase; msg.style.color='#0c7c4b'; }
-    else throw new Error('HTTP '+r.status);
+    if(r.ok) {
+      const d = await r.json();
+      const llm = d.components?.llm;
+      const llmStr = llm
+        ? (llm.key_set ? ` · LLM: ${llm.provider}` : ' · ⚠ LLM key not set')
+        : '';
+      const status = d.status === 'ok' ? '✓ Connected' : `⚠ ${d.status}`;
+      msg.textContent = status + llmStr;
+      msg.style.color = d.status === 'ok' ? '#0c7c4b' : '#8a5200';
+    } else throw new Error('HTTP '+r.status);
   } catch(e) { msg.textContent='✗ '+e.message; msg.style.color='#b81c1c'; }
 }
 
@@ -2274,6 +2938,249 @@ function updateConnIndicator(ok, name) {
   const txt = document.getElementById('conn-text');
   if (dot) dot.className = 'conn-dot' + (ok ? ' live' : '');
   if (txt) txt.textContent = ok ? name : 'Not connected';
+}
+
+// ── Judge Panel ───────────────────────────────────────────────────────────────
+async function runJudgePanel() {
+  const el = document.getElementById('judge-panel-results');
+  if(!el) return;
+
+  if(!state.backendUrl || !state.lastRequestId) {
+    el.innerHTML = `<div class="info-msg" style="margin-top:14px"><i class="ti ti-info-circle"></i>Judge panel requires a connected backend. Run analysis via backend first, then click here.</div>`;
+    return;
+  }
+
+  el.innerHTML = `<div class="card" style="margin-top:14px">
+    <div class="card-title"><i class="ti ti-gavel"></i>LLM Judge Panel</div>
+    <div style="display:flex;align-items:center;gap:10px;color:#7a8494;font-size:13px"><span class="spinner"></span>Running 3 independent judges in parallel…</div>
+  </div>`;
+
+  const headers = {'Content-Type':'application/json'};
+  if(state.backendKey) headers['X-API-Key'] = state.backendKey;
+
+  try {
+    const resp = await fetch(state.backendUrl+'/api/v1/evaluate/'+state.lastRequestId, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ diff_text: state.diffText || '', async_mode: false }),
+    });
+    if(!resp.ok) throw new Error('HTTP '+resp.status);
+    const data = await resp.json();
+    el.innerHTML = renderJudgePanelResults(data);
+  } catch(e) {
+    el.innerHTML = `<div class="err-msg" style="margin-top:14px"><i class="ti ti-alert-circle"></i>Judge panel failed: ${escHtml(e.message)}</div>`;
+  }
+}
+
+function renderJudgePanelResults(data) {
+  const verdictColor  = { PASS:'#0c7c4b', PARTIAL:'#8a5200', FAIL:'#b81c1c' };
+  const verdictBg     = { PASS:'#edfaf3', PARTIAL:'#fff8ec', FAIL:'#fff1f1' };
+  const verdictBorder = { PASS:'#b5e8cf', PARTIAL:'#fad98a', FAIL:'#f8c0c0' };
+  const confColor     = { HIGH:'#0c7c4b', MEDIUM:'#8a5200', LOW:'#b81c1c' };
+
+  const vc  = verdictColor[data.overall_verdict]  || '#7a8494';
+  const vb  = verdictBg[data.overall_verdict]     || '#f7f8fa';
+  const vbr = verdictBorder[data.overall_verdict] || '#e8eaed';
+
+  const agentRows = (data.agent_verdicts||[]).map(v => {
+    const col = verdictColor[v.verdict]  || '#7a8494';
+    const bg  = verdictBg[v.verdict]    || '#f7f8fa';
+    const br  = verdictBorder[v.verdict]|| '#e8eaed';
+    return `<div style="padding:10px 14px;border:1px solid #e8eaed;border-radius:8px;margin-bottom:6px;background:#fff">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span style="font-size:12px;font-weight:600;color:#0d1117;min-width:120px">${escHtml((v.agent_name||'').replace(/_/g,' '))}</span>
+        <span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;background:${bg};color:${col};border:1px solid ${br}">${v.verdict}</span>
+        <span style="font-size:11px;color:#7a8494">confidence: <strong style="color:${confColor[v.confidence]||'#7a8494'}">${v.confidence||'—'}</strong></span>
+        <span style="font-size:13px;font-weight:700;font-family:'JetBrains Mono',monospace;color:#0d1117;margin-left:auto">${(v.overall_score||0).toFixed(1)}<span style="font-size:10px;font-weight:400;color:#9fadbf">/5</span></span>
+      </div>
+      ${v.summary?`<div style="font-size:12px;color:#7a8494;margin-top:6px;line-height:1.5">${escHtml(v.summary)}</div>`:''}
+      ${(v.consensus_missed||[]).length?`<div style="font-size:11px;color:#b81c1c;margin-top:5px"><i class="ti ti-alert-triangle" style="font-size:12px;margin-right:3px"></i>Missed: ${v.consensus_missed.map(m=>`<code>${escHtml(m)}</code>`).join(' · ')}</div>`:''}
+      ${(v.disagreements||[]).length?`<div style="font-size:11px;color:#8a5200;margin-top:4px"><i class="ti ti-arrows-diff" style="font-size:12px;margin-right:3px"></i>${escHtml(v.disagreements.join(' · '))}</div>`:''}
+    </div>`;
+  }).join('');
+
+  const gaps = data.critical_gaps || [];
+
+  return `<div class="card" style="margin-top:14px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+      <div class="card-title" style="margin-bottom:0"><i class="ti ti-gavel"></i>LLM Judge Panel</div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:11px;color:#7a8494">${data.panel_size||3} judges · ${(data.agent_verdicts||[]).length} agents</span>
+        <span style="font-size:13px;font-weight:700;font-family:'JetBrains Mono',monospace">${(data.overall_score||0).toFixed(2)}<span style="font-size:10px;font-weight:400;color:#9fadbf">/5</span></span>
+        <span style="font-size:12px;font-weight:600;padding:3px 10px;border-radius:12px;background:${vb};color:${vc};border:1px solid ${vbr}">${data.overall_verdict||'—'}</span>
+      </div>
+    </div>
+    ${gaps.length?`<div style="padding:8px 12px;background:#fff1f1;border:1px solid #f8c0c0;border-radius:7px;margin-bottom:12px;font-size:12px;color:#b81c1c"><strong>Critical gaps (consensus missed):</strong> ${gaps.map(g=>`<code>${escHtml(g)}</code>`).join(' · ')}</div>`:''}
+    ${agentRows}
+    <div style="font-size:11px;color:#9fadbf;margin-top:10px;display:flex;align-items:center;gap:5px"><i class="ti ti-info-circle"></i>Scores: completeness · precision · severity accuracy · specificity (each 1–5)</div>
+  </div>`;
+}
+
+// ── Quality Metrics view ──────────────────────────────────────────────────────
+function renderQuality(el) {
+  const savedThreshold = parseFloat(localStorage.getItem('qualityRecallThreshold') || '0');
+  el.innerHTML = `
+  <div style="max-width:860px">
+    <div class="card">
+      <div class="card-title"><i class="ti ti-target-arrow"></i>Detection quality — recall &amp; precision</div>
+      <p style="font-size:13px;color:#7a8494;margin-bottom:16px;line-height:1.6">
+        Runs all 8 golden-diff test cases through the static detection layer and measures how many
+        known issues each agent finds (<strong>recall</strong>) and how many false alarms it raises
+        (<strong>precision</strong>). Results are appended to a JSONL log so regressions are visible over time.
+      </p>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+        ${state.backendUrl
+          ? `<button class="btn btn-primary" onclick="runQualityCheck()" id="btn-quality-run"><i class="ti ti-player-play"></i>Run quality check</button>`
+          : `<div class="info-msg"><i class="ti ti-info-circle"></i>Backend required — configure it in Settings.</div>`
+        }
+        ${state.backendUrl ? `<button class="btn" onclick="loadQualitySummary()" id="btn-quality-load"><i class="ti ti-refresh"></i>Load last run</button>` : ''}
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;padding-top:10px;border-top:1px solid #f0f2f5">
+        <i class="ti ti-bell" style="color:#9fadbf;font-size:14px"></i>
+        <label style="font-size:12px;color:#7a8494;white-space:nowrap">Alert threshold (recall %)</label>
+        <input type="number" id="quality-threshold" min="0" max="100" step="1"
+          value="${Math.round(savedThreshold*100)}"
+          style="width:70px;padding:4px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:12px"
+          oninput="saveQualityThreshold(this.value)"
+          placeholder="0"/>
+        <span style="font-size:11px;color:#9fadbf">0 = disabled · also set <code>QUALITY_RECALL_ALERT_THRESHOLD</code> on the backend for Slack alerts</span>
+      </div>
+    </div>
+    <div id="quality-results"></div>
+  </div>`;
+
+  if(state.backendUrl) loadQualitySummary();
+}
+
+function saveQualityThreshold(val) {
+  const pct = Math.max(0, Math.min(100, parseInt(val) || 0));
+  localStorage.setItem('qualityRecallThreshold', (pct / 100).toFixed(2));
+  // Re-render results if already loaded
+  const res = document.getElementById('quality-results');
+  if(res && res.dataset.lastData) {
+    try { renderQualityData(JSON.parse(res.dataset.lastData), res); } catch(_) {}
+  }
+}
+
+async function runQualityCheck() {
+  const btn = document.getElementById('btn-quality-run');
+  const res = document.getElementById('quality-results');
+  if(btn) { btn.disabled=true; btn.innerHTML='<span class="spinner" style="width:14px;height:14px;border-width:2px"></span> Running…'; }
+  if(res) res.innerHTML = `<div class="card"><div style="display:flex;align-items:center;gap:10px;color:#7a8494;font-size:13px"><span class="spinner"></span>Running 8 golden cases through static detection…</div></div>`;
+  const headers = {'Content-Type':'application/json'};
+  if(state.backendKey) headers['X-API-Key'] = state.backendKey;
+  try {
+    const r = await fetch(state.backendUrl+'/api/v1/quality/run', {method:'POST', headers});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    renderQualityData(await r.json(), res);
+  } catch(e) {
+    if(res) res.innerHTML = `<div class="err-msg"><i class="ti ti-alert-circle"></i>Quality run failed: ${escHtml(e.message)}</div>`;
+  } finally {
+    if(btn) { btn.disabled=false; btn.innerHTML='<i class="ti ti-player-play"></i>Run quality check'; }
+  }
+}
+
+async function loadQualitySummary() {
+  const btn = document.getElementById('btn-quality-load');
+  const res = document.getElementById('quality-results');
+  if(btn) btn.disabled = true;
+  const headers = {};
+  if(state.backendKey) headers['X-API-Key'] = state.backendKey;
+  try {
+    const r = await fetch(state.backendUrl+'/api/v1/quality/summary', {headers});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const data = await r.json();
+    if(data.runs === 0) {
+      if(res) res.innerHTML = `<div class="info-msg"><i class="ti ti-info-circle"></i>No quality runs logged yet. Click <strong>Run quality check</strong> to generate the first snapshot.</div>`;
+    } else {
+      renderQualityData(data, res);
+    }
+  } catch(e) {
+    if(res) res.innerHTML = `<div class="info-msg"><i class="ti ti-info-circle"></i>No history yet — run a quality check first.</div>`;
+  } finally {
+    if(btn) btn.disabled = false;
+  }
+}
+
+function renderQualityData(data, el) {
+  if(!el) return;
+  el.dataset.lastData = JSON.stringify(data);
+
+  const threshold = parseFloat(localStorage.getItem('qualityRecallThreshold') || '0');
+  const recall    = data.overall_recall || 0;
+  const thresholdBadge = threshold > 0
+    ? (recall >= threshold
+        ? `<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;background:#e6f4ee;color:#0c7c4b;border-radius:10px;font-size:11px;font-weight:600"><i class="ti ti-check"></i>Above threshold (${Math.round(threshold*100)}%)</span>`
+        : `<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;background:#fde8e8;color:#b81c1c;border-radius:10px;font-size:11px;font-weight:600"><i class="ti ti-alert-triangle"></i>Below threshold (${Math.round(threshold*100)}%)</span>`)
+    : '';
+
+  const pct = v => `${Math.round((v||0)*100)}%`;
+  const scoreColor = v => v>=0.9?'#0c7c4b':v>=0.7?'#8a5200':'#b81c1c';
+  const scoreBar   = v => `<div style="height:5px;background:#f0f2f5;border-radius:3px;overflow:hidden;margin-top:4px"><div style="height:100%;width:${Math.round((v||0)*100)}%;background:${scoreColor(v)};border-radius:3px"></div></div>`;
+
+  const byAgent = data.by_agent || {};
+  const agentRows = Object.entries(byAgent).map(([name, m]) => `
+    <tr style="border-bottom:1px solid #e8eaed">
+      <td style="padding:10px 12px;font-size:13px;font-weight:500;white-space:nowrap">${escHtml(name.replace(/_/g,' '))}</td>
+      <td style="padding:10px 16px;text-align:right;min-width:90px"><div style="font-size:13px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${scoreColor(m.recall)}">${pct(m.recall)}</div>${scoreBar(m.recall)}</td>
+      <td style="padding:10px 16px;text-align:right;min-width:90px"><div style="font-size:13px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${scoreColor(m.precision)}">${pct(m.precision)}</div>${scoreBar(m.precision)}</td>
+      <td style="padding:10px 16px;text-align:right;min-width:90px"><div style="font-size:13px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${scoreColor(m.f1)}">${pct(m.f1)}</div>${scoreBar(m.f1)}</td>
+      <td style="padding:10px 12px;text-align:center;font-size:12px;font-family:'JetBrains Mono',monospace;color:#0c7c4b;font-weight:600">${m.tp}</td>
+      <td style="padding:10px 12px;text-align:center;font-size:12px;font-family:'JetBrains Mono',monospace;color:#b81c1c;font-weight:600">${m.fp}</td>
+      <td style="padding:10px 12px;text-align:center;font-size:12px;font-family:'JetBrains Mono',monospace;color:#8a5200;font-weight:600">${m.fn}</td>
+    </tr>`).join('');
+
+  const byCaseRows = (data.by_case||[]).map(c => `
+    <tr style="border-bottom:1px solid #e8eaed">
+      <td style="padding:8px 12px;font-size:12px;font-family:'JetBrains Mono',monospace;color:#1a6cf6">${escHtml(c.case_id)}</td>
+      <td style="padding:8px 12px;text-align:right;font-size:12px;font-weight:600;color:${scoreColor(c.recall)}">${pct(c.recall)}</td>
+      <td style="padding:8px 12px;text-align:right;font-size:12px;font-weight:600;color:${scoreColor(c.precision)}">${pct(c.precision)}</td>
+    </tr>`).join('');
+
+  const ts = data.latest_timestamp || data.timestamp || '';
+  const tsStr = ts ? `Last run: ${new Date(ts).toLocaleString()}` : '';
+
+  el.innerHTML = `
+  <div class="card">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px">
+      <div class="card-title" style="margin-bottom:0"><i class="ti ti-chart-bar"></i>By agent</div>
+      <div style="text-align:right">
+        ${tsStr?`<div style="font-size:11px;color:#9fadbf;margin-bottom:4px">${escHtml(tsStr)}${data.runs>1?' · '+data.runs+' runs logged':''}</div>`:''}
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:flex-end">
+          <div style="display:flex;gap:16px;font-size:12px">
+            <span>Recall: <strong style="font-family:'JetBrains Mono',monospace;color:${scoreColor(data.overall_recall||0)}">${pct(data.overall_recall||0)}</strong></span>
+            <span>Precision: <strong style="font-family:'JetBrains Mono',monospace;color:${scoreColor(data.overall_precision||0)}">${pct(data.overall_precision||0)}</strong></span>
+          </div>
+          ${thresholdBadge}
+        </div>
+      </div>
+    </div>
+    <div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#9fadbf;border-bottom:2px solid #e8eaed">
+        <th style="padding:8px 12px;text-align:left;font-weight:500">Agent</th>
+        <th style="padding:8px 16px;text-align:right;font-weight:500">Recall</th>
+        <th style="padding:8px 16px;text-align:right;font-weight:500">Precision</th>
+        <th style="padding:8px 16px;text-align:right;font-weight:500">F1</th>
+        <th style="padding:8px 12px;text-align:center;font-weight:500;color:#0c7c4b" title="True positives">TP</th>
+        <th style="padding:8px 12px;text-align:center;font-weight:500;color:#b81c1c" title="False positives">FP</th>
+        <th style="padding:8px 12px;text-align:center;font-weight:500;color:#8a5200" title="False negatives">FN</th>
+      </tr></thead>
+      <tbody>${agentRows}</tbody>
+    </table>
+    </div>
+  </div>
+  ${byCaseRows ? `<div class="card">
+    <div class="card-title" style="margin-bottom:14px"><i class="ti ti-list-check"></i>By golden case</div>
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#9fadbf;border-bottom:2px solid #e8eaed">
+        <th style="padding:8px 12px;text-align:left;font-weight:500">Case</th>
+        <th style="padding:8px 12px;text-align:right;font-weight:500">Recall</th>
+        <th style="padding:8px 12px;text-align:right;font-weight:500">Precision</th>
+      </tr></thead>
+      <tbody>${byCaseRows}</tbody>
+    </table>
+  </div>` : ''}`;
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────

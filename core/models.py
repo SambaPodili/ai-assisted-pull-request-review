@@ -52,6 +52,7 @@ class AgentName(str, Enum):
     IAC_ANALYSIS    = "iac_analysis"
     TEMPORAL_RISK   = "temporal_risk"
     SCHEMA_CHANGE   = "schema_change"
+    QA_SCENARIOS    = "qa_scenarios"
     DEPENDENCY      = "dependency"
     TEST_COVERAGE   = "test_coverage"
     INTERFACE       = "interface"
@@ -366,6 +367,38 @@ class SchemaChangeResult(AgentResultBase):
     summary:           str       = ""
 
 
+class QAScenarioType(str, Enum):
+    FUNCTIONAL   = "functional"
+    SECURITY     = "security"
+    REGRESSION   = "regression"
+    EDGE_CASE    = "edge_case"
+    INTEGRATION  = "integration"
+    PERFORMANCE  = "performance"
+    API          = "api"
+    DATA         = "data"
+
+
+class QAScenario(BaseModel):
+    id:               str                       # e.g. "QA-001"
+    title:            str
+    type:             QAScenarioType
+    priority:         RiskLevel
+    description:      str
+    steps:            list[str]                 = []
+    expected_result:  str                       = ""
+    affected_files:   list[str]                 = []
+    automation_hint:  str                       = ""
+
+
+class QAScenariosResult(AgentResultBase):
+    scenarios:       list[QAScenario]  = []
+    total_scenarios: int               = 0
+    critical_count:  int               = 0
+    high_count:      int               = 0
+    coverage_areas:  list[str]         = []
+    summary:         str               = ""
+
+
 class AgentTokenUsage(BaseModel):
     agent:       AgentName
     tokens_used: int
@@ -400,6 +433,7 @@ class AnalysisReport(BaseModel):
     iac_analysis:     IaCAnalysisResult     | None = None
     temporal_risk:    TemporalRiskResult    | None = None
     schema_change:    SchemaChangeResult    | None = None
+    qa_scenarios:     QAScenariosResult     | None = None
 
     # Phase 3
     risk:          RiskResult         | None = None

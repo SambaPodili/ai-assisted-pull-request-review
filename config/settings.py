@@ -111,6 +111,17 @@ class Settings(BaseSettings):
     # ── Analysis reliability ──────────────────────────────────────────────────
     analysis_timeout_s: int = Field(default=300, alias="ANALYSIS_TIMEOUT_S")   # 5 min hard cap
 
+    # ── LLM retry (tenacity) ──────────────────────────────────────────────────
+    llm_retry_attempts:    int = Field(default=3,  alias="LLM_RETRY_ATTEMPTS")
+    llm_retry_max_wait_s:  int = Field(default=60, alias="LLM_RETRY_MAX_WAIT_S")
+
+    # ── Webhook deduplication ─────────────────────────────────────────────────
+    webhook_dedup_ttl_s: int = Field(default=300, alias="WEBHOOK_DEDUP_TTL_S")
+
+    # ── Quality alerting ──────────────────────────────────────────────────────
+    # Set > 0.0 to emit a WARNING log (and optional Slack alert) when recall drops below threshold
+    quality_recall_alert_threshold: float = Field(default=0.0, alias="QUALITY_RECALL_ALERT_THRESHOLD")
+
     # ── Storage ───────────────────────────────────────────────────────────────
     sqlite_path:      str  = Field(default="", alias="SQLITE_PATH")
     # When empty, make_report_store uses data/reports.db as the default.

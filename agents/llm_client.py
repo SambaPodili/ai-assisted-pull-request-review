@@ -18,7 +18,37 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
+try:
+    from tenacity import (
+        retry, stop_after_attempt, wait_exponential_jitter,
+        retry_if_exception, before_sleep_log, RetryError,
+    )
+    _HAS_TENACITY = True
+except ImportError:
+    _HAS_TENACITY = False
+
 log = logging.getLogger(__name__)
+
+
+def _make_retry(max_attempts: int, max_wait: int, is_retryable):
+    """Return a tenacity Retrying context or a no-op fallback."""
+    if not _HAS_TENACITY:
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _noop():
+            yield
+
+        return _noop()
+
+    from tenacity import Retrying
+    return Retrying(
+        retry=retry_if_exception(is_retryable),
+        wait=wait_exponential_jitter(initial=2, max=max_wait),
+        stop=stop_after_attempt(max_attempts),
+        before_sleep=before_sleep_log(log, logging.WARNING),
+        reraise=True,
+    )
 
 
 # ── Model config ──────────────────────────────────────────────────────────────
@@ -120,17 +150,32 @@ class UnifiedLLMClient:
 
     def _call_anthropic(self, system: str, user: str, max_tokens: int) -> LLMResponse:
         import anthropic
+
+        def _is_retryable(exc: BaseException) -> bool:
+            return isinstance(exc, (
+                anthropic.RateLimitError,
+                anthropic.APIConnectionError,
+                anthropic.APITimeoutError,
+                anthropic.InternalServerError,
+            ))
+
+        from config.settings import get_settings
+        cfg = get_settings()
+
         client = anthropic.Anthropic(api_key=self._cfg.api_key or None)
-        resp = client.messages.create(
-            model=self._cfg.model,
-            max_tokens=max_tokens,
-            system=[{
-                "type":          "text",
-                "text":          system,
-                "cache_control": {"type": "ephemeral"},   # prompt caching
-            }],
-            messages=[{"role": "user", "content": user}],
-        )
+        resp = None
+        for attempt in _make_retry(cfg.llm_retry_attempts, cfg.llm_retry_max_wait_s, _is_retryable):
+            with attempt:
+                resp = client.messages.create(
+                    model=self._cfg.model,
+                    max_tokens=max_tokens,
+                    system=[{
+                        "type":          "text",
+                        "text":          system,
+                        "cache_control": {"type": "ephemeral"},
+                    }],
+                    messages=[{"role": "user", "content": user}],
+                )
         return LLMResponse(
             text=resp.content[0].text,
             input_tokens=resp.usage.input_tokens,
@@ -183,11 +228,24 @@ class UnifiedLLMClient:
             {"role": "user",   "content": user},
         ]
 
-        resp = client.chat.completions.create(
-            model=self._cfg.model,
-            max_tokens=max_tokens,
-            messages=messages,
-        )
+        def _is_retryable_openai(exc: BaseException) -> bool:
+            try:
+                from openai import RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
+                return isinstance(exc, (RateLimitError, APIConnectionError, APITimeoutError, InternalServerError))
+            except ImportError:
+                return False
+
+        from config.settings import get_settings
+        cfg = get_settings()
+
+        resp = None
+        for attempt in _make_retry(cfg.llm_retry_attempts, cfg.llm_retry_max_wait_s, _is_retryable_openai):
+            with attempt:
+                resp = client.chat.completions.create(
+                    model=self._cfg.model,
+                    max_tokens=max_tokens,
+                    messages=messages,
+                )
 
         usage = resp.usage
         return LLMResponse(

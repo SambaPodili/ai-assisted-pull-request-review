@@ -105,4 +105,26 @@ def health():
     except Exception as exc:
         log.debug("Circuit breaker health check failed: %s", exc)
 
+    # LLM provider key + optional reachability
+    try:
+        from config.settings import get_settings
+        cfg = get_settings()
+        provider = getattr(cfg, "llm_provider", "anthropic")
+        has_key  = bool(
+            cfg.anthropic_api_key if provider == "anthropic"
+            else getattr(cfg, "openai_api_key", "")
+        )
+        llm_check: dict[str, Any] = {
+            "status":   "ok" if has_key else "degraded",
+            "provider": provider,
+            "key_set":  has_key,
+        }
+        if not has_key:
+            llm_check["detail"] = "No API key configured"
+            checks["status"] = "degraded"
+        checks["components"]["llm"] = llm_check
+    except Exception as exc:
+        checks["components"]["llm"] = {"status": "error", "detail": str(exc)}
+        checks["status"] = "degraded"
+
     return checks

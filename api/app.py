@@ -25,6 +25,7 @@ from api.routes.gate_override import router as gate_router
 from api.routes.git_proxy import router as git_proxy_router
 from api.routes.health    import router as health_router
 from api.routes.evaluate  import router as evaluate_router
+from api.routes.quality   import router as quality_router
 
 log = logging.getLogger(__name__)
 
@@ -111,6 +112,7 @@ def create_app(settings=None) -> FastAPI:
     app.include_router(health_router)          # /health, /ready, /live — no auth
     app.include_router(analysis_router)
     app.include_router(evaluate_router)
+    app.include_router(quality_router)
     app.include_router(webhook_router)
     app.include_router(admin_router)
     app.include_router(gate_router)

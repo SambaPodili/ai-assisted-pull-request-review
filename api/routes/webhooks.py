@@ -14,6 +14,7 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
 from ingestion.webhook_parser import parse_bitbucket_webhook, parse_github_webhook
 from ingestion.git_client import make_git_client
 from ingestion.diff_parser import parse_diff
+from governance.webhook_dedup import get_dedup_store
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhook", tags=["webhooks"])
@@ -40,6 +41,16 @@ async def bitbucket_webhook(
     if not req:
         return {"status": "skipped", "reason": f"Unhandled event: {event}"}
 
+    # Deduplication: key on pr_id + head commit from metadata
+    pr_id  = req.metadata.get("pr_id", "")
+    sha    = req.metadata.get("head_sha", req.source_ref)
+    dedup_key = f"{pr_id}:{sha}"
+    dedup = get_dedup_store()
+    if dedup.is_duplicate("bitbucket", dedup_key):
+        log.info("[webhook] Bitbucket duplicate skipped: %s", dedup_key)
+        return {"status": "duplicate", "request_id": req.request_id}
+    dedup.mark_seen("bitbucket", dedup_key)
+
     get_audit_logger().log_webhook("bitbucket", event, req.request_id)
     background.add_task(_run_with_diff, req, "bitbucket", get_orchestrator(), get_report_store())
     return {"status": "queued", "request_id": req.request_id}
@@ -50,6 +61,7 @@ async def github_webhook(
     request:                  Request,
     background:               BackgroundTasks,
     x_hub_signature_256:      str | None = Header(None, alias="X-Hub-Signature-256"),
+    x_github_delivery:        str | None = Header(None, alias="X-GitHub-Delivery"),
 ):
     """Receive GitHub / GitHub Enterprise webhooks."""
     from api.app import get_orchestrator, get_report_store, get_audit_logger
@@ -65,6 +77,14 @@ async def github_webhook(
 
     if not req:
         return {"status": "skipped", "reason": f"Unhandled event: {event}"}
+
+    # Deduplication: prefer the unique X-GitHub-Delivery header; fall back to pr+sha
+    dedup_key = x_github_delivery or f"{req.metadata.get('pr_id','')}:{req.source_ref}"
+    dedup = get_dedup_store()
+    if dedup.is_duplicate("github", dedup_key):
+        log.info("[webhook] GitHub duplicate skipped: %s", dedup_key)
+        return {"status": "duplicate", "request_id": req.request_id}
+    dedup.mark_seen("github", dedup_key)
 
     get_audit_logger().log_webhook("github", event, req.request_id)
     background.add_task(_run_with_diff, req, "github", get_orchestrator(), get_report_store())

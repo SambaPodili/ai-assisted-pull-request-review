@@ -21,6 +21,7 @@ from pydantic import ValidationError
 from core.token_manager import TokenBudgetManager, estimate_tokens
 from core.models import AgentName, AnalysisRequest, AgentResultBase
 from agents.llm_client import UnifiedLLMClient, ModelConfig, make_llm_client
+from governance.observability import agent_span
 
 log = logging.getLogger(__name__)
 T   = TypeVar("T", bound=AgentResultBase)
@@ -61,28 +62,29 @@ class BaseAgent(ABC, Generic[T]):
             return result
 
         t0 = time.monotonic()
-        try:
-            result, tokens = self._call_llm(client, user_prompt, budget.get_remaining(agent_key))
-            duration = round(time.monotonic() - t0, 2)
-            budget.record_usage(agent_key, tokens, client.model_name)
-            result.token_usage   = tokens
-            result.model_used    = client.model_name
-            result.fallback_used = False
-            result.duration_s    = duration
-            progress.agent_done(agent_key, tokens, duration, client.model_name, False)
-            log.info("[%s] %-22s LLM   tokens=%-5d  time=%-6.2fs  model=%s",
-                     request.request_id, agent_key, tokens, duration, client.model_name)
-            return result
-        except Exception as exc:
-            duration = round(time.monotonic() - t0, 2)
-            log.error("[%s] %s LLM error: %s", request.request_id, agent_key, exc, exc_info=True)
-            result = self.fallback_result(request)
-            result.fallback_used = True
-            result.duration_s    = duration
-            progress.agent_done(agent_key, 0, duration, "", True)
-            log.warning("[%s] %-22s FALLBACK (static rules) — LLM call failed  time=%.2fs",
-                        request.request_id, agent_key, duration)
-            return result
+        with agent_span(agent_key, request.request_id):
+            try:
+                result, tokens = self._call_llm(client, user_prompt, budget.get_remaining(agent_key))
+                duration = round(time.monotonic() - t0, 2)
+                budget.record_usage(agent_key, tokens, client.model_name)
+                result.token_usage   = tokens
+                result.model_used    = client.model_name
+                result.fallback_used = False
+                result.duration_s    = duration
+                progress.agent_done(agent_key, tokens, duration, client.model_name, False)
+                log.info("[%s] %-22s LLM   tokens=%-5d  time=%-6.2fs  model=%s",
+                         request.request_id, agent_key, tokens, duration, client.model_name)
+                return result
+            except Exception as exc:
+                duration = round(time.monotonic() - t0, 2)
+                log.error("[%s] %s LLM error: %s", request.request_id, agent_key, exc, exc_info=True)
+                result = self.fallback_result(request)
+                result.fallback_used = True
+                result.duration_s    = duration
+                progress.agent_done(agent_key, 0, duration, "", True)
+                log.warning("[%s] %-22s FALLBACK (static rules) — LLM call failed  time=%.2fs",
+                            request.request_id, agent_key, duration)
+                return result
 
     @abstractmethod
     def build_user_prompt(self, request: AnalysisRequest, context: dict[str, Any]) -> str: ...
