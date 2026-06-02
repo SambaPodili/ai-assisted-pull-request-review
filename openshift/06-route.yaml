@@ -1,0 +1,22 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Route — exposes the service over HTTPS (TLS terminated at the edge router).
+# OpenShift auto-generates the host if you omit `host`. To pin a hostname,
+# uncomment and set it to something resolvable by your cluster's wildcard DNS.
+# ──────────────────────────────────────────────────────────────────────────────
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: impact-analyzer
+  labels:
+    app: impact-analyzer
+spec:
+  # host: impact-analyzer.apps.your-cluster.example.com
+  to:
+    kind: Service
+    name: impact-analyzer
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

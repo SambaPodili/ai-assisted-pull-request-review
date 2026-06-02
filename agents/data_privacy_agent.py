@@ -153,7 +153,8 @@ class DataPrivacyAgent(BaseAgent[DataPrivacyResult]):
         remaining = budget.get_remaining(agent_key) if hasattr(budget, "get_remaining") else 0
         llm_result: DataPrivacyResult | None = None
 
-        if remaining > 1500:
+        llm_attempted = remaining > 1500
+        if llm_attempted:
             try:
                 # Pass static results via context so build_user_prompt reuses them
                 # instead of running detect_static_issues a second time.
@@ -186,6 +187,9 @@ class DataPrivacyAgent(BaseAgent[DataPrivacyResult]):
         all_risks = [f.risk_level for f in result.pii_findings]
         result.gdpr_risk          = _max_risk(all_risks)
         result.data_exposure_risk = _max_risk(all_risks)
+
+        if not llm_attempted:
+            self.report_static_progress(request, result.duration_s)
 
         return result
 

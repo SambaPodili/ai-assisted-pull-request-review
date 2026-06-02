@@ -125,7 +125,8 @@ class PerformanceImpactAgent(BaseAgent[PerformanceImpactResult]):
         remaining = budget.get_remaining(agent_key) if hasattr(budget, "get_remaining") else 0
         llm_result: PerformanceImpactResult | None = None
 
-        if remaining > 1500:
+        llm_attempted = remaining > 1500
+        if llm_attempted:
             try:
                 # Pass static_findings via context so build_user_prompt reuses them
                 # instead of running detect_static_issues a second time.
@@ -156,6 +157,11 @@ class PerformanceImpactAgent(BaseAgent[PerformanceImpactResult]):
         )
         if result.findings:
             result.overall_severity = _max_severity([f.severity for f in result.findings])
+
+        # If we never entered the LLM branch, base run() never reported progress —
+        # emit it here so the agent still shows in the live panel and Timings.
+        if not llm_attempted:
+            self.report_static_progress(request, result.duration_s)
 
         return result
 

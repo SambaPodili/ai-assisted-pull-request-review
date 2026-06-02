@@ -1,0 +1,28 @@
+[Unit]
+Description=CIAA Impact Analyzer API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ciaa
+Group=ciaa
+WorkingDirectory=/opt/impact-analyzer
+EnvironmentFile=/opt/impact-analyzer/.env
+ExecStart=/opt/impact-analyzer/.venv/bin/python main.py
+Restart=on-failure
+RestartSec=5
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/opt/impact-analyzer/data /opt/impact-analyzer/logs
+
+# Resource guardrails (tune to your host)
+MemoryMax=2G
+CPUQuota=200%
+
+[Install]
+WantedBy=multi-user.target

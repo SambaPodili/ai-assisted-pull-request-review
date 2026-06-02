@@ -27,9 +27,15 @@ COPY . .
 # Runtime directories (SQLite DB + log files)
 RUN mkdir -p data logs
 
-# Non-root user for security
-RUN useradd -m appuser && chown -R appuser /app
-USER appuser
+# Non-root user, OpenShift-compatible.
+# OpenShift's restricted SCC runs the container with an ARBITRARY UID that is
+# always a member of the root group (GID 0). Making /app owned by group 0 and
+# group-writable (g=u) lets both a fixed UID (plain Docker) and a random UID
+# (OpenShift) read/write data/ and logs/.
+RUN useradd -u 1001 -r -g 0 -d /app -s /sbin/nologin appuser \
+    && chown -R 1001:0 /app \
+    && chmod -R g=u /app
+USER 1001
 
 EXPOSE 8080
 

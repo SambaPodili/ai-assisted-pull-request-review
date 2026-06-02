@@ -129,8 +129,20 @@ class SecretsEntropyAgent(BaseAgent[SecretsEntropyResult]):
     # ── Always use deterministic fallback (no LLM for secrets) ────────────────
 
     def run(self, request: AnalysisRequest, budget, context: dict | None = None) -> SecretsEntropyResult:
-        """Always runs the deterministic multi-layer scanner. No LLM needed."""
-        return self.fallback_result(request)
+        """Always runs the deterministic multi-layer scanner. No LLM needed.
+        Reports progress + timing so the agent appears in the live panel."""
+        import time
+        from core.progress import get_progress_store
+        progress  = get_progress_store().get_or_create(request.request_id)
+        agent_key = self.agent_name.value
+        progress.agent_started(agent_key)
+        t0 = time.monotonic()
+        result = self.fallback_result(request)
+        duration = round(time.monotonic() - t0, 2)
+        result.duration_s    = duration
+        result.fallback_used = False    # static scan is the intended path, not a degradation
+        progress.agent_done(agent_key, 0, duration, "static", False)
+        return result
 
     def build_user_prompt(self, request: AnalysisRequest, context: dict[str, Any]) -> str:
         return "\n\n".join(h.content for h in request.hunks)

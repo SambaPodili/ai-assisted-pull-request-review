@@ -50,7 +50,15 @@ class RunProgress:
         self._lock    = threading.Lock()
         self._created = time.monotonic()
 
+    @staticmethod
+    def _key(agent) -> str:
+        """Normalise agent identifiers to their string value.
+        Accepts AgentName enums or plain strings so progress keys are always
+        the canonical string the frontend matches on (e.g. 'ast_analysis')."""
+        return getattr(agent, "value", agent)
+
     def agent_started(self, agent: str) -> None:
+        agent = self._key(agent)
         with self._lock:
             if agent not in self._agents:
                 self._agents[agent] = _AgentEntry(agent)
@@ -60,6 +68,7 @@ class RunProgress:
 
     def agent_done(self, agent: str, tokens: int, duration_s: float,
                    model: str, fallback: bool) -> None:
+        agent = self._key(agent)
         with self._lock:
             if agent not in self._agents:
                 self._agents[agent] = _AgentEntry(agent)

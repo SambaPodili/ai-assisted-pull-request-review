@@ -585,8 +585,8 @@ function showView(name) {
 }
 
 function updateTopbar(name) {
-  const titles = { configure:'Configure provider', repos:'Select repositories', target:'Analysis target', results:'Analysis results', history:'Past analyses', settings:'Backend settings', quality:'Quality metrics' };
-  const subs = { configure:'Connect GitHub or Bitbucket', repos:'Choose primary repo and connected apps', target:'Pick PR, branch diff, or commit', results:'Review gate decision and findings', history:'Previous analysis runs', settings:'Configure backend API connection', quality:'Recall, precision & F1 across all detection agents' };
+  const titles = { configure:'Configure provider', repos:'Select repositories', target:'Analysis target', results:'Analysis results', history:'Past analyses', settings:'Backend settings', quality:'Quality metrics', insights:'Team insights' };
+  const subs = { configure:'Connect GitHub or Bitbucket', repos:'Choose primary repo and connected apps', target:'Pick PR, branch diff, or commit', results:'Review gate decision and findings', history:'Previous analysis runs', settings:'Configure backend API connection', quality:'Recall, precision & F1 across all detection agents', insights:'Review queue, risk trends, change heatmap & API cost' };
   document.getElementById('topbar-title').textContent = titles[name] || name;
   document.getElementById('topbar-sub').textContent = subs[name] || '';
   const u = document.getElementById('backend-url-display');
@@ -1493,32 +1493,60 @@ function renderResults(el) {
       <div><strong>Analysis errors:</strong> ${(r.errors||[]).map(e=>esc(e)).join('<br/>')}</div>
     </div>` : '';
 
-  // Human-in-the-loop panel (shown when gate is HOLD or BLOCK)
-  const humanReviewPanel = (gKey === 'HOLD' || gKey === 'BLOCK') ? `
-    <div style="background:#fff;border:1.5px solid ${gKey==='BLOCK'?'#f8c0c0':'#fad98a'};border-radius:12px;padding:20px 22px;margin-bottom:18px" id="human-review-panel">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
-        <div style="width:36px;height:36px;border-radius:8px;background:${gKey==='BLOCK'?'#fff1f1':'#fff8ec'};display:flex;align-items:center;justify-content:center;flex-shrink:0">
-          <i class="ti ti-user-check" style="font-size:18px;color:${gKey==='BLOCK'?'#b81c1c':'#8a5200'}"></i>
-        </div>
-        <div>
-          <div style="font-size:14px;font-weight:600;color:#0d1117">Human Review Required</div>
-          <div style="font-size:12px;color:#7a8494;margin-top:1px">This ${gKey==='BLOCK'?'BLOCK':'HOLD'} gate requires a human reviewer to approve or reject before the pipeline can proceed</div>
-        </div>
-        <div id="review-status-badge" style="margin-left:auto"></div>
-      </div>
+  // ── Single consolidated reviewer decision panel ──────────────────────────
+  // Shown when: gate is HOLD/BLOCK (review required) OR the user is a reviewer
+  // (so reviewers can override even an AI-APPROVED gate). This is the ONLY
+  // approval control — the duplicate in the Checklist tab was removed.
+  const _isReviewer    = (typeof canOverrideGate === 'function') ? canOverrideGate() : true;
+  const _reviewNeeded  = (gKey === 'HOLD' || gKey === 'BLOCK');
+  const _showReviewPanel = _reviewNeeded || _isReviewer;
 
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
-        <div style="background:#f7f8fa;border:1px solid #e8eaed;border-radius:8px;padding:12px;text-align:center;cursor:pointer;transition:all .15s;border:2px solid transparent" id="btn-approve-panel" onclick="showHumanReviewModal('APPROVED')">
-          <i class="ti ti-circle-check" style="font-size:24px;color:#0c7c4b;display:block;margin-bottom:5px"></i>
-          <div style="font-size:13px;font-weight:600;color:#0c7c4b">Approve</div>
+  const _panelBorder = gKey==='BLOCK' ? '#f8c0c0' : gKey==='HOLD' ? '#fad98a' : '#cfe8d8';
+  const _panelTint   = gKey==='BLOCK' ? '#fff1f1' : gKey==='HOLD' ? '#fff8ec' : '#edfaf3';
+  const _panelIconC  = gKey==='BLOCK' ? '#b81c1c' : gKey==='HOLD' ? '#8a5200' : '#0c7c4b';
+  const _panelTitle  = _reviewNeeded ? 'Human Review Required' : 'Reviewer Override (optional)';
+  const _panelSub    = _reviewNeeded
+      ? `This ${gKey} gate requires a reviewer to decide before the pipeline can proceed.`
+      : 'The AI recommends APPROVE. As a reviewer you may override this decision.';
+
+  // Action buttons (3-way) — only for users who can override the gate
+  const _actionButtons = _isReviewer ? `
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:14px">
+        <div style="background:#f7f8fa;border:2px solid transparent;border-radius:8px;padding:12px;text-align:center;cursor:pointer;transition:all .15s" id="btn-approve-panel" onclick="showHumanReviewModal('APPROVED')">
+          <i class="ti ti-circle-check" style="font-size:22px;color:#0c7c4b;display:block;margin-bottom:5px"></i>
+          <div style="font-size:13px;font-weight:600;color:#0c7c4b">Approve merge</div>
           <div style="font-size:11px;color:#7a8494;margin-top:2px">Pipeline can proceed</div>
         </div>
-        <div style="background:#f7f8fa;border:1px solid #e8eaed;border-radius:8px;padding:12px;text-align:center;cursor:pointer;transition:all .15s" id="btn-reject-panel" onclick="showHumanReviewModal('REJECTED')">
-          <i class="ti ti-ban" style="font-size:24px;color:#b81c1c;display:block;margin-bottom:5px"></i>
-          <div style="font-size:13px;font-weight:600;color:#b81c1c">Reject</div>
+        <div style="background:#f7f8fa;border:2px solid transparent;border-radius:8px;padding:12px;text-align:center;cursor:pointer;transition:all .15s" id="btn-changes-panel" onclick="showHumanReviewModal('CHANGES')">
+          <i class="ti ti-alert-triangle" style="font-size:22px;color:#8a5200;display:block;margin-bottom:5px"></i>
+          <div style="font-size:13px;font-weight:600;color:#8a5200">Request changes</div>
+          <div style="font-size:11px;color:#7a8494;margin-top:2px">Hold for rework</div>
+        </div>
+        <div style="background:#f7f8fa;border:2px solid transparent;border-radius:8px;padding:12px;text-align:center;cursor:pointer;transition:all .15s" id="btn-reject-panel" onclick="showHumanReviewModal('REJECTED')">
+          <i class="ti ti-ban" style="font-size:22px;color:#b81c1c;display:block;margin-bottom:5px"></i>
+          <div style="font-size:13px;font-weight:600;color:#b81c1c">Block merge</div>
           <div style="font-size:11px;color:#7a8494;margin-top:2px">Block deployment</div>
         </div>
+      </div>` : `
+      <div style="background:#f7f8fa;border:1px solid #e8eaed;border-radius:8px;padding:12px 14px;margin-bottom:14px;font-size:12px;color:#7a8494;display:flex;align-items:center;gap:8px">
+        <i class="ti ti-lock" style="font-size:14px"></i>
+        <span>Awaiting reviewer approval — your role does not have gate-override permission. ${typeof roleBadgeHtml==='function'?roleBadgeHtml(true):''}</span>
+      </div>`;
+
+  const humanReviewPanel = _showReviewPanel ? `
+    <div style="background:#fff;border:1.5px solid ${_panelBorder};border-radius:12px;padding:20px 22px;margin-bottom:18px" id="human-review-panel">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+        <div style="width:36px;height:36px;border-radius:8px;background:${_panelTint};display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <i class="ti ti-user-check" style="font-size:18px;color:${_panelIconC}"></i>
+        </div>
+        <div>
+          <div style="font-size:14px;font-weight:600;color:#0d1117">${_panelTitle}</div>
+          <div style="font-size:12px;color:#7a8494;margin-top:1px">${_panelSub}</div>
+        </div>
+        <div id="review-status-badge" style="margin-left:auto">${typeof roleBadgeHtml==='function'?roleBadgeHtml(true):''}</div>
       </div>
+
+      ${_actionButtons}
 
       <div style="font-size:11px;color:#9fadbf;display:flex;align-items:center;gap:5px">
         <i class="ti ti-shield-lock" style="font-size:13px"></i>
@@ -1737,21 +1765,200 @@ function switchResultTab(tab) {
   document.getElementById('result-tab-content').innerHTML = renderResultTab(tab, state.report);
 }
 
-function renderResultTab(tab, r) {
-  if(tab==='summary') return `
-    <div class="card">
-      <div class="section-heading"><i class="ti ti-code"></i>Code analysis</div>
-      <p style="font-size:13px;margin-bottom:10px">${escHtml(r.code_analysis?.summary||'')}</p>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
-        <span class="badge badge-dim">${r.code_analysis?.change_type||'unknown'}</span>
-        <span class="badge ${(r.code_analysis?.complexity_delta||0)>0?'badge-amber':'badge-dim'}">complexity ${(r.code_analysis?.complexity_delta||0)>0?'+':''}${r.code_analysis?.complexity_delta||0}</span>
+// ── Persona-aware consolidated summary ────────────────────────────────────────
+
+let _summaryPersona = null;   // 'developer' | 'reviewer' (defaults to the user's role)
+
+function setSummaryPersona(p) {
+  _summaryPersona = p;
+  document.getElementById('result-tab-content').innerHTML = renderResultTab('summary', state.report);
+}
+
+// Shared helpers — collect findings across all agents into one list
+function _allFindings(r) {
+  const out = [];
+  const push = (sev, cat, msg, file, line) => out.push({
+    severity: (sev||'low').toLowerCase(), category: cat, message: msg||'',
+    file: file||'', line: line||''
+  });
+  (r.security?.findings||[]).forEach(f => push(f.severity, 'Security', `${f.cwe?f.cwe+' — ':''}${f.description}`, f.file, f.line_range));
+  if (r.security?.secrets_detected) push('critical','Security','Hardcoded secret detected — rotate immediately','','');
+  (r.performance_impact?.findings||[]).forEach(f => push(f.severity, 'Performance', f.description, f.file_path||f.file, f.line));
+  (r.data_privacy?.pii_findings||[]).forEach(f => push(f.risk_level, 'Privacy', `${(f.pii_type||'PII').toUpperCase()} — ${f.description}`, f.file_path||f.file, f.line));
+  (r.maintainability?.issues||[]).forEach(f => push(f.severity, 'Quality', f.description, f.file_path||f.file, f.line));
+  (r.observability?.findings||[]).forEach(f => push(f.severity, 'Observability', f.description, f.file_path||f.file, f.line));
+  (r.schema_change?.changes||[]).filter(c=>['high','critical'].includes((c.severity||'').toLowerCase()))
+    .forEach(c => push(c.severity,'Schema',`${c.change_type} on ${c.table||c.table_name||'table'}${c.reversible===false?' (irreversible)':''}`,'',''));
+  (r.interface?.breaking_changes||[]).forEach(b => push(b.severity||'high','API',`${b.break_type||'breaking'} change: ${b.path||''}`,'',''));
+  const order = {critical:0,high:1,medium:2,low:3};
+  out.sort((a,b)=>(order[a.severity]??9)-(order[b.severity]??9));
+  return out;
+}
+
+function _sevChip(sev) {
+  const m = {critical:['#fff1f2','#991b1b','🚨'],high:['#fff1f2','#b91c1c','🔴'],medium:['#fffbeb','#92400e','🟡'],low:['#eff6ff','#1e40af','🔵']}[sev]||['#f0f2f5','#7a8494','•'];
+  return `<span style="background:${m[0]};color:${m[1]};border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;white-space:nowrap">${m[2]} ${sev}</span>`;
+}
+
+function _gateHero(r) {
+  const gate = (r.gate_decision||r.gate||'HOLD').toUpperCase();
+  const risk = r.risk_score || 0;
+  const m = {APPROVE:['#f0fdf4','#166534','#86efac','✅','Ready to merge'],
+             HOLD:['#fffbeb','#92400e','#fcd34d','⚠️','Needs attention before merge'],
+             BLOCK:['#fff1f2','#991b1b','#fca5a5','🚫','Blocked — must fix first']}[gate]||['#f7f8fa','#7a8494','#e8eaed','•',''];
+  return `
+    <div style="display:flex;align-items:center;gap:16px;padding:18px 20px;background:${m[0]};border:1.5px solid ${m[2]};border-radius:12px;margin-bottom:16px">
+      <div style="font-size:34px">${m[3]}</div>
+      <div style="flex:1">
+        <div style="font-size:20px;font-weight:800;color:${m[1]}">${gate}</div>
+        <div style="font-size:13px;color:#5a6a7e;margin-top:2px">${m[4]} · ${escHtml((r.overall_risk||'').toUpperCase())} risk</div>
       </div>
-      ${(r.code_analysis?.findings||[]).map(f=>`<div class="finding"><span class="sev sev-${f.severity}">${f.severity}</span><div class="finding-body"><div class="finding-desc">${escHtml(f.description)}</div><div class="finding-file">${escHtml(f.file||'')}${f.line_range?' · line '+escHtml(f.line_range):''}</div>${getCodeSnippet(f.file,f.line_range)}</div></div>`).join('')}
-      <div style="margin-top:16px"><div class="section-heading"><i class="ti ti-test-pipe"></i>Test coverage</div>
-      <div style="font-size:13px;margin-bottom:6px">Coverage delta: <strong>${((r.test_coverage?.coverage_delta||0)>0?'+':'')+parseFloat(r.test_coverage?.coverage_delta||0).toFixed(1)}%</strong> &nbsp;·&nbsp; Regression risk: <span class="badge badge-${r.test_coverage?.regression_risk==='high'?'amber':'dim'}">${r.test_coverage?.regression_risk||'low'}</span></div>
-      ${(r.test_coverage?.uncovered_paths||[]).map(u=>`<div class="finding"><span class="sev sev-medium">gap</span><div class="finding-body"><div class="finding-desc">${escHtml(u.description||u.file||'')}</div><div class="finding-file">${escHtml(u.file||'')}</div></div></div>`).join('')}
+      <div style="text-align:right">
+        <div style="font-size:28px;font-weight:800;font-family:'JetBrains Mono',monospace;color:${m[1]}">${risk}</div>
+        <div style="font-size:10px;color:#9fadbf">risk /100</div>
       </div>
     </div>`;
+}
+
+// ── DEVELOPER VIEW — "what to fix before requesting review" ───────────────────
+function renderDeveloperSummary(r) {
+  const findings = _allFindings(r);
+  const blockers = findings.filter(f=>['critical','high'].includes(f.severity));
+  const fixes    = (r.remediation?.fix_suggestions)||[];
+  const scenarios= (r.qa_scenarios?.scenarios)||[];
+  const covDelta = parseFloat(r.test_coverage?.coverage_delta||0);
+
+  return `
+    ${_gateHero(r)}
+    <div class="card">
+      <div class="section-heading"><i class="ti ti-code"></i>What you changed</div>
+      <p style="font-size:13px;margin-bottom:8px">${escHtml(r.code_analysis?.summary||'No summary available.')}</p>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <span class="badge badge-dim">${escHtml(r.code_analysis?.change_type||'unknown')}</span>
+        <span class="badge ${(r.code_analysis?.complexity_delta||0)>0?'badge-amber':'badge-dim'}">complexity ${(r.code_analysis?.complexity_delta||0)>0?'+':''}${r.code_analysis?.complexity_delta||0}</span>
+        <span class="badge ${covDelta<0?'badge-amber':'badge-dim'}">coverage ${covDelta>0?'+':''}${covDelta.toFixed(1)}%</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="section-heading" style="color:${blockers.length?'#b91c1c':'#166534'}">
+        <i class="ti ti-${blockers.length?'alert-triangle':'circle-check'}"></i>
+        ${blockers.length?`Fix before requesting review (${blockers.length})`:'No blockers — looks good to submit'}
+      </div>
+      ${blockers.length ? `<div style="display:flex;flex-direction:column;gap:8px">${blockers.slice(0,12).map(f=>`
+        <div style="display:flex;align-items:flex-start;gap:10px;padding:9px 12px;border:1px solid #f0f2f5;border-radius:8px">
+          ${_sevChip(f.severity)}
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;color:#1a2332">${escHtml(f.message)}</div>
+            <div style="font-size:11px;color:#9fadbf">${escHtml(f.category)}${f.file?` · ${escHtml(f.file)}${f.line?':'+f.line:''}`:''}</div>
+          </div>
+        </div>`).join('')}</div>` :
+        '<div style="font-size:13px;color:#7a8494">No critical or high-severity findings. Address any medium/low items in the domain tabs if relevant.</div>'}
+    </div>
+
+    ${fixes.length?`<div class="card">
+      <div class="section-heading"><i class="ti ti-tool"></i>Suggested fixes</div>
+      <ol style="margin:0 0 0 18px;font-size:13px;line-height:1.9;color:#3d4652">${fixes.slice(0,6).map(f=>`<li>${escHtml(f)}</li>`).join('')}</ol>
+    </div>`:''}
+
+    ${scenarios.length?`<div class="card">
+      <div class="section-heading"><i class="ti ti-test-pipe"></i>Tests to add / run (${scenarios.length})</div>
+      <div style="display:flex;flex-direction:column;gap:6px">${scenarios.slice(0,6).map(s=>`
+        <div style="font-size:13px;color:#3d4652">☐ ${escHtml(s.title||s.description||'')} ${s.priority?`<span style="font-size:10px;color:#9fadbf">[${escHtml(s.priority)}]</span>`:''}</div>`).join('')}</div>
+    </div>`:''}
+
+    <div class="card">
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-primary" onclick="showPRDescription()"><i class="ti ti-file-description"></i> Generate PR description</button>
+        <button class="btn" onclick="loadSimilarPRs();switchResultTab('summary')" id="btn-similar-dev"><i class="ti ti-git-compare"></i> Find similar past PRs</button>
+      </div>
+      <div id="similar-prs-result" style="margin-top:10px;font-size:12px;color:#9fadbf"></div>
+    </div>`;
+}
+
+// ── REVIEWER VIEW — "what to scrutinise and approve" ──────────────────────────
+function renderReviewerSummary(r) {
+  const findings = _allFindings(r);
+  const crit = findings.filter(f=>f.severity==='critical').length;
+  const high = findings.filter(f=>f.severity==='high').length;
+
+  // Domain status chips
+  const domainStatus = [
+    ['Security',   (r.security?.findings||[]).some(f=>['critical','high'].includes((f.severity||'').toLowerCase()))||r.security?.secrets_detected ? 'fail':'pass'],
+    ['Privacy',    (r.data_privacy?.unencrypted_pii_count||0)>0 ? 'fail':'pass'],
+    ['Performance',r.performance_impact?.has_db_risk||r.performance_impact?.has_complexity_regression ? 'warn':'pass'],
+    ['API',        (r.interface?.breaking_changes||[]).length ? 'fail':'pass'],
+    ['Schema',     r.schema_change?.has_destructive||r.schema_change?.has_irreversible ? 'fail':'pass'],
+    ['Tests',      parseFloat(r.test_coverage?.coverage_delta||0)<-5 ? 'warn':'pass'],
+    ['Licence',    r.license_compliance?.has_copyleft ? 'fail':'pass'],
+  ];
+  const stColor = {pass:['#f0fdf4','#166534','✅'],warn:['#fffbeb','#92400e','⚠️'],fail:['#fff1f2','#991b1b','❌']};
+
+  const affected = r.dependency?.affected_services||[];
+  const blast    = r.dependency?.blast_radius_score||0;
+  const refs     = r.reference_impact?.total_references||0;
+
+  return `
+    ${_gateHero(r)}
+
+    <div class="card">
+      <div class="section-heading"><i class="ti ti-layout-grid"></i>Domain status at a glance</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">${domainStatus.map(([d,st])=>{
+        const c = stColor[st];
+        return `<div style="background:${c[0]};color:${c[1]};border:1px solid ${c[1]}33;border-radius:8px;padding:6px 12px;font-size:12px;font-weight:600">${c[2]} ${d}</div>`;
+      }).join('')}</div>
+    </div>
+
+    <div class="card">
+      <div class="section-heading" style="color:${crit||high?'#b91c1c':'#166534'}"><i class="ti ti-eye-exclamation"></i>What to scrutinise ${crit+high?`(${crit} critical, ${high} high)`:''}</div>
+      ${(crit+high)?`<div style="display:flex;flex-direction:column;gap:8px">${findings.filter(f=>['critical','high'].includes(f.severity)).slice(0,10).map(f=>`
+        <div style="display:flex;align-items:flex-start;gap:10px;padding:9px 12px;border:1px solid #f0f2f5;border-radius:8px">
+          ${_sevChip(f.severity)}
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;color:#1a2332">${escHtml(f.message)}</div>
+            <div style="font-size:11px;color:#9fadbf">${escHtml(f.category)}${f.file?` · ${escHtml(f.file)}${f.line?':'+f.line:''}`:''}</div>
+          </div>
+        </div>`).join('')}</div>`:'<div style="font-size:13px;color:#7a8494">No critical or high-severity findings to review. Lower-severity items are in the domain tabs.</div>'}
+    </div>
+
+    <div class="card">
+      <div class="section-heading"><i class="ti ti-topology-star-3"></i>Blast radius</div>
+      <div style="display:flex;gap:20px;flex-wrap:wrap;font-size:13px">
+        <div><div style="font-size:22px;font-weight:800;color:${blast>70?'#b91c1c':blast>40?'#92400e':'#166534'};font-family:'JetBrains Mono',monospace">${blast}<span style="font-size:12px;color:#9fadbf">/100</span></div><div style="font-size:11px;color:#9fadbf">blast radius</div></div>
+        <div><div style="font-size:22px;font-weight:800;font-family:'JetBrains Mono',monospace">${refs}</div><div style="font-size:11px;color:#9fadbf">call-site references</div></div>
+        <div><div style="font-size:22px;font-weight:800;font-family:'JetBrains Mono',monospace">${affected.length}</div><div style="font-size:11px;color:#9fadbf">downstream services</div></div>
+      </div>
+      ${affected.length?`<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:6px">${affected.slice(0,8).map(s=>`<span class="badge badge-amber">${escHtml(s)}</span>`).join('')}</div>`:''}
+    </div>
+
+    ${r.remediation?.deployment_strategy?`<div class="card">
+      <div class="section-heading"><i class="ti ti-rocket"></i>Recommendation</div>
+      <div style="font-size:13px;color:#3d4652;line-height:1.6">${escHtml(r.rationale||'')}</div>
+      <div style="margin-top:8px;font-size:13px"><strong>Deployment strategy:</strong> <code>${escHtml(r.remediation.deployment_strategy)}</code></div>
+    </div>`:''}
+
+    <div class="card">
+      <div style="font-size:13px;color:#7a8494;display:flex;align-items:center;gap:8px">
+        <i class="ti ti-arrow-up"></i>
+        Use the <strong>Human Review</strong> panel at the top of this page to approve, request changes, or block — then optionally <strong>Post to PR</strong>.
+      </div>
+    </div>`;
+}
+
+function renderResultTab(tab, r) {
+  if(tab==='summary') {
+    // Persona-aware consolidated view. Default to the user's role; let them switch.
+    if(!_summaryPersona) _summaryPersona = canOverrideGate() ? 'reviewer' : 'developer';
+    const toggle = `
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+        <div style="display:flex;gap:4px;background:#f0f2f5;border-radius:8px;padding:3px">
+          <button onclick="setSummaryPersona('developer')" style="border:none;background:${_summaryPersona==='developer'?'#fff':'transparent'};box-shadow:${_summaryPersona==='developer'?'0 1px 2px rgba(0,0,0,.1)':'none'};border-radius:6px;padding:6px 16px;font-size:12px;font-weight:${_summaryPersona==='developer'?'700':'500'};color:${_summaryPersona==='developer'?'#0d1117':'#7a8494'};cursor:pointer">👨‍💻 Developer view</button>
+          <button onclick="setSummaryPersona('reviewer')" style="border:none;background:${_summaryPersona==='reviewer'?'#fff':'transparent'};box-shadow:${_summaryPersona==='reviewer'?'0 1px 2px rgba(0,0,0,.1)':'none'};border-radius:6px;padding:6px 16px;font-size:12px;font-weight:${_summaryPersona==='reviewer'?'700':'500'};color:${_summaryPersona==='reviewer'?'#0d1117':'#7a8494'};cursor:pointer">🔍 Reviewer view</button>
+        </div>
+        <span style="font-size:11px;color:#9fadbf">${_summaryPersona==='developer'?'What to fix before requesting review':'Decision view — what to scrutinise and approve'}</span>
+      </div>`;
+    return toggle + (_summaryPersona==='developer' ? renderDeveloperSummary(r) : renderReviewerSummary(r));
+  }
 
   if(tab==='security') return `
     <div class="card">
@@ -1769,7 +1976,20 @@ function renderResultTab(tab, r) {
       <div style="margin-bottom:12px"><div style="font-size:12px;color:#7a8494;margin-bottom:5px">Blast radius score: ${r.dependency?.blast_radius_score||0}/100</div><div class="score-bar"><div class="score-fill" style="width:${r.dependency?.blast_radius_score||0}%;background:${(r.dependency?.blast_radius_score||0)>70?'var(--red)':(r.dependency?.blast_radius_score||0)>40?'#8a5200':'var(--green)'}"></div></div></div>
       ${(r.dependency?.affected_services||[]).length?`<div class="section-heading"><i class="ti ti-server"></i>Affected services</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">${(r.dependency?.affected_services||[]).map(s=>`<span class="badge badge-amber">${escHtml(s)}</span>`).join('')}</div>`:''}
       ${(r.dependency?.changed_packages||[]).length?`<div class="section-heading"><i class="ti ti-package"></i>Changed packages</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">${(r.dependency?.changed_packages||[]).map(p=>`<code>${escHtml(p)}</code>`).join('')}</div>`:''}
-      ${state.connectedRepos.length?`<div class="section-heading"><i class="ti ti-git-branch"></i>Connected repos in scope</div><div style="display:flex;flex-wrap:wrap;gap:6px">${state.connectedRepos.map(r=>`<span class="badge badge-blue">${escHtml(shortName(r))}</span>`).join('')}</div>`:''}
+      ${state.connectedRepos.length?`<div class="section-heading"><i class="ti ti-git-branch"></i>Connected repos in scope</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">${state.connectedRepos.map(r=>`<span class="badge badge-blue">${escHtml(shortName(r))}</span>`).join('')}</div>`:''}
+      ${(r.dependency?.changed_packages||[]).length ? `
+      <div style="margin-top:14px;border-top:1px solid #f0f2f5;padding-top:14px">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <div style="flex:1;min-width:200px">
+            <div style="font-weight:600;font-size:13px;color:#1a2332">🔧 Dependency auto-fix</div>
+            <div style="font-size:11px;color:#7a8494">Look up safe versions via OSV.dev and open one update PR per vulnerable package.</div>
+          </div>
+          ${canPostToGit()
+            ? `<button class="btn btn-primary" onclick="runDependencyAutoUpdate()" id="btn-dep-update"><i class="ti ti-git-pull-request"></i> Create fix PRs</button>`
+            : `<button class="btn" disabled title="Requires Reviewer role" style="opacity:.45;cursor:not-allowed"><i class="ti ti-lock"></i> Create fix PRs</button>`}
+        </div>
+        <div id="dep-update-result" style="margin-top:10px"></div>
+      </div>` : ''}
     </div>`;
 
   if(tab==='interface') return `
@@ -2119,9 +2339,9 @@ function renderResultTab(tab, r) {
           <div style="width:8px;height:8px;border-radius:2px;background:${col};flex-shrink:0"></div>
           <span style="font-size:13px">${shortName(t.agent)}</span>
         </td>
-        <td style="padding:9px 10px;text-align:right;font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600">${(t.duration_s||0).toFixed(2)}s</td>
+        <td style="padding:9px 10px;text-align:right;font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600">${fmtDuration(t.duration_s, t.model)}</td>
         <td style="padding:9px 10px;text-align:right;font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600">${(t.tokens||0).toLocaleString()}</td>
-        <td style="padding:9px 10px;font-size:11px;color:#7a8494;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(model)}</td>
+        <td style="padding:9px 10px;font-size:11px;color:#7a8494;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(model||'static')}</td>
       </tr>`;
     }).join('');
 
@@ -2366,33 +2586,13 @@ function renderChecklistTab(r) {
         <button onclick="copyChecklist()" class="btn" style="font-size:12px"><i class="ti ti-copy"></i> Copy</button>
       </div>
 
-      <!-- Reviewer gate actions — hidden for Developer role -->
-      ${isReviewer ? `
-      <div style="display:flex;gap:10px;margin-bottom:18px;padding:14px 16px;background:#f7f8fa;border:1px solid #e8eaed;border-radius:10px;align-items:center;flex-wrap:wrap">
-        <div style="flex:1;min-width:160px">
-          <div style="font-weight:700;font-size:13px;color:#1a2332;margin-bottom:2px">Reviewer decision</div>
-          <div style="font-size:11px;color:#7a8494">Your gate decision overrides the AI recommendation. Logged for audit.</div>
-        </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button onclick="submitGateOverride('APPROVE')" style="padding:8px 18px;border:1.5px solid #059669;background:#f0fdf4;color:#166534;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;transition:all .15s" onmouseover="this.style.background='#059669';this.style.color='#fff'" onmouseout="this.style.background='#f0fdf4';this.style.color='#166534'">
-            ✅ Approve merge
-          </button>
-          <button onclick="submitGateOverride('HOLD')" style="padding:8px 18px;border:1.5px solid #f59e0b;background:#fffbeb;color:#92400e;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;transition:all .15s" onmouseover="this.style.background='#f59e0b';this.style.color='#fff'" onmouseout="this.style.background='#fffbeb';this.style.color='#92400e'">
-            ⚠️ Request changes
-          </button>
-          <button onclick="submitGateOverride('BLOCK')" style="padding:8px 18px;border:1.5px solid #dc2626;background:#fff1f2;color:#991b1b;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;transition:all .15s" onmouseover="this.style.background='#dc2626';this.style.color='#fff'" onmouseout="this.style.background='#fff1f2';this.style.color='#991b1b'">
-            🚫 Block merge
-          </button>
-          ${canPostToGit() ? `
-          <button onclick="postPRComments()" style="padding:8px 18px;border:1.5px solid #1a56db;background:#eff5ff;color:#1a56db;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px" title="Post findings to PR">
-            <i class="ti ti-message-2-code"></i> Post to PR
-          </button>` : ''}
-        </div>
-      </div>` : `
+      <!-- Approve / Block actions live in the single "Human Review" panel at the top of Results -->
       <div style="padding:10px 14px;background:#f7f8fa;border:1px solid #e8eaed;border-radius:8px;margin-bottom:16px;font-size:12px;color:#7a8494;display:flex;align-items:center;gap:8px">
-        <i class="ti ti-lock" style="font-size:14px"></i>
-        <span><strong>Approve / Block</strong> actions are available to Reviewers only. ${roleBadgeHtml(true)} — view-only access.</span>
-      </div>`}
+        <i class="ti ti-arrow-up" style="font-size:14px"></i>
+        <span>${isReviewer
+          ? 'Use the <strong>Human Review</strong> panel at the top of this page to approve, request changes, or block this merge.'
+          : `<strong>Approve / Block</strong> actions are available to Reviewers only. ${typeof roleBadgeHtml==='function'?roleBadgeHtml(true):''} — view-only access.`}</span>
+      </div>
       </div>
       <div style="display:flex;flex-direction:column;gap:14px">
         ${Object.entries(byDomain).map(([domain, domItems]) => {
@@ -3106,7 +3306,7 @@ function renderLivePipeline(agentMap) {
     const timeVal = isRunning
       ? `<span class="agent-stat" data-elapsed="${key}" style="color:#1a6cf6">${(entry.elapsed_s||0).toFixed(1)}s</span>`
       : (isDone||isFallback)
-        ? `<span class="agent-stat">${(entry.duration_s||0).toFixed(2)}s</span>`
+        ? `<span class="agent-stat" title="${(entry.model||'').toLowerCase()==='static'?'Deterministic static scan — no LLM, completes in milliseconds':''}">${fmtDuration(entry.duration_s, entry.model)}</span>`
         : `<span class="agent-stat dim">—</span>`;
 
     const tokVal = (isDone && entry.tokens)
@@ -4068,6 +4268,25 @@ function renderSettings(el) {
   </div>
 
   <div class="card">
+    <div class="card-title"><i class="ti ti-mail"></i>Email daily digest</div>
+    <div style="font-size:13px;color:#7a8494;line-height:1.7;margin-bottom:12px">
+      Sends a daily summary (PRs needing review, blocked count, API spend) to your team.
+      Configure SMTP in the backend <code>.env</code>, then test or preview here.
+    </div>
+    <div style="font-size:12px;line-height:1.9;color:#7a8494;background:#f7f8fa;border-radius:8px;padding:12px 14px;margin-bottom:12px">
+      <code>SMTP_HOST</code>, <code>SMTP_PORT</code>, <code>SMTP_USER</code>, <code>SMTP_PASSWORD</code><br>
+      <code>SMTP_FROM</code>, <code>DIGEST_RECIPIENTS</code> (comma-separated)<br>
+      <code>DIGEST_ENABLED=true</code> · <code>DIGEST_SEND_HOUR=8</code> (UTC)
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="btn" onclick="previewDigest()"><i class="ti ti-eye"></i>Preview</button>
+      <button class="btn btn-primary" onclick="sendDigestNow()"><i class="ti ti-send"></i>Send test now</button>
+      <span id="digest-msg" style="font-size:12px;color:#7a8494"></span>
+    </div>
+    <div style="font-size:11px;color:#9fadbf;margin-top:8px"><i class="ti ti-lock" style="font-size:12px"></i> Requires an admin API key.</div>
+  </div>
+
+  <div class="card">
     <div class="card-title"><i class="ti ti-info-circle"></i>How to start the backend</div>
     <div style="font-size:13px;line-height:1.8;color:#7a8494">
       <div style="margin-bottom:8px">1. Extract <code>impact-analyzer-complete.zip</code> and navigate to the folder</div>
@@ -4136,39 +4355,75 @@ async function testBackend() {
   } catch(e) { msg.textContent='✗ '+e.message; msg.style.color='#b81c1c'; }
 }
 
+// ── Email digest (admin) ──────────────────────────────────────────────────────
+
+async function previewDigest() {
+  const msg = document.getElementById('digest-msg');
+  if(!state.backendUrl) { if(msg){msg.textContent='Configure backend URL first';msg.style.color='#b81c1c';} return; }
+  try {
+    const h = {}; if(state.backendKey) h['X-API-Key'] = state.backendKey;
+    const r = await fetch(`${state.backendUrl}/admin/digest/preview?days=30`, {headers:h});
+    if(r.status===403){ if(msg){msg.textContent='Admin key required';msg.style.color='#b81c1c';} return; }
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const html = await r.text();
+    const w = window.open('', '_blank');
+    w.document.write(html); w.document.close();
+    if(msg){ msg.textContent='Preview opened in new tab'; msg.style.color='#0c7c4b'; }
+  } catch(e){ if(msg){msg.textContent='✗ '+e.message;msg.style.color='#b81c1c';} }
+}
+
+async function sendDigestNow() {
+  const msg = document.getElementById('digest-msg');
+  if(!state.backendUrl) { if(msg){msg.textContent='Configure backend URL first';msg.style.color='#b81c1c';} return; }
+  if(msg){ msg.textContent='Sending…'; msg.style.color='#7a8494'; }
+  try {
+    const h = {'Content-Type':'application/json'}; if(state.backendKey) h['X-API-Key']=state.backendKey;
+    const r = await fetch(`${state.backendUrl}/admin/digest/send?days=1`, {method:'POST', headers:h});
+    const d = await r.json().catch(()=>({}));
+    if(r.status===403){ if(msg){msg.textContent='Admin key required';msg.style.color='#b81c1c';} return; }
+    if(r.status===400){ if(msg){msg.textContent='⚠ '+(d.detail||'Check SMTP config');msg.style.color='#8a5200';} return; }
+    if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));
+    if(msg){ msg.textContent=`✓ Sent to ${(d.recipients||[]).length} recipient(s)`; msg.style.color='#0c7c4b'; }
+    showToast('Digest sent', 'success');
+  } catch(e){ if(msg){msg.textContent='✗ '+e.message;msg.style.color='#b81c1c';} }
+}
+
 // ── Human-in-the-loop review ──────────────────────────────────────────────────
 
-let _pendingReviewDecision = '';  // 'APPROVED' | 'REJECTED'
+let _pendingReviewDecision = '';  // 'APPROVED' | 'CHANGES' | 'REJECTED'
+
+// Decision metadata — single source of truth for the 3-way reviewer decision
+const _REVIEW_DECISIONS = {
+  APPROVED: { title:'Approve Merge',     color:'#0c7c4b', btnCls:'btn btn-success', btnTxt:'Confirm Approval',
+              sub:'You are approving this merge. The pipeline can proceed. This decision is permanently logged.',
+              panel:'btn-approve-panel', border:'#0c7c4b' },
+  CHANGES:  { title:'Request Changes',   color:'#8a5200', btnCls:'btn',             btnTxt:'Confirm Request',
+              sub:'You are holding this merge for rework. The author must address feedback before re-review. Logged for audit.',
+              panel:'btn-changes-panel', border:'#8a5200' },
+  REJECTED: { title:'Block Merge',       color:'#b81c1c', btnCls:'btn btn-danger',  btnTxt:'Confirm Block',
+              sub:'You are blocking this merge/deployment. This creates an audit record and notifies the team.',
+              panel:'btn-reject-panel',  border:'#b81c1c' },
+};
 
 function showHumanReviewModal(decision) {
   _pendingReviewDecision = decision;
   const modal = document.getElementById('review-modal');
   if (!modal) return;
 
+  const meta = _REVIEW_DECISIONS[decision] || _REVIEW_DECISIONS.REJECTED;
   const title = document.getElementById('modal-title');
   const sub   = document.getElementById('modal-sub');
   const btn   = document.getElementById('modal-submit-btn');
 
-  if (decision === 'APPROVED') {
-    title.textContent = 'Approve Deployment';
-    title.style.color = '#0c7c4b';
-    if (sub) sub.textContent = 'You are approving this deployment despite the HOLD/BLOCK gate. This decision is permanently logged.';
-    if (btn) { btn.className = 'btn btn-success'; btn.textContent = 'Confirm Approval'; }
-    // Highlight approve button
-    const ap = document.getElementById('btn-approve-panel');
-    const rj = document.getElementById('btn-reject-panel');
-    if (ap) ap.style.border = '2px solid #0c7c4b';
-    if (rj) rj.style.border = '1px solid #e8eaed';
-  } else {
-    title.textContent = 'Reject Deployment';
-    title.style.color = '#b81c1c';
-    if (sub) sub.textContent = 'You are explicitly rejecting this deployment. This creates an audit record and notifies the team.';
-    if (btn) { btn.className = 'btn btn-danger'; btn.textContent = 'Confirm Rejection'; }
-    const ap = document.getElementById('btn-approve-panel');
-    const rj = document.getElementById('btn-reject-panel');
-    if (rj) rj.style.border = '2px solid #b81c1c';
-    if (ap) ap.style.border = '1px solid #e8eaed';
-  }
+  if (title) { title.textContent = meta.title; title.style.color = meta.color; }
+  if (sub)   sub.textContent = meta.sub;
+  if (btn)   { btn.className = meta.btnCls; btn.textContent = meta.btnTxt; }
+
+  // Highlight the chosen action tile, reset the others
+  ['btn-approve-panel','btn-changes-panel','btn-reject-panel'].forEach(id => {
+    const elx = document.getElementById(id);
+    if (elx) elx.style.border = (id === meta.panel) ? `2px solid ${meta.border}` : '2px solid transparent';
+  });
 
   modal.style.display = 'flex';
   setTimeout(() => { const nameInput = document.getElementById('reviewer-name'); if (nameInput) nameInput.focus(); }, 100);
@@ -4209,7 +4464,7 @@ async function submitHumanReview() {
       const headers = { 'Content-Type': 'application/json' };
       if (state.backendKey) headers['X-API-Key'] = state.backendKey;
 
-      const override_to = _pendingReviewDecision === 'APPROVED' ? 'APPROVE' : 'BLOCK';
+      const override_to = { APPROVED:'APPROVE', CHANGES:'HOLD', REJECTED:'BLOCK' }[_pendingReviewDecision] || 'BLOCK';
       const resp = await fetch(`${state.backendUrl}/api/v1/gate/${state.lastRequestId}/override`, {
         method:  'POST',
         headers,
@@ -4218,6 +4473,10 @@ async function submitHumanReview() {
 
       if (resp.ok) {
         backendSuccess = true;
+      } else if (resp.status === 403) {
+        alert('Gate override requires Reviewer or Analyst role — contact your admin.');
+        if (btn) { btn.disabled = false; btn.textContent = 'Submit Review'; }
+        return;
       } else {
         const errData = await resp.json().catch(() => ({}));
         console.warn('Gate override backend error:', errData);
@@ -4236,17 +4495,19 @@ function _applyReviewDecisionToUI(review, backendSaved) {
   const panel = document.getElementById('human-review-panel');
   if (!panel) return;
 
-  const isApproved = review.decision === 'APPROVED';
-  const color = isApproved ? '#0c7c4b' : '#b81c1c';
-  const bgColor = isApproved ? '#edfaf3' : '#fff1f1';
-  const icon  = isApproved ? 'ti-circle-check' : 'ti-ban';
-  const label = isApproved ? 'Approved by reviewer' : 'Rejected by reviewer';
+  const _styles = {
+    APPROVED: { color:'#0c7c4b', bg:'#edfaf3', icon:'ti-circle-check',  label:'Approved by reviewer' },
+    CHANGES:  { color:'#8a5200', bg:'#fff8ec', icon:'ti-alert-triangle', label:'Changes requested by reviewer' },
+    REJECTED: { color:'#b81c1c', bg:'#fff1f1', icon:'ti-ban',           label:'Blocked by reviewer' },
+  };
+  const s = _styles[review.decision] || _styles.REJECTED;
+  const color = s.color, bgColor = s.bg, icon = s.icon, label = s.label;
 
   panel.style.background  = bgColor;
   panel.style.borderColor = color;
   panel.innerHTML = `
     <div style="display:flex;align-items:center;gap:12px">
-      <div style="width:40px;height:40px;border-radius:10px;background:${isApproved ? '#0c7c4b' : '#b81c1c'};display:flex;align-items:center;justify-content:center;flex-shrink:0">
+      <div style="width:40px;height:40px;border-radius:10px;background:${color};display:flex;align-items:center;justify-content:center;flex-shrink:0">
         <i class="ti ${icon}" style="font-size:20px;color:#fff"></i>
       </div>
       <div style="flex:1">
@@ -4264,14 +4525,17 @@ function _applyReviewDecisionToUI(review, backendSaved) {
       Decision recorded. Request ID: <code style="font-size:10px">${escHtml(review.request_id||'—')}</code>
     </div>`;
 
-  // Also update the gate banner color to reflect human decision
+  // Also update the gate banner to reflect the human decision
   const banner = document.querySelector('.gate-banner');
-  if (banner && isApproved) {
-    banner.className = 'gate-banner gate-approve';
+  if (banner) {
+    const cls = { APPROVED:'gate-approve', CHANGES:'gate-hold', REJECTED:'gate-block' }[review.decision] || 'gate-block';
+    const newLabel = { APPROVED:'APPROVED (override)', CHANGES:'CHANGES REQUESTED', REJECTED:'BLOCKED (override)' }[review.decision] || 'BLOCKED';
+    const newIcon  = { APPROVED:'ti-circle-check', CHANGES:'ti-alert-triangle', REJECTED:'ti-ban' }[review.decision] || 'ti-ban';
+    banner.className = 'gate-banner ' + cls;
     const title = banner.querySelector('.gate-title');
-    if (title) title.innerHTML = title.innerHTML.replace(/HOLD|BLOCK/, 'APPROVED (override)');
+    if (title) title.innerHTML = title.innerHTML.replace(/HOLD|BLOCK|APPROVE/, newLabel);
     const icon2 = banner.querySelector('.gate-icon');
-    if (icon2) { icon2.className = 'ti ti-circle-check gate-icon'; }
+    if (icon2) icon2.className = `ti ${newIcon} gate-icon`;
   }
 }
 
@@ -4372,6 +4636,22 @@ function commitAuthor(c) {
   return c.commit?.author?.name || c.author?.login || c.author?.user?.display_name || c.author?.raw || '';
 }
 function escHtml(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+/**
+ * Human-friendly duration for the Timings tab and live progress panel.
+ * Static/deterministic agents finish in a few milliseconds — showing a bare
+ * "0.00s" looks like an error, so we render those as "⚡ instant" instead.
+ *   model === 'static'  → the agent ran a zero-token deterministic scan
+ *   duration >= 0.01s   → normal "X.XXs"
+ */
+function fmtDuration(durationS, model) {
+  const d = durationS || 0;
+  const isStatic = (model || '').toLowerCase() === 'static';
+  if (d < 0.01) {
+    return isStatic ? '⚡ instant' : (d > 0 ? '<0.01s' : '—');
+  }
+  return d.toFixed(2) + 's';
+}
 const esc = escHtml;
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -4459,6 +4739,517 @@ function renderJudgePanelResults(data) {
 }
 
 // ── Quality Metrics view ──────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+//  INSIGHTS — Productivity Dashboard (6 tabs)
+// ══════════════════════════════════════════════════════════════════════════════
+
+const INSIGHT_TABS = [
+  { id:'queue',   label:'🎯 Review queue',  fn:'loadInsightQueue'   },
+  { id:'trend',   label:'📈 Risk trend',    fn:'loadInsightTrend'   },
+  { id:'heatmap', label:'🔥 Change heatmap',fn:'loadInsightHeatmap' },
+  { id:'cost',    label:'💰 API cost',      fn:'loadInsightCost'    },
+];
+
+let _activeInsightTab = 'queue';
+let _insightFilter = { days: 30, repo: '' };   // shared filter state
+let _insightRepos  = [];                         // repo dropdown options
+let _autoRefresh   = false;
+let _autoRefreshTimer = null;
+
+function renderInsights(el) {
+  if(!state.backendUrl) {
+    el.innerHTML = `<div style="max-width:860px"><div class="card"><div class="empty-state"><i class="ti ti-plug-x"></i>Backend required<br><span style="font-size:12px;color:#9fadbf">Configure a backend URL in Settings to see team insights.</span></div></div></div>`;
+    return;
+  }
+
+  const dayOpts = [[7,'7 days'],[30,'30 days'],[90,'90 days'],[0,'All time']];
+  el.innerHTML = `
+  <div style="max-width:1000px">
+    <!-- Filter bar -->
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+      <div style="display:flex;gap:4px;background:#f0f2f5;border-radius:8px;padding:3px">
+        ${dayOpts.map(([d,lbl])=>`<button onclick="setInsightDays(${d})" style="border:none;background:${_insightFilter.days===d?'#fff':'transparent'};box-shadow:${_insightFilter.days===d?'0 1px 2px rgba(0,0,0,.1)':'none'};border-radius:6px;padding:5px 12px;font-size:12px;font-weight:${_insightFilter.days===d?'600':'400'};color:${_insightFilter.days===d?'#0d1117':'#7a8494'};cursor:pointer">${lbl}</button>`).join('')}
+      </div>
+      <select id="insight-repo-filter" onchange="setInsightRepo(this.value)" style="border:1.5px solid #e8eaed;border-radius:8px;padding:6px 10px;font-size:12px;max-width:220px">
+        <option value="">All repositories</option>
+        ${_insightRepos.map(r=>`<option value="${escHtml(r)}" ${_insightFilter.repo===r?'selected':''}>${escHtml(r)}</option>`).join('')}
+      </select>
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#7a8494;cursor:pointer;margin-left:auto">
+        <input type="checkbox" ${_autoRefresh?'checked':''} onchange="toggleAutoRefresh(this.checked)" style="cursor:pointer"/>
+        <i class="ti ti-refresh" style="font-size:13px"></i> Auto-refresh (30s)
+      </label>
+      <button class="btn" style="font-size:12px;padding:6px 12px" onclick="exportInsight()" title="Download current tab as CSV"><i class="ti ti-download"></i> CSV</button>
+      <button class="btn" style="font-size:12px;padding:6px 12px" onclick="printInsight()" title="Print / save current tab as PDF"><i class="ti ti-printer"></i> PDF</button>
+    </div>
+
+    <div class="tab-bar" style="margin-bottom:18px;display:flex;gap:4px;flex-wrap:wrap">
+      ${INSIGHT_TABS.map(t => `
+        <button class="tab ${_activeInsightTab===t.id?'active':''}" data-itab="${t.id}"
+          onclick="switchInsightTab('${t.id}')">${t.label}</button>`).join('')}
+    </div>
+    <div id="insight-content">
+      <div class="empty-state"><span class="spinner" style="width:22px;height:22px"></span><div style="margin-top:10px">Loading…</div></div>
+    </div>
+  </div>`;
+
+  switchInsightTab(_activeInsightTab);
+  // Stop auto-refresh if we navigate away
+  _bindAutoRefreshLifecycle();
+}
+
+function setInsightDays(d) { _insightFilter.days = d; renderInsights(document.getElementById('view-insights')); }
+function setInsightRepo(r) { _insightFilter.repo = r; switchInsightTab(_activeInsightTab); }
+
+function toggleAutoRefresh(on) {
+  _autoRefresh = on;
+  if(_autoRefreshTimer) { clearInterval(_autoRefreshTimer); _autoRefreshTimer = null; }
+  if(on) {
+    _autoRefreshTimer = setInterval(() => {
+      // Only refresh while the insights view is visible
+      const v = document.getElementById('view-insights');
+      if(v && v.style.display !== 'none') switchInsightTab(_activeInsightTab);
+      else { clearInterval(_autoRefreshTimer); _autoRefreshTimer=null; _autoRefresh=false; }
+    }, 30000);
+  }
+}
+
+function _bindAutoRefreshLifecycle() {
+  // Clear the timer if the user leaves the insights view
+  if(_autoRefreshTimer) {
+    const v = document.getElementById('view-insights');
+    if(!v || v.style.display === 'none') { clearInterval(_autoRefreshTimer); _autoRefreshTimer=null; }
+  }
+}
+
+// Convert the shared day filter into a query string for each endpoint
+function _filterQS(kind) {
+  const f = _insightFilter;
+  const parts = [];
+  if(kind === 'days')  { if(f.days>0) parts.push('days='+f.days); }
+  if(kind === 'weeks') { parts.push('weeks='+(f.days>0?Math.max(1,Math.ceil(f.days/7)):52)); }
+  if(f.repo) parts.push('repo='+encodeURIComponent(f.repo));
+  return parts.length ? '?'+parts.join('&') : '';
+}
+
+function exportInsight() {
+  const tab = _activeInsightTab;
+  let path, qs;
+  if(tab==='queue')      { path='/api/v1/insights/export/queue.csv'; qs=_filterQS('days'); }
+  else if(tab==='cost')  { path='/api/v1/insights/export/cost.csv';  qs=_filterQS('weeks'); }
+  else if(tab==='trend') { path='/api/v1/insights/export/trend.csv'; qs=_filterQS('weeks'); }
+  else { showToast('CSV export not available for the heatmap tab — use PDF.', 'info'); return; }
+  // Download via fetch+blob so we can send the API key header
+  _downloadCsv(path+qs);
+}
+
+async function _downloadCsv(path) {
+  try {
+    const h = {}; if(state.backendKey) h['X-API-Key'] = state.backendKey;
+    const r = await fetch(`${state.backendUrl}${path}`, {headers:h});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const fn = (r.headers.get('content-disposition')||'').match(/filename="([^"]+)"/);
+    a.href = url; a.download = fn ? fn[1] : 'ciaa_export.csv';
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    showToast('CSV downloaded', 'success');
+  } catch(e) { showToast('Export failed: '+e.message, 'error'); }
+}
+
+function printInsight() {
+  // Print just the insight content area for a clean PDF
+  const content = document.getElementById('insight-content');
+  if(!content) return;
+  const w = window.open('', '_blank');
+  const title = INSIGHT_TABS.find(t=>t.id===_activeInsightTab)?.label || 'Insights';
+  const repoLabel = _insightFilter.repo || 'All repositories';
+  const daysLabel = _insightFilter.days>0 ? `Last ${_insightFilter.days} days` : 'All time';
+  w.document.write(`<!DOCTYPE html><html><head><title>CIAA ${title}</title>
+    <style>body{font-family:-apple-system,Segoe UI,sans-serif;padding:30px;color:#1a2332}
+    table{width:100%;border-collapse:collapse}td,th{padding:6px 8px;border-bottom:1px solid #eee;font-size:12px;text-align:left}
+    .card{border:1px solid #e8eaed;border-radius:8px;padding:16px;margin-bottom:14px}h1{font-size:18px}
+    .section-heading{font-weight:700;font-size:13px;margin-bottom:8px}</style></head>
+    <body><h1>CIAA — ${title.replace(/[^\x00-\x7F]/g,'').trim()}</h1>
+    <p style="color:#7a8494;font-size:12px">${daysLabel} · ${escHtml(repoLabel)} · Generated ${new Date().toLocaleString()}</p>
+    ${content.innerHTML}</body></html>`);
+  w.document.close();
+  setTimeout(()=>{ w.print(); }, 300);
+}
+
+function switchInsightTab(tab) {
+  _activeInsightTab = tab;
+  document.querySelectorAll('.tab[data-itab]').forEach(b =>
+    b.classList.toggle('active', b.dataset.itab === tab));
+  const meta = INSIGHT_TABS.find(t => t.id === tab);
+  if(meta && typeof window[meta.fn] === 'function') window[meta.fn]();
+}
+
+async function _insightFetch(path) {
+  const h = {'Content-Type':'application/json'};
+  if(state.backendKey) h['X-API-Key'] = state.backendKey;
+  const r = await fetch(`${state.backendUrl}${path}`, {headers:h, signal:AbortSignal.timeout(30000)});
+  if(!r.ok) { const e = await r.json().catch(()=>({detail:r.statusText})); throw new Error(e.detail || `HTTP ${r.status}`); }
+  return r.json();
+}
+
+function _insightContent() { return document.getElementById('insight-content'); }
+function _insightLoading(msg) {
+  const c = _insightContent();
+  if(c) c.innerHTML = `<div class="empty-state"><span class="spinner" style="width:22px;height:22px"></span><div style="margin-top:10px">${escHtml(msg||'Loading…')}</div></div>`;
+}
+function _insightError(e) {
+  const c = _insightContent();
+  if(c) c.innerHTML = `<div class="card"><div class="err-msg" style="margin:0"><i class="ti ti-alert-circle"></i>${escHtml(e.message||String(e))}</div></div>`;
+}
+
+// ── TAB 1: PR PRIORITY QUEUE ──────────────────────────────────────────────────
+
+async function loadInsightQueue() {
+  _insightLoading('Loading review queue…');
+  try {
+    const d = await _insightFetch('/api/v1/insights/queue'+_filterQS('days'));
+    // Populate repo dropdown from the queue response (once)
+    if(d.repos && d.repos.length && JSON.stringify(d.repos)!==JSON.stringify(_insightRepos)) {
+      _insightRepos = d.repos;
+      const sel = document.getElementById('insight-repo-filter');
+      if(sel) sel.innerHTML = '<option value="">All repositories</option>' +
+        _insightRepos.map(r=>`<option value="${escHtml(r)}" ${_insightFilter.repo===r?'selected':''}>${escHtml(r)}</option>`).join('');
+    }
+    const c = _insightContent();
+    if(!d.queue.length) {
+      c.innerHTML = `<div class="card"><div class="empty-state"><i class="ti ti-inbox"></i>No analyses yet.<br><span style="font-size:12px;color:#9fadbf">Run some analyses to populate the review queue.</span></div></div>`;
+      return;
+    }
+    const gateBadge = g => {
+      const m = {BLOCK:['#fff1f2','#991b1b','#fca5a5','🚫'],HOLD:['#fffbeb','#92400e','#fcd34d','⚠️'],APPROVE:['#f0fdf4','#166534','#86efac','✅']}[g]||['#f7f8fa','#7a8494','#e8eaed','•'];
+      return `<span style="background:${m[0]};color:${m[1]};border:1px solid ${m[2]};border-radius:5px;padding:2px 8px;font-size:11px;font-weight:700;white-space:nowrap">${m[3]} ${g}</span>`;
+    };
+    const riskColor = s => s>=7?'#dc2626':s>=4?'#f59e0b':'#10b981';
+
+    c.innerHTML = `
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+        <div class="section-heading" style="margin:0"><i class="ti ti-list-numbers"></i>Review queue — ${d.total} PR(s)</div>
+        <span style="font-size:11px;color:#9fadbf;margin-left:auto">Ranked: BLOCK first, then by risk score</span>
+        <button class="btn" style="font-size:12px;padding:5px 12px" onclick="loadInsightQueue()"><i class="ti ti-refresh"></i></button>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        ${d.queue.map(item => `
+          <div style="border:1px solid #e8eaed;border-radius:10px;padding:12px 14px;display:flex;align-items:flex-start;gap:12px;transition:border-color .15s" onmouseover="this.style.borderColor='#1a6cf6'" onmouseout="this.style.borderColor='#e8eaed'">
+            <div style="text-align:center;flex-shrink:0;width:48px">
+              <div style="font-size:22px;font-weight:800;font-family:'JetBrains Mono',monospace;color:${riskColor(item.risk_score)}">${item.risk_score.toFixed(1)}</div>
+              <div style="font-size:9px;color:#9fadbf;text-transform:uppercase;letter-spacing:.05em">risk</div>
+            </div>
+            <div style="flex:1;min-width:0">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px;flex-wrap:wrap">
+                ${gateBadge(item.gate)}
+                <span style="font-weight:600;font-size:13px;color:#0d1117">${escHtml(item.pr_title || item.source_ref || '(no title)')}</span>
+                ${item.pr_number?`<span style="font-size:11px;color:#7a8494">#${item.pr_number}</span>`:''}
+              </div>
+              <div style="font-size:11px;color:#7a8494;margin-bottom:6px">
+                <i class="ti ti-git-branch" style="font-size:11px"></i> ${escHtml(item.repo)}
+                ${item.author?` · <i class="ti ti-user" style="font-size:11px"></i> ${escHtml(item.author)}`:''}
+                · ${escHtml(item.elapsed)}
+                · ${(item.total_tokens||0).toLocaleString()} tokens
+              </div>
+              ${item.top_findings.length?`<div style="display:flex;flex-direction:column;gap:2px">${item.top_findings.map(f=>`<div style="font-size:11px;color:#5a6a7e"><span class="sev sev-${f.severity}" style="font-size:9px;padding:0 5px">${f.severity}</span> ${escHtml(f.title)}</div>`).join('')}</div>`:''}
+            </div>
+            <button class="btn" style="font-size:11px;padding:5px 12px;flex-shrink:0" onclick="openInsightReport('${item.request_id}')"><i class="ti ti-eye"></i> View</button>
+          </div>`).join('')}
+      </div>
+    </div>`;
+  } catch(e) { _insightError(e); }
+}
+
+async function openInsightReport(rid) {
+  // Load the report into state and switch to Results view
+  try {
+    const d = await _insightFetch(`/api/v1/report/${rid}?fmt=full`);
+    state.report = normalizeReport(d);
+    state.lastRequestId = rid;
+    showView('results');
+  } catch(e) { showToast('Could not load report: '+e.message, 'error'); }
+}
+
+// ── TAB 2: RISK TREND ─────────────────────────────────────────────────────────
+
+async function loadInsightTrend() {
+  _insightLoading('Computing risk trends…');
+  try {
+    const d = await _insightFetch('/api/v1/insights/trend'+_filterQS('weeks'));
+    const c = _insightContent();
+    if(!d.series.length) {
+      c.innerHTML = `<div class="card"><div class="empty-state"><i class="ti ti-chart-line"></i>Not enough history yet.<br><span style="font-size:12px;color:#9fadbf">Risk trends appear after several analyses across weeks.</span></div></div>`;
+      return;
+    }
+    const trendBadge = t => {
+      const m={improving:['#f0fdf4','#166534','↓ improving'],degrading:['#fff1f2','#991b1b','↑ degrading'],stable:['#f7f8fa','#7a8494','→ stable']}[t]||['#f7f8fa','#7a8494',t];
+      return `<span style="background:${m[0]};color:${m[1]};border-radius:5px;padding:2px 8px;font-size:11px;font-weight:700">${m[2]}</span>`;
+    };
+
+    c.innerHTML = `
+    <div class="card">
+      <div class="section-heading"><i class="ti ti-chart-line"></i>Risk score trend — last 12 weeks</div>
+      ${d.series.map(s => `
+        <div style="margin-bottom:18px">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+            <span style="font-weight:600;font-size:13px">${escHtml(s.repo)}</span>
+            ${trendBadge(s.trend)}
+            <span style="font-size:11px;color:#7a8494;margin-left:auto">avg ${s.avg}</span>
+          </div>
+          ${_sparkline(s.scores, s.weeks)}
+        </div>`).join('')}
+    </div>
+    ${d.top_issues.length?`
+    <div class="card">
+      <div class="section-heading"><i class="ti ti-flame"></i>Top recurring issue categories</div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        ${d.top_issues.map(it=>{
+          const max=d.top_issues[0].count||1;
+          return `<div style="display:flex;align-items:center;gap:10px">
+            <span style="width:120px;font-size:12px;text-transform:capitalize">${escHtml(it.category)}</span>
+            <div style="flex:1;height:18px;background:#f0f2f5;border-radius:4px;overflow:hidden"><div style="height:100%;width:${(it.count/max*100).toFixed(0)}%;background:linear-gradient(to right,#f59e0b,#dc2626);border-radius:4px"></div></div>
+            <span style="font-size:12px;font-weight:600;font-family:'JetBrains Mono',monospace;width:40px;text-align:right">${it.count}</span>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`:''}`;
+  } catch(e) { _insightError(e); }
+}
+
+function _sparkline(scores, weeks) {
+  const W=100, H=32, max=10;
+  const pts = scores.map((s,i)=>{
+    const x=(i/(Math.max(scores.length-1,1)))*W;
+    const y=H-(s/max)*H;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  const dots = scores.map((s,i)=>{
+    if(!s) return '';
+    const x=(i/(Math.max(scores.length-1,1)))*W;
+    const y=H-(s/max)*H;
+    const col=s>=7?'#dc2626':s>=4?'#f59e0b':'#10b981';
+    return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2" fill="${col}"/>`;
+  }).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:48px;background:#fafbfc;border:1px solid #f0f2f5;border-radius:6px">
+    <polyline points="${pts}" fill="none" stroke="#1a6cf6" stroke-width="1" vector-effect="non-scaling-stroke"/>
+    ${dots}
+  </svg>`;
+}
+
+// ── TAB 3: CHANGE HEATMAP ─────────────────────────────────────────────────────
+
+async function loadInsightHeatmap() {
+  _insightLoading('Building change heatmap…');
+  try {
+    const _hp = [];
+    if(_insightFilter.days>0) _hp.push('days='+_insightFilter.days);
+    if(_insightFilter.repo)   _hp.push('repo='+encodeURIComponent(_insightFilter.repo));
+    _hp.push('limit=60');
+    const d = await _insightFetch('/api/v1/insights/heatmap?'+_hp.join('&'));
+    const c = _insightContent();
+    if(!d.cells.length) {
+      c.innerHTML = `<div class="card"><div class="empty-state"><i class="ti ti-grid-dots"></i>No file-level data yet.<br><span style="font-size:12px;color:#9fadbf">The heatmap fills in as analyses accumulate findings with file paths.</span></div></div>`;
+      return;
+    }
+    // Scale tile size by change frequency
+    const maxChanges = Math.max(...d.cells.map(x=>x.changes), 1);
+    c.innerHTML = `
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+        <div class="section-heading" style="margin:0"><i class="ti ti-grid-dots"></i>Change impact heatmap — last ${d.days} days</div>
+        <span style="font-size:11px;color:#9fadbf;margin-left:auto">${d.total} file(s) · tile size = change frequency · colour = max risk</span>
+      </div>
+      <div style="display:flex;gap:14px;font-size:11px;color:#7a8494;margin-bottom:14px">
+        <span><span style="display:inline-block;width:10px;height:10px;background:#dc2626;border-radius:2px;vertical-align:middle"></span> critical (≥7)</span>
+        <span><span style="display:inline-block;width:10px;height:10px;background:#f59e0b;border-radius:2px;vertical-align:middle"></span> high (≥5)</span>
+        <span><span style="display:inline-block;width:10px;height:10px;background:#3b82f6;border-radius:2px;vertical-align:middle"></span> medium (≥3)</span>
+        <span><span style="display:inline-block;width:10px;height:10px;background:#10b981;border-radius:2px;vertical-align:middle"></span> low</span>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        ${d.cells.map(cell=>{
+          const scale = 0.6 + (cell.changes/maxChanges)*0.8;   // 0.6x–1.4x
+          const sz = Math.round(46*scale);
+          return `<div title="${escHtml(cell.file)}\n${cell.changes} change(s) · max risk ${cell.max_risk.toFixed(1)}${cell.has_security?' · security':''}${cell.has_privacy?' · privacy':''}"
+            style="width:${sz}px;height:${sz}px;background:${cell.colour};border-radius:6px;display:flex;align-items:center;justify-content:center;cursor:default;position:relative;overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.08)">
+            <span style="font-size:8px;color:#fff;font-weight:700;text-align:center;padding:2px;line-height:1.1;text-shadow:0 1px 2px rgba(0,0,0,.3);overflow:hidden">${escHtml(cell.label.slice(0,8))}</span>
+            ${cell.changes>1?`<span style="position:absolute;top:1px;right:2px;font-size:8px;color:#fff;font-weight:700;background:rgba(0,0,0,.3);border-radius:3px;padding:0 3px">${cell.changes}</span>`:''}
+          </div>`;
+        }).join('')}
+      </div>
+      <div style="margin-top:16px;border-top:1px solid #f0f2f5;padding-top:12px">
+        <div style="font-size:12px;font-weight:600;color:#5a6a7e;margin-bottom:8px">Highest-risk files</div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="color:#9fadbf;font-size:10px;text-transform:uppercase;letter-spacing:.05em">
+            <th style="text-align:left;padding:6px 8px">File</th>
+            <th style="text-align:right;padding:6px 8px">Changes</th>
+            <th style="text-align:right;padding:6px 8px">Max risk</th>
+            <th style="text-align:left;padding:6px 8px">Flags</th>
+          </tr></thead>
+          <tbody>${d.cells.slice(0,10).map(cell=>`<tr style="border-top:1px solid #f5f6f8">
+            <td style="padding:6px 8px;font-family:'JetBrains Mono',monospace;font-size:11px" title="${escHtml(cell.file)}">${escHtml(cell.file.length>48?'…'+cell.file.slice(-46):cell.file)}</td>
+            <td style="padding:6px 8px;text-align:right;font-weight:600">${cell.changes}</td>
+            <td style="padding:6px 8px;text-align:right;font-weight:700;color:${cell.colour}">${cell.max_risk.toFixed(1)}</td>
+            <td style="padding:6px 8px">${cell.has_security?'<span class="badge badge-red" style="font-size:9px;padding:1px 5px">sec</span> ':''}${cell.has_privacy?'<span class="badge badge-amber" style="font-size:9px;padding:1px 5px">pii</span>':''}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </div>
+    </div>`;
+  } catch(e) { _insightError(e); }
+}
+
+// ── TAB 4: API COST ───────────────────────────────────────────────────────────
+
+async function loadInsightCost() {
+  _insightLoading('Calculating API spend…');
+  try {
+    const d = await _insightFetch('/api/v1/insights/cost'+_filterQS('weeks'));
+    const c = _insightContent();
+    const s = d.summary;
+    const maxWeekCost = Math.max(...d.weekly.map(w=>w.cost_usd), 0.0001);
+
+    c.innerHTML = `
+    <div style="display:flex;gap:12px;margin-bottom:14px;flex-wrap:wrap">
+      ${_costCard('💰', 'Total cost', '$'+s.total_cost_usd.toFixed(2), '#059669')}
+      ${_costCard('🔤', 'Total tokens', s.total_tokens.toLocaleString(), '#1a56db')}
+      ${_costCard('⚠️', 'Fallbacks', s.fallback_count, s.fallback_count>0?'#f59e0b':'#7a8494')}
+      ${_costCard('📅', 'Window', s.weeks_covered+' weeks', '#7c3aed')}
+    </div>
+
+    <div class="card">
+      <div class="section-heading"><i class="ti ti-chart-bar"></i>Weekly spend</div>
+      <div style="display:flex;align-items:flex-end;gap:4px;height:120px;padding:8px 0">
+        ${d.weekly.map(w=>{
+          const h=Math.max((w.cost_usd/maxWeekCost*100),2);
+          return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px" title="${w.week}: $${w.cost_usd.toFixed(4)} · ${w.tokens.toLocaleString()} tokens · ${w.analyses} analyses">
+            <div style="width:100%;height:${h}%;background:linear-gradient(to top,#1a6cf6,#10b981);border-radius:3px 3px 0 0;min-height:2px"></div>
+            <span style="font-size:8px;color:#9fadbf;transform:rotate(-45deg);white-space:nowrap;margin-top:4px">${w.week.split('-W')[1]||w.week}</span>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>
+
+    <div style="display:flex;gap:12px;flex-wrap:wrap">
+      <div class="card" style="flex:1;min-width:300px">
+        <div class="section-heading"><i class="ti ti-robot"></i>Cost by agent</div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="color:#9fadbf;font-size:10px;text-transform:uppercase"><th style="text-align:left;padding:5px 6px">Agent</th><th style="text-align:right;padding:5px 6px">Tokens</th><th style="text-align:right;padding:5px 6px">Cost</th></tr></thead>
+          <tbody>${d.by_agent.slice(0,12).map(a=>`<tr style="border-top:1px solid #f5f6f8">
+            <td style="padding:5px 6px">${escHtml(a.agent)}</td>
+            <td style="padding:5px 6px;text-align:right;font-family:'JetBrains Mono',monospace">${a.tokens.toLocaleString()}</td>
+            <td style="padding:5px 6px;text-align:right;font-weight:600;color:#059669">$${a.cost_usd.toFixed(3)}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </div>
+      <div class="card" style="flex:1;min-width:280px">
+        <div class="section-heading"><i class="ti ti-cpu"></i>Cost by model</div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="color:#9fadbf;font-size:10px;text-transform:uppercase"><th style="text-align:left;padding:5px 6px">Model</th><th style="text-align:right;padding:5px 6px">Calls</th><th style="text-align:right;padding:5px 6px">Cost</th></tr></thead>
+          <tbody>${d.by_model.map(m=>`<tr style="border-top:1px solid #f5f6f8">
+            <td style="padding:5px 6px;font-size:11px">${escHtml(m.model)}</td>
+            <td style="padding:5px 6px;text-align:right">${m.calls}</td>
+            <td style="padding:5px 6px;text-align:right;font-weight:600;color:#059669">$${m.cost_usd.toFixed(3)}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </div>
+    </div>
+    <div style="font-size:11px;color:#9fadbf;text-align:center;margin-top:10px"><i class="ti ti-info-circle"></i> ${escHtml(d.pricing_note)}</div>`;
+  } catch(e) { _insightError(e); }
+}
+
+function _costCard(icon, label, value, color) {
+  return `<div class="card" style="flex:1;min-width:140px;margin:0;padding:14px 16px">
+    <div style="font-size:11px;color:#9fadbf;margin-bottom:4px">${icon} ${label}</div>
+    <div style="font-size:22px;font-weight:800;color:${color};font-family:'JetBrains Mono',monospace">${value}</div>
+  </div>`;
+}
+
+// ── Month 4: SIMILAR PRs (shown on Results summary) ───────────────────────────
+
+async function loadSimilarPRs() {
+  const out = document.getElementById('similar-prs-result');
+  const btn = document.getElementById('btn-similar');
+  if(!out) return;
+  if(!state.backendUrl || !state.lastRequestId) {
+    out.innerHTML = '<span style="color:#dc2626">Backend URL and a saved analysis required.</span>';
+    return;
+  }
+  if(btn){ btn.disabled=true; btn.innerHTML='<span class="spinner" style="width:12px;height:12px"></span> Searching…'; }
+  try {
+    const d = await _insightFetch(`/api/v1/insights/similar/${state.lastRequestId}?top_k=5`);
+    if(!d.similar.length) {
+      out.innerHTML = '<span>No similar past PRs found. This change pattern looks new.</span>';
+      return;
+    }
+    const gateBadge = g => {
+      const m={BLOCK:['#fff1f2','#991b1b','🚫'],HOLD:['#fffbeb','#92400e','⚠️'],APPROVE:['#f0fdf4','#166534','✅']}[g]||['#f7f8fa','#7a8494','•'];
+      return `<span style="background:${m[0]};color:${m[1]};border-radius:4px;padding:1px 6px;font-size:10px;font-weight:700">${m[2]} ${g}</span>`;
+    };
+    out.innerHTML = `<div style="display:flex;flex-direction:column;gap:8px">${d.similar.map(s=>`
+      <div style="border:1px solid #e8eaed;border-radius:8px;padding:10px 12px;cursor:pointer" onclick="openInsightReport('${s.request_id}')" onmouseover="this.style.borderColor='#1a6cf6'" onmouseout="this.style.borderColor='#e8eaed'">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
+          <span style="background:#eff5ff;color:#1a56db;border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700">${(s.similarity*100).toFixed(0)}% match</span>
+          ${gateBadge(s.gate)}
+          <span style="font-weight:600;font-size:12px;color:#0d1117">${escHtml(s.pr_title||s.source_ref||'(untitled)')}</span>
+          <span style="font-size:10px;color:#9fadbf;margin-left:auto">${escHtml(s.elapsed)}</span>
+        </div>
+        <div style="font-size:11px;color:#7a8494">${escHtml(s.repo)} · risk ${s.risk_score.toFixed(1)}${s.shared_files.length?` · shares ${s.shared_files.length} file(s): ${escHtml(s.shared_files.slice(0,2).join(', '))}`:''}</div>
+      </div>`).join('')}</div>`;
+  } catch(e) {
+    out.innerHTML = `<span style="color:#dc2626">${escHtml(e.message)}</span>`;
+  } finally {
+    if(btn){ btn.disabled=false; btn.innerHTML='<i class="ti ti-search"></i> Find similar'; }
+  }
+}
+
+// ── Month 4: DEPENDENCY AUTO-UPDATE (shown on dependency tab) ──────────────────
+
+async function runDependencyAutoUpdate() {
+  const out = document.getElementById('dep-update-result');
+  const btn = document.getElementById('btn-dep-update');
+  if(!out) return;
+  if(!state.backendUrl || !state.lastRequestId) {
+    showToast('Backend URL and a saved analysis required.', 'error'); return;
+  }
+  if(!canPostToGit()) { showToast('Creating PRs requires Reviewer role.', 'error'); return; }
+
+  if(btn){ btn.disabled=true; btn.innerHTML='<span class="spinner" style="width:12px;height:12px"></span> Creating…'; }
+  out.innerHTML = '<div style="font-size:12px;color:#7a8494"><span class="spinner" style="width:12px;height:12px;display:inline-block;vertical-align:middle"></span> Looking up safe versions via OSV.dev…</div>';
+  try {
+    const h = {'Content-Type':'application/json'};
+    if(state.backendKey) h['X-API-Key'] = state.backendKey;
+    const body = {
+      request_id: state.lastRequestId,
+      provider:   state.provider,
+      token:      state.token,
+      base_url:   state.baseUrl || '',
+      workspace:  state.workspace || '',
+      repo_slug:  repoName(state.primaryRepo),
+      target_ref: state.targetBranch || 'main',
+    };
+    const r = await fetch(`${state.backendUrl}/api/v1/insights/dep-update`, {method:'POST', headers:h, body:JSON.stringify(body)});
+    const d = await r.json();
+    if(r.status===403) { out.innerHTML='<span style="color:#dc2626;font-size:12px">Reviewer role required to create PRs.</span>'; return; }
+    const prs = d.prs_created || [];
+    if(!prs.length) {
+      out.innerHTML = `<div style="font-size:12px;color:#7a8494">${escHtml(d.message||'No vulnerable dependencies found.')}</div>`;
+      return;
+    }
+    out.innerHTML = `<div style="display:flex;flex-direction:column;gap:6px">${prs.map(p=>{
+      const ic = p.status==='created'?'✅':p.status==='skipped'?'⬜':'❌';
+      const link = p.pr_url?` <a href="${p.pr_url}" target="_blank" style="color:#1a56db">PR #${p.pr_number} →</a>`:'';
+      return `<div style="font-size:12px;padding:6px 10px;background:#f7f8fa;border-radius:6px">${ic} <code>${escHtml(p.package)}</code> ${p.safe_version?`→ <strong>${escHtml(p.safe_version)}</strong>`:''} <span style="color:#9fadbf">${escHtml(p.cve||'')}</span>${link}${p.reason?` <span style="color:#9fadbf">— ${escHtml(p.reason)}</span>`:''}</div>`;
+    }).join('')}</div>`;
+    if(d.created_count>0) showToast(`✅ ${d.created_count} dependency fix PR(s) created`, 'success');
+  } catch(e) {
+    out.innerHTML = `<span style="color:#dc2626;font-size:12px">${escHtml(e.message)}</span>`;
+  } finally {
+    if(btn){ btn.disabled=false; btn.innerHTML='<i class="ti ti-git-pull-request"></i> Create fix PRs'; }
+  }
+}
+
 function renderQuality(el) {
   const savedThreshold = parseFloat(localStorage.getItem('qualityRecallThreshold') || '0');
   el.innerHTML = `

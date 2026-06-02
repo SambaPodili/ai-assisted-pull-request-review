@@ -463,7 +463,7 @@ class TestNewSettings:
         cfg = Settings(ANTHROPIC_API_KEY="test")
         assert cfg.max_diff_bytes  == 5_000_000
         assert cfg.rate_limit_rpm  == 60
-        assert cfg.analysis_timeout_s == 300
+        assert cfg.analysis_timeout_s == 600   # raised from 300 for 20-agent + 529-retry headroom
         assert cfg.cors_origins    == ["*"]
         assert cfg.log_format      == "text"
         assert cfg.sqlite_path     == ""

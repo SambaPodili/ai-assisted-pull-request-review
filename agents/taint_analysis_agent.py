@@ -122,7 +122,8 @@ class TaintAnalysisAgent(BaseAgent[TaintAnalysisResult]):
         taint_result = self._run_taint_analysis(request)
 
         # LLM enhancement only if we found actual paths to review
-        if taint_result.taint_paths and budget.get_remaining("security") > 2000:
+        llm_attempted = bool(taint_result.taint_paths) and budget.get_remaining("security") > 2000
+        if llm_attempted:
             try:
                 enhanced = super().run(request, budget, context or {})
                 # Merge LLM findings
@@ -133,6 +134,10 @@ class TaintAnalysisAgent(BaseAgent[TaintAnalysisResult]):
                 taint_result.fallback_used = False
             except Exception:
                 pass
+
+        # Static-only path (no paths to review, or low budget) — report progress
+        if not llm_attempted:
+            self.report_static_progress(request, getattr(taint_result, "duration_s", 0.0))
 
         return taint_result
 

@@ -187,3 +187,40 @@ def cve_ids(vulns: list[OsvVuln]) -> list[str]:
                 seen.add(c)
                 ids.append(c)
     return ids
+
+
+def fixed_version_for(
+    package:   str,
+    ecosystem: str = "PyPI",
+    timeout_s: int = 15,
+) -> tuple[str, str]:
+    """
+    Query OSV for a single package and return (safe_version, cve_or_vuln_id).
+
+    Walks the affected[].ranges[].events[] structure to find the first
+    'fixed' event — the minimum version that resolves the vulnerability.
+    Returns ("", "") if no fix is published or the package is not vulnerable.
+    """
+    payload = json.dumps({"package": {"name": package, "ecosystem": ecosystem}}).encode()
+    req = urllib.request.Request(
+        OSV_QUERY_URL, data=payload,
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            data = json.loads(resp.read())
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
+        log.warning("OSV fixed-version query failed for %s: %s", package, exc)
+        return "", ""
+
+    for vuln in data.get("vulns", []):
+        vuln_id = vuln.get("id", "")
+        # Prefer a CVE alias for display
+        cve = next((a for a in vuln.get("aliases", []) if a.startswith("CVE-")), vuln_id)
+        for affected in vuln.get("affected", []):
+            for rng in affected.get("ranges", []):
+                for evt in rng.get("events", []):
+                    fixed = evt.get("fixed")
+                    if fixed:
+                        return fixed, cve
+    return "", ""

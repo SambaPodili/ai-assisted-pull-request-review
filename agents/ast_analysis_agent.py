@@ -117,7 +117,8 @@ class ASTAnalysisAgent(BaseAgent[ASTAnalysisResult]):
         )
 
         # Attempt LLM enhancement if budget allows and there are findings to review
-        if ast_findings and budget.get_remaining(AgentName.CODE_ANALYSIS.value) > 2000:
+        llm_attempted = bool(ast_findings) and budget.get_remaining(AgentName.CODE_ANALYSIS.value) > 2000
+        if llm_attempted:
             try:
                 enhanced = super().run(request, budget, context or {})
                 # Merge: keep AST findings, add LLM-discovered ones
@@ -130,6 +131,10 @@ class ASTAnalysisAgent(BaseAgent[ASTAnalysisResult]):
                 base_result.fallback_used = False
             except Exception:
                 pass
+
+        # Static-only path (no findings to enhance, or low budget) — report progress
+        if not llm_attempted:
+            self.report_static_progress(request, getattr(base_result, "duration_s", 0.0))
 
         return base_result
 

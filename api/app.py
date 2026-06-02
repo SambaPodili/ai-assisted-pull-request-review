@@ -125,6 +125,10 @@ def create_app(settings=None) -> FastAPI:
         body, ct = prometheus_metrics_response()
         return Response(content=body, media_type=ct)
 
+    # ── Daily email digest scheduler (optional) ───────────────────────────────
+    if getattr(cfg, "digest_enabled", False):
+        _start_digest_scheduler(cfg)
+
     log.info(
         "App ready. Phase=%d Provider=%s CORS=%s OTLP=%s",
         cfg.analysis_phase,
@@ -133,6 +137,40 @@ def create_app(settings=None) -> FastAPI:
         bool(getattr(cfg, "otlp_endpoint", "")),
     )
     return app
+
+
+def _start_digest_scheduler(cfg) -> None:
+    """
+    Fire the daily digest once every 24h on a daemon thread.
+    Zero external dependencies — uses threading.Timer-style loop.
+    The DIGEST_SEND_HOUR env (0-23 UTC) controls the target hour; default 8.
+    """
+    import threading, time as _time
+    from datetime import datetime as _dt
+
+    send_hour = getattr(cfg, "digest_send_hour", 8)
+
+    def _loop():
+        # Send once shortly after startup if we're already at/after send_hour today,
+        # otherwise wait until the next send_hour.
+        while True:
+            now = _dt.utcnow()
+            target = now.replace(hour=send_hour, minute=0, second=0, microsecond=0)
+            if target <= now:
+                from datetime import timedelta as _td
+                target = target + _td(days=1)
+            sleep_s = max(60, (target - now).total_seconds())
+            _time.sleep(sleep_s)
+            try:
+                from output.digest import send_digest
+                result = send_digest(days=1)
+                log.info("Scheduled digest: %s", result)
+            except Exception as exc:
+                log.error("Scheduled digest failed: %s", exc)
+
+    t = threading.Thread(target=_loop, name="digest-scheduler", daemon=True)
+    t.start()
+    log.info("Digest scheduler started (daily at %02d:00 UTC)", send_hour)
 
 
 app = create_app()

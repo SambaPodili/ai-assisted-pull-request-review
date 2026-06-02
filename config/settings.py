@@ -85,6 +85,17 @@ class Settings(BaseSettings):
     teams_webhook_url:   str = Field(default="", alias="TEAMS_WEBHOOK_URL")
     post_pr_comments:    bool = Field(default=True,  alias="POST_PR_COMMENTS")
 
+    # ── Email digest (SMTP) ─────────────────────────────────────────────────────
+    smtp_host:        str = Field(default="", alias="SMTP_HOST")
+    smtp_port:        int = Field(default=587, alias="SMTP_PORT")
+    smtp_user:        str = Field(default="", alias="SMTP_USER")
+    smtp_password:    str = Field(default="", alias="SMTP_PASSWORD")
+    smtp_use_tls:     bool = Field(default=True, alias="SMTP_USE_TLS")
+    smtp_from:        str = Field(default="", alias="SMTP_FROM")          # sender address
+    digest_recipients: str = Field(default="", alias="DIGEST_RECIPIENTS") # comma-separated
+    digest_enabled:   bool = Field(default=False, alias="DIGEST_ENABLED")
+    digest_send_hour: int  = Field(default=8, alias="DIGEST_SEND_HOUR")    # 0-23 UTC
+
     # ── Phase 4: Ticket creation ───────────────────────────────────────────────
     jira_url:         str = Field(default="", alias="JIRA_URL")
     jira_user:        str = Field(default="", alias="JIRA_USER")

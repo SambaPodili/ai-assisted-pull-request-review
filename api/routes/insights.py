@@ -67,9 +67,14 @@ def _load_reports(limit: int = 500) -> list:
 
 
 def _risk_score(report) -> float:
-    """Extract numeric risk score 0-10 from a report."""
-    if report.risk and hasattr(report.risk, "risk_score"):
-        return float(report.risk.risk_score or 0)
+    """
+    Extract a normalised risk score on a 0-10 scale.
+    RiskResult.risk_score is stored 0-100, so we divide by 10 here so the
+    frontend (which colours on a 0-10 scale) stays consistent.
+    """
+    if report.risk and getattr(report.risk, "risk_score", 0):
+        raw = float(report.risk.risk_score or 0)
+        return round(raw / 10.0, 1) if raw > 10 else round(raw, 1)
     gate = (report.gate_decision.value if report.gate_decision else "HOLD")
     return {"BLOCK": 8.5, "HOLD": 5.0, "APPROVE": 2.0}.get(gate, 5.0)
 
@@ -83,21 +88,46 @@ def _short_repo(url: str) -> str:
     return "/".join(parts[-2:]) if len(parts) >= 2 else url
 
 
+def _sev(value) -> str:
+    """Normalise a severity that may be a RiskLevel enum or a plain string."""
+    if value is None:
+        return "low"
+    v = getattr(value, "value", value)   # RiskLevel.HIGH → "high"
+    return str(v).lower()
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 1.  PR PRIORITY QUEUE
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @router.get("/queue")
-def pr_priority_queue(limit: int = 50):
+def pr_priority_queue(limit: int = 200, days: int = 0, repo: str = ""):
     """
     Return all recent analyses ranked by risk score (highest first).
     Reviewers use this to decide which PRs to look at first.
-    Each item shows: repo, PR title, risk score, gate, top findings, elapsed time.
+
+    Filters:
+      days > 0  — only analyses completed in the last N days
+      repo      — only this repository (short "owner/name" or full URL)
     """
     reports = _load_reports(limit=limit)
+    cutoff  = datetime.utcnow() - timedelta(days=days) if days > 0 else None
     items   = []
 
     for r in reports:
+        # Date filter
+        if cutoff is not None:
+            try:
+                ts = r.completed_at if hasattr(r, "completed_at") else datetime.utcnow()
+                if ts < cutoff:
+                    continue
+            except Exception:
+                pass
+        # Repo filter
+        short = _short_repo(r.repo_url)
+        if repo and short != repo and r.repo_url != repo:
+            continue
+
         score = _risk_score(r)
         gate  = r.gate_decision.value if r.gate_decision else "HOLD"
 
@@ -105,15 +135,15 @@ def pr_priority_queue(limit: int = 50):
         findings = []
         if r.security:
             crit = [f for f in (r.security.findings or [])
-                    if str(getattr(f, "severity", "")).lower() in ("critical", "high")]
+                    if _sev(getattr(f, "severity", "")) in ("critical", "high")]
             for f in crit[:2]:
                 findings.append({"category": "security",
-                                  "severity": str(getattr(f, "severity", "high")),
-                                  "title":    str(getattr(f, "title", "Security issue"))})
+                                  "severity": _sev(getattr(f, "severity", "high")),
+                                  "title":    (getattr(f, "description", "") or "Security issue")[:80]})
         if r.performance_impact:
             for f in (r.performance_impact.findings or [])[:1]:
                 findings.append({"category": "performance",
-                                  "severity": f.severity,
+                                  "severity": _sev(f.severity),
                                   "title":    f.description[:80]})
         if r.data_privacy and r.data_privacy.pii_findings:
             findings.append({"category": "privacy",
@@ -149,7 +179,11 @@ def pr_priority_queue(limit: int = 50):
     # Sort: BLOCK first, then by risk score descending
     gate_order = {"BLOCK": 0, "HOLD": 1, "APPROVE": 2}
     items.sort(key=lambda x: (gate_order.get(x["gate"], 1), -x["risk_score"]))
-    return {"queue": items, "total": len(items)}
+
+    # Distinct repos across ALL recent reports (for the filter dropdown)
+    all_repos = sorted({_short_repo(r.repo_url) for r in reports})
+
+    return {"queue": items, "total": len(items), "repos": all_repos}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -379,12 +413,15 @@ def change_heatmap(repo: str = "", days: int = 90, limit: int = 60):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @router.get("/cost")
-def api_cost(weeks: int = 12):
+def api_cost(weeks: int = 12, repo: str = ""):
     """
     LLM token spend by agent, model, and calendar week.
     Includes estimated USD cost based on current provider pricing.
+    Optional repo filter (short "owner/name" or full URL).
     """
     reports = _load_reports(limit=1000)
+    if repo:
+        reports = [r for r in reports if _short_repo(r.repo_url) == repo or r.repo_url == repo]
     now     = datetime.utcnow()
     cutoff  = now - timedelta(weeks=weeks)
 
@@ -609,54 +646,42 @@ def create_dep_update_pr(body: DepUpdateRequest):
     if not report.dependency:
         return {"prs_created": [], "message": "No dependency findings in this analysis."}
 
-    # Collect CVE findings with package names and ecosystems
-    cve_packages = []
-    for cve in (getattr(report.dependency, "cve_findings", None) or []):
-        pkg  = getattr(cve, "package",   None) or getattr(cve, "name", "")
-        eco  = getattr(cve, "ecosystem", None) or getattr(cve, "language", "PyPI")
-        vuln = getattr(cve, "cve_id",    None) or getattr(cve, "id", "")
-        safe = getattr(cve, "safe_version", None) or getattr(cve, "fixed_version", "")
-        if pkg:
-            cve_packages.append({"package": pkg, "ecosystem": eco,
-                                  "cve": vuln, "safe_version": safe})
+    # DependencyResult stores changed_packages (list[str]) + cve_hits (list[str]).
+    # Strip any version specifier so "requests==2.25.0" → "requests".
+    import re as _re
+    raw_pkgs = getattr(report.dependency, "changed_packages", []) or []
+    packages = []
+    for p in raw_pkgs:
+        name = _re.split(r"[=<>~!\[ ]", p.strip())[0]
+        if name and name not in packages:
+            packages.append(name)
 
-    if not cve_packages:
-        return {"prs_created": [], "message": "No CVE package details found."}
+    if not packages:
+        return {"prs_created": [], "message": "No changed packages to check."}
+
+    from ingestion.osv_client import fixed_version_for
 
     api_base = _normalise_api_url(body.base_url, body.provider)
     results  = []
 
-    for entry in cve_packages[:5]:   # cap at 5 auto-PRs per analysis
-        pkg  = entry["package"]
-        safe = entry.get("safe_version", "")
-        cve  = entry.get("cve", "unknown CVE")
-
-        # If no safe version stored, try OSV.dev
-        if not safe:
+    for pkg in packages[:5]:   # cap at 5 auto-PRs per analysis
+        # Try the most common ecosystems in order until OSV returns a fix.
+        safe, cve = "", ""
+        for eco in ("PyPI", "npm", "Maven", "Go", "crates.io", "RubyGems"):
             try:
-                from ingestion.osv_client import OsvClient
-                osv    = OsvClient()
-                vulns  = osv.query_package(pkg, entry.get("ecosystem","PyPI"))
-                for v in vulns:
-                    for aff in getattr(v, "affected", []):
-                        for rng in getattr(aff, "ranges", []):
-                            events = getattr(rng, "events", [])
-                            for ev in events:
-                                fixed = getattr(ev, "fixed", None)
-                                if fixed:
-                                    safe = fixed
-                                    break
-                        if safe:
-                            break
-                    if safe:
-                        break
+                safe, cve = fixed_version_for(pkg, eco)
             except Exception as exc:
-                log.debug("OSV lookup failed for %s: %s", pkg, exc)
+                log.debug("OSV lookup failed for %s [%s]: %s", pkg, eco, exc)
+                continue
+            if safe:
+                break
 
         if not safe:
-            results.append({"package": pkg, "cve": cve,
-                             "status": "skipped", "reason": "No safe version found in OSV."})
+            results.append({"package": pkg, "cve": cve or "—",
+                             "status": "skipped",
+                             "reason": "No published fix found in OSV (package may be safe)."})
             continue
+        cve = cve or "OSV advisory"
 
         # Create PR on GitHub
         if body.provider in ("github", "github_enterprise"):
@@ -735,3 +760,69 @@ def create_dep_update_pr(body: DepUpdateRequest):
         "created_count": len(created),
         "message": f"{len(created)} PR(s) created successfully.",
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 7.  CSV EXPORT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _csv_response(rows: list[list], header: list[str], filename: str):
+    """Build a streaming CSV download response."""
+    import csv, io
+    from fastapi.responses import StreamingResponse
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(header)
+    writer.writerows(rows)
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/export/queue.csv")
+def export_queue_csv(days: int = 0, repo: str = ""):
+    """Download the review queue as CSV."""
+    data = pr_priority_queue(limit=500, days=days, repo=repo)
+    rows = [
+        [i["repo"], i["pr_number"], i["pr_title"], i["author"],
+         i["gate"], i["risk_score"], i["change_type"],
+         i["total_tokens"], i["elapsed"], i["request_id"]]
+        for i in data["queue"]
+    ]
+    return _csv_response(
+        rows,
+        ["repo","pr_number","pr_title","author","gate","risk_score",
+         "change_type","total_tokens","elapsed","request_id"],
+        f"ciaa_review_queue_{datetime.utcnow():%Y%m%d}.csv",
+    )
+
+
+@router.get("/export/cost.csv")
+def export_cost_csv(weeks: int = 12, repo: str = ""):
+    """Download the API cost breakdown (by agent) as CSV."""
+    data = api_cost(weeks=weeks, repo=repo)
+    rows = [[a["agent"], a["calls"], a["tokens"], a["cost_usd"]] for a in data["by_agent"]]
+    return _csv_response(
+        rows,
+        ["agent","calls","tokens","cost_usd"],
+        f"ciaa_api_cost_{datetime.utcnow():%Y%m%d}.csv",
+    )
+
+
+@router.get("/export/trend.csv")
+def export_trend_csv(weeks: int = 12, repo: str = ""):
+    """Download the per-repo weekly risk-score trend as CSV (long format)."""
+    data = risk_trend(weeks=weeks, repo=repo)
+    rows = []
+    for s in data["series"]:
+        for wk, score in zip(s["weeks"], s["scores"]):
+            rows.append([s["repo"], wk, score, s["trend"]])
+    return _csv_response(
+        rows,
+        ["repo","week","avg_risk_score","trend"],
+        f"ciaa_risk_trend_{datetime.utcnow():%Y%m%d}.csv",
+    )

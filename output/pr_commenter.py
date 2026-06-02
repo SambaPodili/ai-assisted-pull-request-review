@@ -278,12 +278,22 @@ def _collect_inline_findings(report: AnalysisReport) -> list[dict]:
             "message":   message,
         })
 
-    # Security
+    # Security — SecurityFinding uses file_path, line_range (str), severity (enum),
+    # cwe_id, description. No 'title'/'line_number' fields exist.
+    def _first_line(line_range) -> int:
+        import re as _re
+        m = _re.search(r"\d+", str(line_range or ""))
+        return int(m.group()) if m else 0
+
     for f in (report.security.findings if report.security else []):
+        sev = getattr(f, "severity", "medium")
+        sev = getattr(sev, "value", sev)   # RiskLevel → "high"
+        cwe = getattr(f, "cwe_id", "")
+        desc = getattr(f, "description", "") or "Security issue"
+        msg  = f"{cwe + ': ' if cwe else ''}{desc}"
         _add(getattr(f, "file_path", ""),
-             getattr(f, "line_number", 0) or getattr(f, "line", 0),
-             str(getattr(f, "severity", "medium")), "Security",
-             getattr(f, "title", str(f)))
+             _first_line(getattr(f, "line_range", 0)),
+             str(sev), "Security", msg)
 
     # Performance
     for f in (report.performance_impact.findings if report.performance_impact else []):

@@ -1,0 +1,34 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Minimal runtime — bare-metal Linux box, NO Docker, NO external backends.
+# Uses the built-in SQLite report store, in-memory vector fallback, and the
+# in-process NetworkX graph. The threaded pipeline runs if LangGraph is absent.
+#
+#   pip install -r requirements-minimal.txt
+#
+# Install the FULL requirements.txt instead if you want LangGraph orchestration,
+# ChromaDB semantic search, Redis (multi-process), or Neo4j graph storage.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ── Core ──────────────────────────────────────────────────────────────
+anthropic>=0.32.0
+pydantic>=2.7.0
+pydantic-settings>=2.3.0
+
+# ── API server ────────────────────────────────────────────────────────
+fastapi>=0.112.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+httpx>=0.27.0
+requests>=2.31.0
+starlette>=0.38.0
+
+# ── Graph (in-process, no external DB) ────────────────────────────────
+networkx>=3.3
+
+# ── Reliability ───────────────────────────────────────────────────────
+tenacity>=8.3.0
+
+# ── Observability (lightweight) ───────────────────────────────────────
+opentelemetry-api>=1.25.0
+opentelemetry-sdk>=1.25.0
+prometheus-client>=0.20.0

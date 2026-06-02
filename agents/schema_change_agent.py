@@ -98,6 +98,7 @@ class SchemaChangeAgent(BaseAgent[SchemaChangeResult]):
             for h in request.hunks
         )
         if not has_relevant:
+            self.report_static_progress(request)
             return SchemaChangeResult(
                 changes=[],
                 has_destructive=False,

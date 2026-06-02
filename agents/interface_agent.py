@@ -58,6 +58,8 @@ class InterfaceAnalysisAgent(BaseAgent[InterfaceResult]):
     # ── Override run to apply both passes ────────────────────────────────────
 
     def run(self, request: AnalysisRequest, budget, context: dict | None = None) -> InterfaceResult:
+        import time
+        t0 = time.monotonic()
         ctx = context or {}
         structural_breaks = self.detect_structural_breaks(request)
 
@@ -68,10 +70,13 @@ class InterfaceAnalysisAgent(BaseAgent[InterfaceResult]):
 
         if not has_iface_files:
             # No interface files changed — skip LLM entirely
+            dur = round(time.monotonic() - t0, 3)
+            self.report_static_progress(request, dur)
             return InterfaceResult(
                 breaking_changes=structural_breaks,
                 schema_diffs=[],
                 affected_consumers=[],
+                duration_s=dur,
             )
 
         # LLM pass for semantic analysis

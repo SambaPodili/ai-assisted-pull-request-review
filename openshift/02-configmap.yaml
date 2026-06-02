@@ -1,0 +1,36 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# ConfigMap — non-secret runtime configuration.
+# ──────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: impact-analyzer-config
+  labels:
+    app: impact-analyzer
+data:
+  ANALYSIS_PHASE:    "3"
+  GIT_PROVIDER:      "github"
+  LLM_PROVIDER:      "anthropic"
+  LLM_MODEL:         "claude-sonnet-4-6"
+  ANALYSIS_TIMEOUT_S: "600"
+  SKIP_AUTH:         "false"
+  LOG_LEVEL:         "INFO"
+  RATE_LIMIT_RPM:    "60"
+  # SQLite report store persists to the mounted PVC (survives pod restarts)
+  SQLITE_PATH:       "/app/data/reports.db"
+  AUDIT_LOG_PATH:    "/app/logs/audit.jsonl"
+  # Point the reviewer key file at a mounted location if you use one
+  API_KEYS_FILE:     ""
+  # Optional backends — leave blank to use built-in SQLite + in-memory fallbacks.
+  # Set these only if you also deploy Redis / Neo4j / ChromaDB (see DEPLOYMENT.md).
+  REDIS_URL:         ""
+  NEO4J_URL:         ""
+  CHROMA_HOST:       ""
+  # Daily email digest (set DIGEST_ENABLED=true + SMTP_* to turn on)
+  DIGEST_ENABLED:    "false"
+  SMTP_HOST:         ""
+  SMTP_PORT:         "587"
+  SMTP_USER:         ""
+  SMTP_FROM:         ""
+  DIGEST_RECIPIENTS: ""
+  DIGEST_SEND_HOUR:  "8"

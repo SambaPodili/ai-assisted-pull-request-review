@@ -1,0 +1,19 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# PersistentVolumeClaim — keeps the SQLite report store and audit logs across
+# pod restarts/rescheduling. Without this, history (and the Insights dashboards)
+# would reset on every restart.
+# ──────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: impact-analyzer-data
+  labels:
+    app: impact-analyzer
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+  # Uncomment and set to your cluster's storage class if not using the default:
+  # storageClassName: gp3-csi

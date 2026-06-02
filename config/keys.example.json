@@ -1,0 +1,22 @@
+[
+  {
+    "_comment": "Copy this file to config/keys.json and replace with real generated keys.",
+    "_generate": "python3 -c \"import secrets; print('rev_' + secrets.token_urlsafe(24))\"",
+    "key": "dev_REPLACE_WITH_GENERATED_KEY",
+    "roles": ["developer"],
+    "name": "Example Developer",
+    "team": "Payments"
+  },
+  {
+    "key": "rev_REPLACE_WITH_GENERATED_KEY",
+    "roles": ["reviewer"],
+    "name": "Example Reviewer",
+    "team": "Architecture"
+  },
+  {
+    "key": "admin_REPLACE_WITH_GENERATED_KEY",
+    "roles": ["admin"],
+    "name": "Platform Admin",
+    "team": "Platform"
+  }
+]

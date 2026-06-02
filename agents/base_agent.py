@@ -172,6 +172,22 @@ class BaseAgent(ABC, Generic[T]):
     @abstractmethod
     def fallback_result(self, request: AnalysisRequest) -> T: ...
 
+    def report_static_progress(self, request: AnalysisRequest, duration_s: float = 0.0,
+                               tokens: int = 0) -> None:
+        """
+        Emit start+done progress for a run that did NOT go through the LLM path
+        (e.g. budget too low, or a static-only branch was taken).
+
+        Custom run() overrides that conditionally skip super().run() must call
+        this in the skip branch so the agent still appears in the live progress
+        panel and the Timings tab. Safe to call exactly once per run.
+        """
+        from core.progress import get_progress_store
+        key = self.agent_name.value if not isinstance(self.agent_name, str) else self.agent_name
+        progress = get_progress_store().get_or_create(request.request_id)
+        progress.agent_started(key)
+        progress.agent_done(key, tokens, round(duration_s, 2), "static", False)
+
     def _call_llm(self, client: UnifiedLLMClient, user_prompt: str, remaining: int) -> tuple[T, int]:
         # Leave at least 200 tokens for the input; cap output at output_token_cap.
         prompt_tokens = estimate_tokens(user_prompt)

@@ -14,6 +14,32 @@ from governance.rbac import Permission, Subject, Role, ROLE_META, require_permis
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
+# ── Email digest ──────────────────────────────────────────────────────────────
+
+@router.post("/digest/send")
+def send_digest_now(days: int = 1,
+                    subject: Subject = require_permission(Permission.ADMIN_CONFIG)):
+    """
+    Build and send the daily digest email immediately.
+    Useful for testing SMTP config or sending an ad-hoc summary. Admin only.
+    """
+    from output.digest import send_digest
+    result = send_digest(days=days)
+    if not result.get("ok"):
+        raise HTTPException(400, detail=result.get("reason", "Digest send failed"))
+    return result
+
+
+@router.get("/digest/preview")
+def preview_digest(days: int = 1,
+                   subject: Subject = require_permission(Permission.ADMIN_CONFIG)):
+    """Return the digest HTML without sending — for previewing in the browser."""
+    from output.digest import build_digest_data, render_digest_html
+    from fastapi.responses import HTMLResponse
+    data = build_digest_data(days=days)
+    return HTMLResponse(render_digest_html(data))
+
+
 # ── User / key management (admin only) ───────────────────────────────────────
 
 @router.get("/users")

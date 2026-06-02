@@ -121,10 +121,12 @@ class DependencyMappingAgent(BaseAgent[DependencyResult]):
         # Prefer graph traversal (no LLM cost)
         if self._graph is not None:
             result = self.analyse_with_graph(changed_packages)
+            self.report_static_progress(request)   # graph path skips super().run()
         elif not any(_is_manifest(h.file_path) for h in request.hunks):
             result = self._empty_result(changed_packages)
+            self.report_static_progress(request)   # no manifests — skips super().run()
         else:
-            result = super().run(request, budget, ctx)
+            result = super().run(request, budget, ctx)   # base reports progress
 
         # Enrich CVE hits via OSV.dev (no auth, free API)
         result.cve_hits = _osv_lookup(changed_packages, request)
