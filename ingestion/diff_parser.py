@@ -7,36 +7,7 @@ Used by both the webhook handlers and the direct analysis endpoint.
 from __future__ import annotations
 import re
 from core.models import DiffHunk
-
-# Language detection by file extension
-_EXT_TO_LANG: dict[str, str] = {
-    ".java":   "java",
-    ".py":     "python",
-    ".ts":     "typescript",
-    ".tsx":    "typescript",
-    ".js":     "javascript",
-    ".jsx":    "javascript",
-    ".go":     "go",
-    ".kt":     "kotlin",
-    ".kts":    "kotlin",
-    ".cs":     "csharp",
-    ".cpp":    "cpp",
-    ".c":      "c",
-    ".rs":     "rust",
-    ".rb":     "ruby",
-    ".php":    "php",
-    ".scala":  "scala",
-    ".xml":    "xml",
-    ".yaml":   "yaml",
-    ".yml":    "yaml",
-    ".json":   "json",
-    ".proto":  "protobuf",
-    ".sql":    "sql",
-    ".sh":     "bash",
-    ".tf":     "terraform",
-    ".gradle": "gradle",
-    ".toml":   "toml",
-}
+from ingestion.language_registry import detect_language as _detect_language
 
 
 def parse_diff(diff_text: str) -> list[DiffHunk]:
@@ -97,11 +68,8 @@ def parse_diff(diff_text: str) -> list[DiffHunk]:
 
 
 def detect_language(file_path: str) -> str:
-    """Detect programming language from file extension."""
-    for ext, lang in _EXT_TO_LANG.items():
-        if file_path.endswith(ext):
-            return lang
-    return "unknown"
+    """Detect programming language from file path (extension + filename)."""
+    return _detect_language(file_path)
 
 
 def filter_hunks_by_language(hunks: list[DiffHunk], languages: list[str]) -> list[DiffHunk]:

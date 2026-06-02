@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CIAA — Architecture Diagram</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: #f0f4f8;
+    padding: 32px;
+    color: #1a2332;
+  }
+
+  .page {
+    max-width: 1300px;
+    margin: 0 auto;
+  }
+
+  /* ── Header ── */
+  .header {
+    text-align: center;
+    margin-bottom: 36px;
+  }
+  .header h1 {
+    font-size: 26px;
+    font-weight: 700;
+    color: #0f1f36;
+    letter-spacing: -0.5px;
+  }
+  .header p {
+    font-size: 13px;
+    color: #5a6a7e;
+    margin-top: 4px;
+  }
+
+  /* ── Layer wrapper ── */
+  .layers {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .layer {
+    border-radius: 14px;
+    padding: 18px 22px;
+    position: relative;
+  }
+
+  .layer-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+
+  .layer-label .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  /* ── Row of boxes ── */
+  .row {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    align-items: stretch;
+  }
+
+  /* ── Generic box ── */
+  .box {
+    border-radius: 10px;
+    padding: 12px 16px;
+    font-size: 12px;
+    flex: 1;
+    min-width: 120px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .box .box-title {
+    font-weight: 700;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .box .box-sub {
+    font-size: 10.5px;
+    opacity: .72;
+    line-height: 1.4;
+  }
+
+  .box .box-icon {
+    font-size: 18px;
+    margin-bottom: 3px;
+  }
+
+  /* ── Arrow connector ── */
+  .arrow-row {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 28px;
+    gap: 8px;
+    color: #64748b;
+    font-size: 11px;
+  }
+
+  .arrow-row svg {
+    opacity: .55;
+  }
+
+  /* ── Colours per layer ── */
+
+  /* Layer 1 — Git providers */
+  .l-git { background: #e8f0fe; border: 1.5px solid #c5d8fb; }
+  .l-git .layer-label { color: #1a56db; }
+  .l-git .dot { background: #1a56db; }
+  .l-git .box { background: #fff; border: 1.5px solid #c5d8fb; color: #1a2332; }
+
+  /* Layer 2 — API */
+  .l-api { background: #ede9fe; border: 1.5px solid #c4b5fd; }
+  .l-api .layer-label { color: #6d28d9; }
+  .l-api .dot { background: #6d28d9; }
+  .l-api .box { background: #fff; border: 1.5px solid #c4b5fd; color: #1a2332; }
+
+  /* Layer 3 — Ingestion */
+  .l-ing { background: #fef3c7; border: 1.5px solid #fcd34d; }
+  .l-ing .layer-label { color: #92400e; }
+  .l-ing .dot { background: #f59e0b; }
+  .l-ing .box { background: #fff; border: 1.5px solid #fcd34d; color: #1a2332; }
+
+  /* Layer 4 — Orchestrator */
+  .l-orch { background: #d1fae5; border: 1.5px solid #6ee7b7; }
+  .l-orch .layer-label { color: #065f46; }
+  .l-orch .dot { background: #059669; }
+  .l-orch .box { background: #fff; border: 1.5px solid #6ee7b7; color: #1a2332; }
+
+  /* Phase labels */
+  .phase-label {
+    font-size: 9.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .1em;
+    color: #065f46;
+    margin-bottom: 6px;
+  }
+
+  .phase-box {
+    border-radius: 10px;
+    padding: 12px 14px;
+    flex: 1;
+    background: #f0fdf4;
+    border: 1.5px solid #6ee7b7;
+  }
+
+  /* Agent pills */
+  .agent-pill {
+    display: inline-block;
+    background: #ecfdf5;
+    border: 1px solid #6ee7b7;
+    border-radius: 20px;
+    padding: 3px 10px;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: #065f46;
+    margin: 2px 2px;
+    white-space: nowrap;
+  }
+
+  .agent-pill.security { background: #fff1f2; border-color: #fca5a5; color: #991b1b; }
+  .agent-pill.privacy  { background: #eff6ff; border-color: #93c5fd; color: #1e40af; }
+  .agent-pill.quality  { background: #faf5ff; border-color: #c4b5fd; color: #5b21b6; }
+  .agent-pill.static   { background: #fffbeb; border-color: #fcd34d; color: #92400e; }
+  .agent-pill.synthesis{ background: #f0fdf4; border-color: #86efac; color: #14532d; }
+  .agent-pill.action   { background: #fff7ed; border-color: #fed7aa; color: #9a3412; }
+
+  /* Layer 5 — LLM + Storage side-by-side */
+  .l-infra {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 12px;
+  }
+
+  .l-llm  { background: #fce7f3; border: 1.5px solid #f9a8d4; border-radius: 14px; padding: 18px 22px; }
+  .l-llm .layer-label { color: #9d174d; }
+  .l-llm .dot { background: #ec4899; }
+  .l-llm .box { background: #fff; border: 1.5px solid #f9a8d4; }
+
+  .l-store { background: #e0f2fe; border: 1.5px solid #7dd3fc; border-radius: 14px; padding: 18px 22px; }
+  .l-store .layer-label { color: #075985; }
+  .l-store .dot { background: #0ea5e9; }
+  .l-store .box { background: #fff; border: 1.5px solid #7dd3fc; }
+
+  .l-obs  { background: #f5f3ff; border: 1.5px solid #c4b5fd; border-radius: 14px; padding: 18px 22px; }
+  .l-obs .layer-label { color: #4c1d95; }
+  .l-obs .dot { background: #7c3aed; }
+  .l-obs .box { background: #fff; border: 1.5px solid #c4b5fd; }
+
+  /* Layer 6 — Frontend */
+  .l-ui { background: #fff7ed; border: 1.5px solid #fed7aa; }
+  .l-ui .layer-label { color: #9a3412; }
+  .l-ui .dot { background: #f97316; }
+  .l-ui .box { background: #fff; border: 1.5px solid #fed7aa; color: #1a2332; }
+
+  /* ── Tab group inside UI ── */
+  .tab-group { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .tab-chip {
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 10.5px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .tc-blue   { background: #eff6ff; border: 1px solid #93c5fd; color: #1d4ed8; }
+  .tc-red    { background: #fff1f2; border: 1px solid #fca5a5; color: #b91c1c; }
+  .tc-green  { background: #f0fdf4; border: 1px solid #86efac; color: #166534; }
+  .tc-purple { background: #faf5ff; border: 1px solid #c4b5fd; color: #6d28d9; }
+  .tc-orange { background: #fff7ed; border: 1px solid #fdba74; color: #c2410c; }
+  .tc-teal   { background: #f0fdfa; border: 1px solid #5eead4; color: #0f766e; }
+
+  /* ── Divider arrow ── */
+  .divider {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #94a3b8;
+    font-size: 20px;
+    line-height: 1;
+    height: 22px;
+    user-select: none;
+  }
+
+  /* ── Legend ── */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    margin-top: 28px;
+    justify-content: center;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: #475569;
+  }
+  .legend-dot {
+    width: 11px; height: 11px;
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+
+  /* ── Footnote ── */
+  .footnote {
+    text-align: center;
+    font-size: 10.5px;
+    color: #94a3b8;
+    margin-top: 22px;
+  }
+
+  /* Print */
+  @media print {
+    body { background: #fff; padding: 16px; }
+    .layer, .l-llm, .l-store, .l-obs { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- Header -->
+  <div class="header">
+    <h1>Code Impact &amp; Analysis Framework — Architecture</h1>
+    <p>20 AI agents · 5 analysis phases · Real-time impact reporting on every pull request</p>
+  </div>
+
+  <div class="layers">
+
+    <!-- ══════════════════════════════════════════════════════ -->
+    <!-- LAYER 1 — Git Providers                              -->
+    <!-- ══════════════════════════════════════════════════════ -->
+    <div class="layer l-git">
+      <div class="layer-label"><span class="dot"></span>Source Control</div>
+      <div class="row">
+        <div class="box">
+          <div class="box-icon">🐙</div>
+          <div class="box-title">GitHub</div>
+          <div class="box-sub">Pull Request events<br>Webhook · REST API · Auto-clone</div>
+        </div>
+        <div class="box">
+          <div class="box-icon">🪣</div>
+          <div class="box-title">Bitbucket Cloud</div>
+          <div class="box-sub">Pull Request events<br>Webhook · Bitbucket API 2.0</div>
+        </div>
+        <div class="box">
+          <div class="box-icon">🔒</div>
+          <div class="box-title">Webhook Security</div>
+          <div class="box-sub">HMAC-SHA256 signature validation<br>Deduplication (300s TTL)</div>
+        </div>
+        <div class="box">
+          <div class="box-icon">📋</div>
+          <div class="box-title">Diff Ingestion</div>
+          <div class="box-sub">Unified diff parsing<br>Language detection · Hunk extraction</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="divider">↓ webhook trigger</div>
+
+    <!-- ══════════════════════════════════════════════════════ -->
+    <!-- LAYER 2 — API                                        -->
+    <!-- ══════════════════════════════════════════════════════ -->
+    <div class="layer l-api">
+      <div class="layer-label"><span class="dot"></span>API Layer — FastAPI</div>
+      <div class="row">
+        <div class="box">
+          <div class="box-title">POST /api/v1/analyse</div>
+          <div class="box-sub">Submit PR for analysis<br>Returns request_id (202)</div>
+        </div>
+        <div class="box">
+          <div class="box-title">GET /api/v1/progress/{id}</div>
+          <div class="box-sub">Real-time agent status<br>Polled every 2s by frontend</div>
+        </div>
+        <div class="box">
+          <div class="box-title">GET /api/v1/report/{id}</div>
+          <div class="box-sub">Full analysis report<br>JSON / summary formats</div>
+        </div>
+        <div class="box">
+          <div class="box-title">GET /api/v1/quality/gate</div>
+          <div class="box-sub">CI/CD pass·fail gate<br>Integrates with GitHub Actions, Jenkins</div>
+        </div>
+        <div class="box">
+          <div class="box-title">POST /webhooks/github</div>
+          <div class="box-sub">GitHub webhook receiver<br>HMAC validated, deduplicated</div>
+        </div>
+        <div class="box">
+          <div class="box-title">GET /metrics</div>
+          <div class="box-sub">Prometheus metrics endpoint<br>Request count · Duration · Tokens</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="divider">↓ parsed diff + metadata</div>
+
+    <!-- ══════════════════════════════════════════════════════ -->
+    <!-- LAYER 3 — Ingestion                                  -->
+    <!-- ══════════════════════════════════════════════════════ -->
+    <div class="layer l-ing">
+      <div class="layer-label"><span class="dot"></span>Ingestion &amp; Enrichment Layer</div>
+      <div class="row">
+        <div class="box">
+          <div class="box-icon">🔍</div>
+          <div class="box-title">Symbol Extractor</div>
+          <div class="box-sub">Parses diff to find changed functions, classes, methods across all languages. Ranks by blast radius.</div>
+        </div>
+        <div class="box">
+          <div class="box-icon">🕸</div>
+          <div class="box-title">Reference Finder</div>
+          <div class="box-sub">Finds every caller of changed symbols.
+            <br><b>auto_clone</b> → shallow git clone + grep
+            <br><b>local_grep</b> → REPO_LOCAL_PATH
+            <br><b>diff_scan</b> → within PR diff</div>
+        </div>
+        <div class="box">
+          <div class="box-icon">🛡</div>
+          <div class="box-title">OSV Client</div>
+          <div class="box-sub">Real-time CVE lookup via OSV.dev API for changed dependencies. Maps packages to known vulnerabilities.</div>
+        </div>
+        <div class="box">
+          <div class="box-icon">🗺</div>
+          <div class="box-title">Service Graph Builder</div>
+          <div class="box-sub">Constructs service dependency graph. Identifies which downstream services are exposed to the change.</div>
+        </div>
+        <div class="box">
+          <div class="box-icon">📚</div>
+          <div class="box-title">Language Registry</div>
+          <div class="box-sub">Detects language, framework, and file type per hunk. Routes to appropriate parsers.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="divider">↓ enriched analysis request</div>
+
+    <!-- ══════════════════════════════════════════════════════ -->
+    <!-- LAYER 4 — Orchestrator + Agents                      -->
+    <!-- ══════════════════════════════════════════════════════ -->
+    <div class="layer l-orch">
+      <div class="layer-label"><span class="dot"></span>Orchestrator — 20 AI Agents across 5 Phases</div>
+
+      <div class="row" style="align-items:flex-start">
+
+        <!-- Phase 1a -->
+        <div class="phase-box" style="max-width:180px;flex:0 0 auto">
+          <div class="phase-label">Phase 1a · Foundation</div>
+          <span class="agent-pill">🔬 Code Analysis</span>
+          <div style="font-size:10px;color:#065f46;margin-top:8px;line-height:1.5">Understands intent &amp; quality of the change. Sets context for all downstream agents.</div>
+        </div>
+
+        <!-- Phase 1b -->
+        <div class="phase-box" style="flex:3">
+          <div class="phase-label">Phase 1b · Parallel Deep Analysis — 13 agents run simultaneously</div>
+          <div>
+            <span class="agent-pill security">🔒 Security</span>
+            <span class="agent-pill security">🌳 AST Analysis</span>
+            <span class="agent-pill security">🔑 Secrets &amp; Entropy</span>
+            <span class="agent-pill security">🕵 Taint Analysis</span>
+            <span class="agent-pill security">⚙️ IaC Security</span>
+            <span class="agent-pill static">⏱ Temporal Risk</span>
+            <span class="agent-pill static">🗄 Schema Change</span>
+            <span class="agent-pill quality">🧪 QA Scenarios</span>
+            <span class="agent-pill quality">🕸 Reference Impact</span>
+            <span class="agent-pill quality">🚀 Performance</span>
+            <span class="agent-pill privacy">🔐 Data Privacy</span>
+            <span class="agent-pill quality">🔧 Maintainability</span>
+            <span class="agent-pill quality">📊 Observability</span>
+          </div>
+        </div>
+
+        <!-- Phase 2 -->
+        <div class="phase-box" style="flex:1;min-width:160px">
+          <div class="phase-label">Phase 2 · Synthesis</div>
+          <span class="agent-pill synthesis">📦 Dependency</span>
+          <span class="agent-pill synthesis">🧪 Test Coverage</span>
+          <span class="agent-pill synthesis">🔌 Interface</span>
+          <span class="agent-pill static">⚖️ Licence Check</span>
+        </div>
+
+        <!-- Phase 3 -->
+        <div class="phase-box" style="max-width:160px;flex:0 0 auto">
+          <div class="phase-label">Phase 3 · Action</div>
+          <span class="agent-pill action">⚠️ Risk Score</span>
+          <span class="agent-pill action">🛠 Remediation</span>
+          <div style="font-size:10px;color:#9a3412;margin-top:8px;line-height:1.5">Deployment strategy: Standard / Canary / Blue-Green / Feature Flag</div>
+        </div>
+
+      </div>
+
+      <!-- Engine badges -->
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+        <span style="font-size:10px;background:#e8f5e9;border:1px solid #a5d6a7;border-radius:6px;padding:3px 8px;color:#1b5e20">⚡ LangGraph DAG execution</span>
+        <span style="font-size:10px;background:#e8f5e9;border:1px solid #a5d6a7;border-radius:6px;padding:3px 8px;color:#1b5e20">🔀 ThreadPoolExecutor (13 parallel workers)</span>
+        <span style="font-size:10px;background:#e8f5e9;border:1px solid #a5d6a7;border-radius:6px;padding:3px 8px;color:#1b5e20">🪣 Token budget per agent</span>
+        <span style="font-size:10px;background:#e8f5e9;border:1px solid #a5d6a7;border-radius:6px;padding:3px 8px;color:#1b5e20">🔄 Auto-fallback to static analysis on LLM error</span>
+        <span style="font-size:10px;background:#e8f5e9;border:1px solid #a5d6a7;border-radius:6px;padding:3px 8px;color:#1b5e20">⏱ 600s analysis timeout</span>
+      </div>
+    </div>
+
+    <div class="divider">↓ LLM calls &amp; data persistence</div>
+
+    <!-- ══════════════════════════════════════════════════════ -->
+    <!-- LAYER 5 — LLM + Storage + Observability side by side  -->
+    <!-- ══════════════════════════════════════════════════════ -->
+    <div class="l-infra">
+
+      <!-- LLM -->
+      <div class="l-llm">
+        <div class="layer-label"><span class="dot"></span>AI / LLM Providers</div>
+        <div style="display:flex;flex-direction:column;gap:7px">
+          <div class="box">
+            <div class="box-title">🟣 Anthropic Claude</div>
+            <div class="box-sub">claude-sonnet-4-6 · claude-haiku<br>Prompt cache · 529 fast-fail retry</div>
+          </div>
+          <div class="box">
+            <div class="box-title">🟢 OpenAI</div>
+            <div class="box-sub">gpt-4o · gpt-4o-mini · gpt-4-turbo</div>
+          </div>
+          <div class="box">
+            <div class="box-title">🔵 Azure OpenAI</div>
+            <div class="box-sub">Enterprise Azure-hosted deployment<br>Custom endpoint + API version</div>
+          </div>
+          <div class="box">
+            <div class="box-title">🦙 Ollama (Local)</div>
+            <div class="box-sub">llama3.2 · codellama · qwen2.5-coder<br>100% on-premise, no external calls</div>
+          </div>
+          <div class="box">
+            <div class="box-title">⚙️ Custom / Org Endpoint</div>
+            <div class="box-sub">Any OpenAI-compatible API<br>vLLM · LM Studio · Groq · Fireworks</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Storage -->
+      <div class="l-store">
+        <div class="layer-label"><span class="dot"></span>Storage Layer</div>
+        <div style="display:flex;flex-direction:column;gap:7px">
+          <div class="box">
+            <div class="box-title">🔴 Redis</div>
+            <div class="box-sub">Report persistence<br>Queryable by request_id<br>Falls back to in-memory (dev)</div>
+          </div>
+          <div class="box">
+            <div class="box-title">🟠 ChromaDB</div>
+            <div class="box-sub">Vector store<br>Semantic search over historical patterns<br>Falls back to keyword search</div>
+          </div>
+          <div class="box">
+            <div class="box-title">🌐 Neo4j</div>
+            <div class="box-sub">Service dependency graph<br>Call relationship storage<br>Falls back to NetworkX in-process</div>
+          </div>
+          <div class="box">
+            <div class="box-title">🔔 Notifications</div>
+            <div class="box-sub">Slack webhook<br>Microsoft Teams webhook<br>Triggered on analysis complete</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Observability -->
+      <div class="l-obs">
+        <div class="layer-label"><span class="dot"></span>Observability</div>
+        <div style="display:flex;flex-direction:column;gap:7px">
+          <div class="box">
+            <div class="box-title">🔭 OpenTelemetry</div>
+            <div class="box-sub">Distributed tracing<br>Per-request spans<br>Agent duration tracking</div>
+          </div>
+          <div class="box">
+            <div class="box-title">🏮 Jaeger</div>
+            <div class="box-sub">Trace visualisation<br>OTLP/gRPC endpoint<br>http://jaeger:4317</div>
+          </div>
+          <div class="box">
+            <div class="box-title">📈 Prometheus</div>
+            <div class="box-sub">Metrics scraping<br>Request count · Token spend<br>Agent error rate</div>
+          </div>
+          <div class="box">
+            <div class="box-title">📋 Structured Logs</div>
+            <div class="box-sub">request_id correlation<br>Per-agent log lines<br>Fallback / error tracking</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="divider">↓ report delivered to browser</div>
+
+    <!-- ══════════════════════════════════════════════════════ -->
+    <!-- LAYER 6 — Frontend Dashboard                         -->
+    <!-- ══════════════════════════════════════════════════════ -->
+    <div class="layer l-ui">
+      <div class="layer-label"><span class="dot"></span>Dashboard — Single-Page Application (index.html · no build step)</div>
+      <div class="row">
+
+        <div class="box" style="flex:1.2">
+          <div class="box-title">📡 Live Progress Panel</div>
+          <div class="box-sub">All 20 agents shown with real-time status<br>(pending → running → done / fallback)<br>Per-agent token count &amp; duration</div>
+        </div>
+
+        <div class="box" style="flex:2">
+          <div class="box-title">📊 Results Tabs</div>
+          <div class="tab-group">
+            <span class="tab-chip tc-blue">Summary</span>
+            <span class="tab-chip tc-red">Security</span>
+            <span class="tab-chip tc-red">Advanced</span>
+            <span class="tab-chip tc-green">References</span>
+            <span class="tab-chip tc-green">Dependency</span>
+            <span class="tab-chip tc-green">Interface</span>
+            <span class="tab-chip tc-green">Schema</span>
+            <span class="tab-chip tc-purple">QA Scenarios</span>
+            <span class="tab-chip tc-purple">Performance</span>
+            <span class="tab-chip tc-purple">Privacy</span>
+            <span class="tab-chip tc-purple">Quality</span>
+            <span class="tab-chip tc-orange">Remediation</span>
+            <span class="tab-chip tc-teal">Timings</span>
+          </div>
+        </div>
+
+        <div class="box" style="flex:1.2">
+          <div class="box-title">🕸 Call Graph (D3.js)</div>
+          <div class="box-sub">Force-directed SVG graph<br>L1 direct callers → L2 → L3<br>Drag · Zoom · Click to highlight</div>
+        </div>
+
+        <div class="box" style="flex:1">
+          <div class="box-title">⚙️ Configuration</div>
+          <div class="box-sub">LLM provider &amp; model<br>GitHub / Bitbucket token<br>Backend URL · API key</div>
+        </div>
+
+      </div>
+    </div>
+
+  </div><!-- end layers -->
+
+  <!-- ══════════════════════════════════════════════════════ -->
+  <!-- Legend                                               -->
+  <!-- ══════════════════════════════════════════════════════ -->
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot" style="background:#1a56db"></div> Source Control &amp; Webhooks</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#6d28d9"></div> REST API Layer</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#f59e0b"></div> Ingestion &amp; Enrichment</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#059669"></div> Orchestrator &amp; Agents</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#ec4899"></div> AI / LLM Providers</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#0ea5e9"></div> Storage Layer</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#7c3aed"></div> Observability</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#f97316"></div> Frontend Dashboard</div>
+  </div>
+
+  <div class="footnote">
+    CIAA v2.0 · 20 agents · 5 analysis phases · &lt; 10 min end-to-end · May 2026
+    &nbsp;·&nbsp; Open in browser to view &nbsp;·&nbsp; Ctrl+P / Cmd+P to print or export as PDF
+  </div>
+
+</div>
+</body>
+</html>

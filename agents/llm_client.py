@@ -44,7 +44,7 @@ def _make_retry(max_attempts: int, max_wait: int, is_retryable):
     from tenacity import Retrying
     return Retrying(
         retry=retry_if_exception(is_retryable),
-        wait=wait_exponential_jitter(initial=2, max=max_wait),
+        wait=wait_exponential_jitter(initial=5, max=max_wait),
         stop=stop_after_attempt(max_attempts),
         before_sleep=before_sleep_log(log, logging.WARNING),
         reraise=True,
@@ -150,6 +150,10 @@ class UnifiedLLMClient:
 
     def _call_anthropic(self, system: str, user: str, max_tokens: int) -> LLMResponse:
         import anthropic
+        from anthropic._exceptions import OverloadedError as _OverloadedError
+
+        from config.settings import get_settings
+        cfg = get_settings()
 
         def _is_retryable(exc: BaseException) -> bool:
             return isinstance(exc, (
@@ -157,14 +161,56 @@ class UnifiedLLMClient:
                 anthropic.APIConnectionError,
                 anthropic.APITimeoutError,
                 anthropic.InternalServerError,
+                _OverloadedError,   # HTTP 529 — not re-exported at top level in SDK 0.100+
             ))
 
-        from config.settings import get_settings
-        cfg = get_settings()
+        if _HAS_TENACITY:
+            from tenacity import Retrying, retry_if_exception, stop_after_attempt, before_sleep_log
+            from tenacity import wait_exponential_jitter
+
+            def _wait(retry_state):
+                exc = retry_state.outcome.exception()
+                if isinstance(exc, _OverloadedError):
+                    # 529: short backoff — 2s/4s/8s capped at 10s.
+                    # With stop_after_attempt(3) total exposure ≤ ~24s per agent.
+                    return min(2.0 * (2 ** (retry_state.attempt_number - 1)), 10.0)
+                # Other transient errors: standard exponential backoff
+                return min(5.0 * (2 ** (retry_state.attempt_number - 1)), float(cfg.llm_retry_max_wait_s))
+
+            def _stop(retry_state):
+                exc = retry_state.outcome.exception()
+                # 529 gives up sooner to keep agents from blocking each other
+                limit = 3 if isinstance(exc, _OverloadedError) else cfg.llm_retry_attempts
+                return retry_state.attempt_number >= limit
+
+            from tenacity.stop import stop_base
+            class _ConditionalStop(stop_base):
+                def __call__(self, retry_state) -> bool:
+                    return _stop(retry_state)
+
+            retrying = Retrying(
+                retry=retry_if_exception(_is_retryable),
+                wait=_wait,
+                stop=_ConditionalStop(),
+                before_sleep=before_sleep_log(log, logging.WARNING),
+                reraise=True,
+            )
+        else:
+            from contextlib import contextmanager
+
+            @contextmanager
+            def _noop_ctx():
+                yield
+
+            class _NoopRetrying:
+                def __iter__(self):
+                    yield _noop_ctx()
+
+            retrying = _NoopRetrying()
 
         client = anthropic.Anthropic(api_key=self._cfg.api_key or None)
         resp = None
-        for attempt in _make_retry(cfg.llm_retry_attempts, cfg.llm_retry_max_wait_s, _is_retryable):
+        for attempt in retrying:
             with attempt:
                 resp = client.messages.create(
                     model=self._cfg.model,

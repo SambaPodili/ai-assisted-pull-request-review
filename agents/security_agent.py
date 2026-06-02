@@ -17,7 +17,8 @@ from core.models import (
     SecurityResult, SecurityFinding, RiskLevel,
 )
 from core.token_manager import trim_diff_for_budget
-from agents.base_agent import BaseAgent
+from agents.base_agent import BaseAgent, format_hunks_for_prompt
+from ingestion.language_registry import security_concerns, lang_meta
 
 
 # ── Regex SAST patterns ───────────────────────────────────────────────────────
@@ -107,14 +108,30 @@ class SecurityReviewAgent(BaseAgent[SecurityResult]):
     )
 
     def build_user_prompt(self, request: AnalysisRequest, context: dict[str, Any]) -> str:
-        diff     = "\n\n".join(h.content for h in request.hunks)
-        trimmed  = trim_diff_for_budget(diff, max_tokens_approx=3500)
         frameworks = context.get("compliance_frameworks", ["MAS TRM", "PCI-DSS 4.0"])
+
+        # Collect language-specific security concerns across all changed files
+        lang_concerns: list[str] = []
+        seen_langs: set[str] = set()
+        for h in request.hunks:
+            if h.language not in seen_langs:
+                seen_langs.add(h.language)
+                concerns = security_concerns(h.language)
+                if concerns:
+                    meta = lang_meta(h.language)
+                    lang_concerns.append(f"  {meta.display}: {', '.join(concerns[:4])}")
+
+        lang_block = ""
+        if lang_concerns:
+            lang_block = "Language-specific risks to check:\n" + "\n".join(lang_concerns) + "\n\n"
+
+        diff_block = format_hunks_for_prompt(request.hunks, max_chars_per_hunk=3000, focus="security")
         return (
             f"Repository: {request.repo_url}\n"
             f"Compliance scope: {', '.join(frameworks)}\n"
-            f"Changed files: {request.changed_files}\n\n"
-            f"DIFF:\n{trimmed}"
+            f"Languages detected: {', '.join(sorted(seen_langs))}\n\n"
+            f"{lang_block}"
+            f"DIFF:\n{diff_block}"
         )
 
     def fallback_result(self, request: AnalysisRequest) -> SecurityResult:

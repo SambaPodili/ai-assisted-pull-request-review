@@ -19,12 +19,92 @@ from typing import Any, TypeVar, Generic, Type
 from pydantic import ValidationError
 
 from core.token_manager import TokenBudgetManager, estimate_tokens
-from core.models import AgentName, AnalysisRequest, AgentResultBase
+from core.models import AgentName, AnalysisRequest, AgentResultBase, DiffHunk
 from agents.llm_client import UnifiedLLMClient, ModelConfig, make_llm_client
 from governance.observability import agent_span
 
 log = logging.getLogger(__name__)
 T   = TypeVar("T", bound=AgentResultBase)
+
+
+def format_hunks_for_prompt(
+    hunks: list[DiffHunk],
+    max_chars_per_hunk: int = 3000,
+    max_total_chars:    int = 40_000,   # ~10K tokens — keeps prompts focused
+    focus: str = "general",             # "security" | "interface" | "general"
+) -> str:
+    """
+    Format diff hunks into a prompt block with per-file language headers.
+
+    For large PRs (>15 files) ranks hunks by relevance before including them:
+      - Security focus: auth/crypto/config paths ranked highest
+      - Interface focus: openapi/proto/schema paths ranked highest
+      - General: ranked by raw change volume (additions + deletions)
+    Includes a summary line when files are omitted so the LLM knows the scope.
+    """
+    from ingestion.language_registry import lang_meta
+
+    if not hunks:
+        return "(no diff hunks)"
+
+    # ── Rank hunks for large PRs ──────────────────────────────────────────────
+    def _hunk_score(h: DiffHunk) -> int:
+        score = h.additions + h.deletions
+        fp = h.file_path.lower()
+        if focus == "security":
+            if any(k in fp for k in ("auth", "crypt", "secret", "password", "token",
+                                     "jwt", "oauth", "key", "cert", "ssl", "tls")):
+                score += 500
+            if any(k in fp for k in ("config", "setting", "env", "permission", "rbac")):
+                score += 200
+            # Deprioritise tests — they contain keywords but aren't the vuln
+            if any(k in fp for k in ("test", "spec", "mock", "fixture")):
+                score -= 300
+        elif focus == "interface":
+            if any(k in fp for k in ("openapi", "swagger", "proto", "schema",
+                                     "api-spec", "asyncapi", "contract")):
+                score += 500
+        return score
+
+    ranked = sorted(hunks, key=_hunk_score, reverse=True)
+    total_files = len(ranked)
+
+    # ── Select hunks that fit within max_total_chars ──────────────────────────
+    selected:    list[DiffHunk] = []
+    running_chars = 0
+    for h in ranked:
+        budget = min(max_chars_per_hunk, max_total_chars - running_chars)
+        if budget <= 0:
+            break
+        selected.append(h)
+        running_chars += min(len(h.content), budget)
+
+    omitted = total_files - len(selected)
+
+    # ── Format selected hunks ─────────────────────────────────────────────────
+    parts: list[str] = []
+    if omitted > 0:
+        parts.append(
+            f"[Large PR: showing {len(selected)} of {total_files} changed files, "
+            f"ranked by {'security sensitivity' if focus=='security' else 'change volume'}. "
+            f"{omitted} lower-priority files omitted.]"
+        )
+
+    for h in selected:
+        meta    = lang_meta(h.language)
+        budget  = min(max_chars_per_hunk, max_total_chars - sum(
+            min(len(x.content), max_chars_per_hunk) for x in selected[:selected.index(h)]
+        ))
+        content = h.content[:max(budget, 200)]
+        if len(h.content) > len(content):
+            content += f"\n... [truncated — {h.additions + h.deletions} lines total]"
+        parts.append(
+            f"### File: {h.file_path}  "
+            f"[language: {meta.display}]  "
+            f"(+{h.additions}/-{h.deletions})\n"
+            + content
+        )
+    return "\n\n".join(parts)
 
 
 class BaseAgent(ABC, Generic[T]):

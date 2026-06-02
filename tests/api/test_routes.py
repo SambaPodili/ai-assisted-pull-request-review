@@ -170,7 +170,7 @@ class TestAnalysisRoute:
         assert r.status_code == 202
 
     def test_oversized_diff_rejected(self, client):
-        huge = "+" + "x" * (1_100_000)
+        huge = "+" + "x" * (5_100_000)   # over the 5 MB limit
         payload = {**_ANALYSE_PAYLOAD, "diff_text": huge}
         r = client.post("/api/v1/analyse", json=payload)
         assert r.status_code == 422

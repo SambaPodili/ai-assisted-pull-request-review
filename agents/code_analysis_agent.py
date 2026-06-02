@@ -13,8 +13,8 @@ from core.models import (
     AgentName, AnalysisRequest,
     CodeAnalysisResult, CodeFinding, RiskLevel,
 )
-from core.token_manager import trim_diff_for_budget
-from agents.base_agent import BaseAgent
+from agents.base_agent import BaseAgent, format_hunks_for_prompt
+from ingestion.language_registry import lang_meta
 
 
 class CodeAnalysisAgent(BaseAgent[CodeAnalysisResult]):
@@ -35,13 +35,13 @@ class CodeAnalysisAgent(BaseAgent[CodeAnalysisResult]):
     )
 
     def build_user_prompt(self, request: AnalysisRequest, context: dict[str, Any]) -> str:
-        diff    = "\n\n".join(h.content for h in request.hunks)
-        trimmed = trim_diff_for_budget(diff, max_tokens_approx=2500)
+        languages = sorted({lang_meta(h.language).display for h in request.hunks})
+        diff_block = format_hunks_for_prompt(request.hunks, max_chars_per_hunk=2000, focus="general")
         return (
             f"Repository: {request.repo_url}\n"
             f"Comparison: {request.source_ref} → {request.target_ref}\n"
-            f"Changed files: {request.changed_files}\n\n"
-            f"DIFF:\n{trimmed}"
+            f"Languages: {', '.join(languages)}\n\n"
+            f"DIFF:\n{diff_block}"
         )
 
     def fallback_result(self, request: AnalysisRequest) -> CodeAnalysisResult:

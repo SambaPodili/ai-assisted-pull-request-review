@@ -27,7 +27,8 @@ from core.models import (
     AgentName, AnalysisRequest,
     QAScenariosResult, QAScenario, QAScenarioType, RiskLevel,
 )
-from agents.base_agent import BaseAgent
+from agents.base_agent import BaseAgent, format_hunks_for_prompt
+from ingestion.language_registry import lang_meta, test_framework_hint, linter_hint
 
 
 # ── Heuristic classifiers ─────────────────────────────────────────────────────
@@ -116,24 +117,36 @@ def _build_fallback_scenarios(request: AnalysisRequest) -> list[QAScenario]:
         fp      = hunk.file_path
         content = hunk.content
         cats    = _categorise_hunk(fp, content)
+        meta    = lang_meta(hunk.language)
+        fw_hint = test_framework_hint(hunk.language)
+        lint_hint = linter_hint(hunk.language)
+
+        # Build language-aware security hint
+        sec_tools = []
+        if fw_hint:
+            sec_tools.append(fw_hint)
+        if lint_hint:
+            sec_tools.append(lint_hint)
+        sec_tool_str = "; ".join(sec_tools) if sec_tools else "OWASP ZAP + static analysis"
 
         if QAScenarioType.SECURITY in cats:
+            lang_risks = "; ".join(meta.security_notes[:3]) if meta.security_notes else "general OWASP top 10"
             scenarios.append(_make_scenario(
                 idx, f"Security validation — {fp}",
                 QAScenarioType.SECURITY, RiskLevel.CRITICAL,
-                f"Verify that security controls in {fp} are correctly implemented and "
-                "no credentials, tokens, or insecure patterns were introduced.",
+                f"Verify that security controls in {fp} ({meta.display}) are correctly implemented. "
+                f"Language-specific risks: {lang_risks}.",
                 [
                     "Review the change for hardcoded secrets or credentials",
                     "Test authentication/authorization flows affected by the change",
                     "Verify input validation and sanitization are in place",
-                    "Attempt SQL injection / XSS / path traversal where applicable",
+                    f"Test {meta.display}-specific attack vectors: {', '.join(meta.security_notes[:2]) if meta.security_notes else 'injection, XSS, path traversal'}",
                     "Check that sensitive data is not logged or exposed in error responses",
                 ],
                 "No credentials exposed; all auth checks pass; attack vectors rejected with "
                 "appropriate HTTP status codes and safe error messages.",
                 [fp],
-                "pytest + OWASP ZAP scanner; consider Bandit for static security linting",
+                sec_tool_str,
             ))
             idx += 1
 
@@ -155,16 +168,17 @@ def _build_fallback_scenarios(request: AnalysisRequest) -> list[QAScenario]:
                 "Correct HTTP status codes; response payloads match OpenAPI schema; "
                 "no 500 errors under normal inputs.",
                 [fp],
-                "pytest + httpx; Schemathesis for property-based API testing",
+                fw_hint or "Schemathesis for property-based API testing",
             ))
             idx += 1
 
         if QAScenarioType.DATA in cats:
+            db_hint = fw_hint or "Use a staging DB clone; run migration on a data snapshot"
             scenarios.append(_make_scenario(
                 idx, f"Data integrity & migration test — {fp}",
                 QAScenarioType.DATA, RiskLevel.CRITICAL,
-                f"Verify that the database migration in {fp} runs cleanly in both directions "
-                "and does not corrupt existing data.",
+                f"Verify that the database migration in {fp} ({meta.display}) runs cleanly "
+                "in both directions and does not corrupt existing data.",
                 [
                     "Apply migration on a copy of production data snapshot",
                     "Verify row counts before and after migration",
@@ -176,15 +190,16 @@ def _build_fallback_scenarios(request: AnalysisRequest) -> list[QAScenario]:
                 "Migration completes without errors; row counts are consistent; rollback restores "
                 "previous schema; application functions normally post-migration.",
                 [fp],
-                "pytest + SQLAlchemy test fixtures; use a staging DB clone",
+                db_hint,
             ))
             idx += 1
 
         if QAScenarioType.PERFORMANCE in cats:
+            perf_hint = fw_hint or "Locust / k6 for load testing; language-appropriate profiler"
             scenarios.append(_make_scenario(
                 idx, f"Performance & load test — {fp}",
                 QAScenarioType.PERFORMANCE, RiskLevel.MEDIUM,
-                f"Ensure the change in {fp} does not introduce latency regressions "
+                f"Ensure the change in {fp} ({meta.display}) does not introduce latency regressions "
                 "or excessive resource consumption under load.",
                 [
                     "Run baseline benchmark before the change (p50/p95/p99 latency)",
@@ -196,16 +211,17 @@ def _build_fallback_scenarios(request: AnalysisRequest) -> list[QAScenario]:
                 "p99 latency within ±20% of baseline; no memory leaks; DB query count does not "
                 "grow proportionally with input size.",
                 [fp],
-                "Locust / k6 for load testing; py-spy for profiling; SQLAlchemy query logging",
+                perf_hint,
             ))
             idx += 1
 
         if QAScenarioType.FUNCTIONAL in cats:
+            ui_hint = fw_hint or "Playwright or Cypress for E2E; axe-core for accessibility"
             scenarios.append(_make_scenario(
                 idx, f"Functional UI test — {fp}",
                 QAScenarioType.FUNCTIONAL, RiskLevel.MEDIUM,
-                f"Verify that the UI change in {fp} renders correctly and all user-facing "
-                "interactions work as expected.",
+                f"Verify that the UI change in {fp} ({meta.display}) renders correctly and all "
+                "user-facing interactions work as expected.",
                 [
                     "Test the happy path end-to-end in Chrome, Firefox, and Safari",
                     "Test with keyboard navigation only (accessibility)",
@@ -217,16 +233,17 @@ def _build_fallback_scenarios(request: AnalysisRequest) -> list[QAScenario]:
                 "All interactions work correctly across browsers; no layout breakage at any "
                 "tested viewport; accessibility score ≥ 90 (Lighthouse).",
                 [fp],
-                "Playwright or Cypress for E2E; axe-core for accessibility",
+                ui_hint,
             ))
             idx += 1
 
         if QAScenarioType.INTEGRATION in cats:
+            int_hint = fw_hint or "Docker Compose test environment; integration test suite"
             scenarios.append(_make_scenario(
                 idx, f"Integration & configuration test — {fp}",
                 QAScenarioType.INTEGRATION, RiskLevel.HIGH,
-                f"Verify that the configuration or dependency change in {fp} integrates "
-                "correctly with all downstream services.",
+                f"Verify that the configuration or dependency change in {fp} ({meta.display}) "
+                "integrates correctly with all downstream services.",
                 [
                     "Deploy to staging with the new configuration",
                     "Verify all dependent services can still communicate",
@@ -237,16 +254,17 @@ def _build_fallback_scenarios(request: AnalysisRequest) -> list[QAScenario]:
                 "All service health checks pass; no broken integrations; rollback restores "
                 "normal operation within the defined SLA.",
                 [fp],
-                "Docker Compose test environment; pytest integration test suite",
+                int_hint,
             ))
             idx += 1
 
         if QAScenarioType.EDGE_CASE in cats:
+            edge_hint = fw_hint or "Property-based testing (e.g. Hypothesis, QuickCheck, PropEr)"
             scenarios.append(_make_scenario(
                 idx, f"Edge-case & boundary test — {fp}",
                 QAScenarioType.EDGE_CASE, RiskLevel.MEDIUM,
-                f"The change in {fp} modifies substantial logic ({hunk.additions} lines added). "
-                "Cover boundary conditions and unusual inputs.",
+                f"The change in {fp} ({meta.display}) modifies substantial logic "
+                f"({hunk.additions} lines added). Cover boundary conditions and unusual inputs.",
                 [
                     "Test with empty inputs and null/None values",
                     "Test with maximum allowed values (int overflow, max string length)",
@@ -258,16 +276,17 @@ def _build_fallback_scenarios(request: AnalysisRequest) -> list[QAScenario]:
                 "No unhandled exceptions; appropriate error messages returned; "
                 "data remains consistent after any failure.",
                 [fp],
-                "pytest with Hypothesis for property-based boundary testing",
+                edge_hint,
             ))
             idx += 1
 
         # Regression scenario for every changed file
+        reg_hint = fw_hint or "Run existing test suite for this module"
         scenarios.append(_make_scenario(
             idx, f"Regression test — {fp}",
             QAScenarioType.REGRESSION, RiskLevel.MEDIUM,
-            f"Confirm that the change in {fp} has not broken any existing functionality "
-            "that was working before.",
+            f"Confirm that the change in {fp} ({meta.display}) has not broken any existing "
+            "functionality that was working before.",
             [
                 "Run the full existing test suite and verify all tests pass",
                 "Run tests specific to the module containing the changed file",
@@ -276,7 +295,7 @@ def _build_fallback_scenarios(request: AnalysisRequest) -> list[QAScenario]:
             ],
             "All pre-existing tests pass; no regressions in related features.",
             [fp],
-            "Run: pytest tests/ -k <module_name> --tb=short",
+            reg_hint,
         ))
         idx += 1
 
@@ -316,11 +335,14 @@ Rules:
 Respond ONLY with valid JSON matching the QAScenariosResult schema."""
 
     def build_user_prompt(self, request: AnalysisRequest, context: dict[str, Any]) -> str:
-        parts = [f"Repo: {request.repo_url}", f"Branch: {request.source_ref} → {request.target_ref}", ""]
-        for h in request.hunks:
-            parts.append(f"File: {h.file_path}  (+{h.additions}/-{h.deletions})")
-            if h.content:
-                parts.append(h.content[:2000])
+        languages = sorted({lang_meta(h.language).display for h in request.hunks})
+        parts = [
+            f"Repo: {request.repo_url}",
+            f"Branch: {request.source_ref} → {request.target_ref}",
+            f"Languages: {', '.join(languages)}",
+            "",
+        ]
+        parts.append(format_hunks_for_prompt(request.hunks, max_chars_per_hunk=2000))
         return "\n".join(parts)
 
     def fallback_result(self, request: AnalysisRequest) -> QAScenariosResult:

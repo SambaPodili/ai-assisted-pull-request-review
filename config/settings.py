@@ -41,7 +41,12 @@ class Settings(BaseSettings):
     budget_interface:      int = Field(default=4000,  alias="BUDGET_INTERFACE")
     budget_risk:           int = Field(default=3000,  alias="BUDGET_RISK")
     budget_remediation:    int = Field(default=4000,  alias="BUDGET_REMEDIATION")
-    budget_reserve:        int = Field(default=3000,  alias="BUDGET_RESERVE")
+    budget_reserve:            int = Field(default=3000,  alias="BUDGET_RESERVE")
+    budget_performance_impact: int = Field(default=3000,  alias="BUDGET_PERFORMANCE_IMPACT")
+    budget_data_privacy:       int = Field(default=3000,  alias="BUDGET_DATA_PRIVACY")
+    budget_maintainability:    int = Field(default=2000,  alias="BUDGET_MAINTAINABILITY")
+    budget_license_compliance: int = Field(default=0,     alias="BUDGET_LICENSE_COMPLIANCE")  # static-only
+    budget_observability:      int = Field(default=2000,  alias="BUDGET_OBSERVABILITY")
 
     # ── Git providers ─────────────────────────────────────────────────────────
     git_provider:              str = Field(default="github", alias="GIT_PROVIDER")
@@ -103,17 +108,17 @@ class Settings(BaseSettings):
         default_factory=lambda: ["*"],
         alias="CORS_ORIGINS",
     )
-    max_diff_bytes:   int  = Field(default=1_000_000, alias="MAX_DIFF_BYTES")   # 1 MB
+    max_diff_bytes:   int  = Field(default=5_000_000, alias="MAX_DIFF_BYTES")   # 5 MB
 
     # ── Rate limiting ─────────────────────────────────────────────────────────
     rate_limit_rpm:   int  = Field(default=60, alias="RATE_LIMIT_RPM")   # requests per minute per key
 
     # ── Analysis reliability ──────────────────────────────────────────────────
-    analysis_timeout_s: int = Field(default=300, alias="ANALYSIS_TIMEOUT_S")   # 5 min hard cap
+    analysis_timeout_s: int = Field(default=600, alias="ANALYSIS_TIMEOUT_S")   # 10 min hard cap (20 agents, potential 529 retries)
 
     # ── LLM retry (tenacity) ──────────────────────────────────────────────────
-    llm_retry_attempts:    int = Field(default=3,  alias="LLM_RETRY_ATTEMPTS")
-    llm_retry_max_wait_s:  int = Field(default=60, alias="LLM_RETRY_MAX_WAIT_S")
+    llm_retry_attempts:    int = Field(default=5,  alias="LLM_RETRY_ATTEMPTS")
+    llm_retry_max_wait_s:  int = Field(default=90, alias="LLM_RETRY_MAX_WAIT_S")
 
     # ── Webhook deduplication ─────────────────────────────────────────────────
     webhook_dedup_ttl_s: int = Field(default=300, alias="WEBHOOK_DEDUP_TTL_S")
@@ -121,6 +126,37 @@ class Settings(BaseSettings):
     # ── Quality alerting ──────────────────────────────────────────────────────
     # Set > 0.0 to emit a WARNING log (and optional Slack alert) when recall drops below threshold
     quality_recall_alert_threshold: float = Field(default=0.0, alias="QUALITY_RECALL_ALERT_THRESHOLD")
+
+    # ── Reference impact & codebase search ───────────────────────────────────
+    repo_local_path:  str  = Field(default="", alias="REPO_LOCAL_PATH")
+    # Path to a local clone of the repo being analysed.
+    # When set, the ReferenceImpactAgent uses ripgrep/grep to find all
+    # call-sites of changed symbols across the full codebase.
+
+    github_token:     str  = Field(default="", alias="GITHUB_TOKEN")
+    # GitHub PAT (fine-grained, read:code scope).
+    # Used as fallback when REPO_LOCAL_PATH is not set and the repo is on GitHub.
+
+    # ── Service dependency graph ──────────────────────────────────────────────
+    service_map_path: str  = Field(default="", alias="SERVICE_MAP_PATH")
+    # Path to a JSON file {"service-a": ["lib-x", "lib-y"], ...}
+    # Loaded at startup; enables transitive blast-radius calculation.
+
+    repos_root:       str  = Field(default="", alias="REPOS_ROOT")
+    # Path to a directory containing clones of all microservice repos.
+    # Scanned automatically to build the service graph when SERVICE_MAP_PATH
+    # is not set.
+
+    # ── CVE lookup ────────────────────────────────────────────────────────────
+    osv_enabled:      bool = Field(default=True, alias="OSV_ENABLED")
+
+    # ── Reference graph depth ─────────────────────────────────────────────────
+    ref_max_depth:    int  = Field(default=2, alias="REF_MAX_DEPTH")
+    # 1 = direct callers only (fast)
+    # 2 = callers-of-callers (default; requires REPO_LOCAL_PATH for level 2)
+    # 3 = one more level (slow on large repos; use with care)
+    # Query OSV.dev for known vulnerabilities in changed packages.
+    # Disable if the analyser runs in an air-gapped environment.
 
     # ── Storage ───────────────────────────────────────────────────────────────
     sqlite_path:      str  = Field(default="", alias="SQLITE_PATH")
@@ -136,8 +172,13 @@ class Settings(BaseSettings):
             "test_coverage": self.budget_test_coverage,
             "interface":     self.budget_interface,
             "risk":          self.budget_risk,
-            "remediation":   self.budget_remediation,
-            "_reserve":      self.budget_reserve,
+            "remediation":        self.budget_remediation,
+            "_reserve":           self.budget_reserve,
+            "performance_impact": self.budget_performance_impact,
+            "data_privacy":       self.budget_data_privacy,
+            "maintainability":    self.budget_maintainability,
+            "license_compliance": self.budget_license_compliance,
+            "observability":      self.budget_observability,
         }
 
 

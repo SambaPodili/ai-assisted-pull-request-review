@@ -120,13 +120,15 @@ class DependencyMappingAgent(BaseAgent[DependencyResult]):
 
         # Prefer graph traversal (no LLM cost)
         if self._graph is not None:
-            return self.analyse_with_graph(changed_packages)
+            result = self.analyse_with_graph(changed_packages)
+        elif not any(_is_manifest(h.file_path) for h in request.hunks):
+            result = self._empty_result(changed_packages)
+        else:
+            result = super().run(request, budget, ctx)
 
-        # Skip LLM if no manifest files changed
-        if not any(_is_manifest(h.file_path) for h in request.hunks):
-            return self._empty_result(changed_packages)
-
-        return super().run(request, budget, ctx)
+        # Enrich CVE hits via OSV.dev (no auth, free API)
+        result.cve_hits = _osv_lookup(changed_packages, request)
+        return result
 
     def fallback_result(self, request: AnalysisRequest) -> DependencyResult:
         return self._empty_result(_extract_changed_packages(request))
@@ -167,6 +169,35 @@ def build_service_graph(manifest_data: dict[str, list[str]]) -> Any:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _osv_lookup(packages: list[str], request: AnalysisRequest) -> list[str]:
+    """Return CVE IDs for changed packages via OSV.dev. Silent on failure."""
+    try:
+        from config.settings import get_settings
+        if not get_settings().osv_enabled:
+            return []
+    except Exception:
+        return []
+
+    if not packages:
+        return []
+
+    try:
+        from ingestion.osv_client import lookup_multi_ecosystem, cve_ids as _cve_ids
+        # Group packages by the language detected in their manifests
+        lang_pkgs: dict[str, list[str]] = {}
+        for hunk in request.hunks:
+            if _is_manifest(hunk.file_path):
+                lang_pkgs.setdefault(hunk.language, []).extend(packages)
+        if not lang_pkgs:
+            lang_pkgs["python"] = packages   # sensible default
+        vulns = lookup_multi_ecosystem(lang_pkgs)
+        return _cve_ids(vulns)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).debug("OSV lookup failed: %s", exc)
+        return []
+
 
 def _is_manifest(path: str) -> bool:
     return any(path.endswith(m) for m in _MANIFEST_FILES)

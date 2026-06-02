@@ -58,6 +58,12 @@ class AgentName(str, Enum):
     INTERFACE       = "interface"
     RISK            = "risk"
     REMEDIATION     = "remediation"
+    REFERENCE_IMPACT      = "reference_impact"
+    PERFORMANCE_IMPACT    = "performance_impact"
+    DATA_PRIVACY          = "data_privacy"
+    MAINTAINABILITY       = "maintainability"
+    LICENSE_COMPLIANCE    = "license_compliance"
+    OBSERVABILITY         = "observability"
 
 
 class DeploymentStrategy(str, Enum):
@@ -399,6 +405,124 @@ class QAScenariosResult(AgentResultBase):
     summary:         str               = ""
 
 
+class SymbolReference(BaseModel):
+    """A call-site or usage of a changed symbol found in the codebase."""
+    symbol:    str            # name of the changed function/class/method
+    file_path: str            # file containing the reference
+    line:      int  = 0
+    context:   str  = ""      # surrounding line of code (snippet)
+    repo:      str  = ""      # empty = same repo; populated for cross-repo hits
+    depth:     int  = 1       # 1 = direct caller, 2 = caller of caller, …
+    from_file: str  = ""     # for depth≥2: the L(d-1) file whose symbol was searched
+
+
+class ReferenceImpactResult(AgentResultBase):
+    """Intra- and cross-project reference impact for changed symbols."""
+    changed_symbols:    list[str]             = []
+    references:         list[SymbolReference] = []
+    total_references:   int                   = 0
+    high_impact_files:  list[str]             = []  # files with ≥3 references
+    shared_lib_breaks:  list[str]             = []  # shared/common paths changed
+    intra_project_risk: RiskLevel             = RiskLevel.LOW
+    search_backend:     str                   = ""  # "local_grep" | "github_api" | "none"
+    summary:            str                   = ""
+
+
+# ── Performance Impact ────────────────────────────────────────────────────────
+
+class PerformanceFinding(BaseModel):
+    category:    str  = ""   # n_plus_1 | select_star | nested_loop | sync_in_async | no_pagination | memory_risk | other
+    severity:    str  = "low"
+    description: str  = ""
+    file_path:   str  = ""
+    line:        int  = 0
+    suggestion:  str  = ""
+
+class PerformanceImpactResult(AgentResultBase):
+    findings:                  list[PerformanceFinding] = []
+    has_db_risk:               bool = False
+    has_complexity_regression: bool = False
+    overall_severity:          str  = "low"
+    summary:                   str  = ""
+
+
+# ── Data Privacy ──────────────────────────────────────────────────────────────
+
+class PIIFinding(BaseModel):
+    pii_type:     str  = ""   # email | phone | ssn | credit_card | name | dob | address | ip | passport | generic_pii
+    description:  str  = ""
+    file_path:    str  = ""
+    line:         int  = 0
+    context:      str  = ""
+    is_logged:    bool = False
+    is_encrypted: bool = False
+    risk_level:   str  = "medium"
+
+class DataPrivacyResult(AgentResultBase):
+    pii_findings:        list[PIIFinding] = []
+    logging_violations:  list[str]        = []
+    gdpr_risk:           str  = "low"
+    data_exposure_risk:  str  = "low"
+    unencrypted_pii_count: int = 0
+    summary:             str  = ""
+
+
+# ── Maintainability ───────────────────────────────────────────────────────────
+
+class MaintainabilityIssue(BaseModel):
+    kind:        str  = ""   # long_function | deep_nesting | bare_except | swallowed_exception | magic_number | dead_code | missing_type_hint | todo_left_in | other
+    severity:    str  = "low"
+    description: str  = ""
+    file_path:   str  = ""
+    line:        int  = 0
+    suggestion:  str  = ""
+
+class MaintainabilityResult(AgentResultBase):
+    issues:               list[MaintainabilityIssue] = []
+    maintainability_score: int = 100
+    long_function_count:  int  = 0
+    error_handling_gaps:  int  = 0
+    overall_severity:     str  = "low"
+    summary:              str  = ""
+
+
+# ── License Compliance ────────────────────────────────────────────────────────
+
+class LicenseFinding(BaseModel):
+    package:          str = ""
+    detected_license: str = "unknown"
+    risk_level:       str = "low"
+    description:      str = ""
+    file_path:        str = ""
+
+class LicenseComplianceResult(AgentResultBase):
+    findings:             list[LicenseFinding] = []
+    has_copyleft:         bool = False
+    has_license_conflict: bool = False
+    packages_reviewed:    int  = 0
+    overall_risk:         str  = "low"
+    summary:              str  = ""
+
+
+# ── Observability ─────────────────────────────────────────────────────────────
+
+class ObservabilityFinding(BaseModel):
+    kind:        str  = ""   # log_removed | unobserved_branch | unobserved_error | metric_removed | missing_tracing | missing_correlation_id
+    severity:    str  = "low"
+    description: str  = ""
+    file_path:   str  = ""
+    line:        int  = 0
+    suggestion:  str  = ""
+
+class ObservabilityResult(AgentResultBase):
+    findings:             list[ObservabilityFinding] = []
+    logs_removed:         int = 0
+    metrics_removed:      int = 0
+    unobserved_branches:  int = 0
+    overall_severity:     str = "low"
+    summary:              str = ""
+
+
 class AgentTokenUsage(BaseModel):
     agent:       AgentName
     tokens_used: int
@@ -434,6 +558,12 @@ class AnalysisReport(BaseModel):
     temporal_risk:    TemporalRiskResult    | None = None
     schema_change:    SchemaChangeResult    | None = None
     qa_scenarios:     QAScenariosResult     | None = None
+    reference_impact:   ReferenceImpactResult   | None = None
+    performance_impact: PerformanceImpactResult | None = None
+    data_privacy:       DataPrivacyResult       | None = None
+    maintainability:    MaintainabilityResult   | None = None
+    license_compliance: LicenseComplianceResult | None = None
+    observability:      ObservabilityResult     | None = None
 
     # Phase 3
     risk:          RiskResult         | None = None

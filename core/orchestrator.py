@@ -39,7 +39,13 @@ from agents.taint_analysis_agent   import TaintAnalysisAgent
 from agents.iac_analysis_agent     import IaCAnalysisAgent
 from agents.temporal_risk_agent    import TemporalRiskAgent
 from agents.schema_change_agent    import SchemaChangeAgent
-from agents.qa_scenarios_agent     import QAScenariosAgent
+from agents.qa_scenarios_agent      import QAScenariosAgent
+from agents.reference_impact_agent    import ReferenceImpactAgent
+from agents.performance_impact_agent  import PerformanceImpactAgent
+from agents.data_privacy_agent        import DataPrivacyAgent
+from agents.maintainability_agent     import MaintainabilityAgent
+from agents.license_compliance_agent  import LicenseComplianceAgent
+from agents.observability_agent       import ObservabilityAgent
 from governance.audit_logger    import make_audit_logger, NullAuditLogger
 from governance.circuit_breaker import get_breaker_registry
 from governance.diff_cache      import get_diff_cache
@@ -87,6 +93,14 @@ class ImpactAnalysisOrchestrator:
         self._ctx_engine   = context_engine
         self._audit        = make_audit_logger()
 
+        # Auto-load service graph if not explicitly provided
+        if graph_store is None:
+            try:
+                from ingestion.service_graph_builder import load_service_graph
+                graph_store = load_service_graph()
+            except Exception as exc:
+                log.debug("Service graph auto-load skipped: %s", exc)
+
         self._code  = CodeAnalysisAgent(api_key)
         self._sec   = SecurityReviewAgent(api_key)
         self._dep   = DependencyMappingAgent(api_key, service_graph=graph_store)
@@ -101,6 +115,12 @@ class ImpactAnalysisOrchestrator:
         self._temporal = TemporalRiskAgent(api_key)
         self._schema   = SchemaChangeAgent(api_key)
         self._qa       = QAScenariosAgent(api_key)
+        self._ref      = ReferenceImpactAgent(api_key)
+        self._perf     = PerformanceImpactAgent(api_key)
+        self._privacy  = DataPrivacyAgent(api_key)
+        self._maint    = MaintainabilityAgent(api_key)
+        self._license  = LicenseComplianceAgent(api_key)
+        self._obs      = ObservabilityAgent(api_key)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -190,6 +210,12 @@ class ImpactAnalysisOrchestrator:
         report.temporal_risk   = p1b.get("temporal")
         report.schema_change   = p1b.get("schema")
         report.qa_scenarios    = p1b.get("qa")
+        report.reference_impact = p1b.get("ref")
+        report.performance_impact = p1b.get("perf")
+        report.data_privacy       = p1b.get("privacy")
+        report.maintainability    = p1b.get("maint")
+        report.license_compliance = p1b.get("license")
+        report.observability      = p1b.get("obs")
         self._record_advanced_usage(report, p1b)
 
         if self.phase < 2:
@@ -255,6 +281,12 @@ class ImpactAnalysisOrchestrator:
             res_temporal:  Optional[Any]
             res_schema:    Optional[Any]
             res_qa:        Optional[Any]
+            res_ref:       Optional[Any]
+            res_perf:      Optional[Any]
+            res_privacy:   Optional[Any]
+            res_maint:     Optional[Any]
+            res_license:   Optional[Any]
+            res_obs:       Optional[Any]
             # Phase 2
             res_dep:       Optional[Any]
             res_test:      Optional[Any]
@@ -293,6 +325,24 @@ class ImpactAnalysisOrchestrator:
         def node_qa(state: PipelineState) -> dict:
             return {"res_qa": orch._qa.run(state["request"], state["budget"], {})}
 
+        def node_ref(state: PipelineState) -> dict:
+            return {"res_ref": orch._ref.run(state["request"], state["budget"], {})}
+
+        def node_perf(state: PipelineState) -> dict:
+            return {"res_perf": orch._perf.run(state["request"], state["budget"], {})}
+
+        def node_privacy(state: PipelineState) -> dict:
+            return {"res_privacy": orch._privacy.run(state["request"], state["budget"], {})}
+
+        def node_maint(state: PipelineState) -> dict:
+            return {"res_maint": orch._maint.run(state["request"], state["budget"], {})}
+
+        def node_license(state: PipelineState) -> dict:
+            return {"res_license": orch._license.run(state["request"], state["budget"], {})}
+
+        def node_obs(state: PipelineState) -> dict:
+            return {"res_obs": orch._obs.run(state["request"], state["budget"], {})}
+
         def node_dependency(state: PipelineState) -> dict:
             ctx = state["context"].get(AgentName.DEPENDENCY, {})
             return {"res_dep": orch._dep.run(state["request"], state["budget"], ctx)}
@@ -324,6 +374,12 @@ class ImpactAnalysisOrchestrator:
                 temporal_risk=state.get("res_temporal"),
                 schema_change=state.get("res_schema"),
                 qa_scenarios=state.get("res_qa"),
+                reference_impact=state.get("res_ref"),
+                performance_impact=state.get("res_perf"),
+                data_privacy=state.get("res_privacy"),
+                maintainability=state.get("res_maint"),
+                license_compliance=state.get("res_license"),
+                observability=state.get("res_obs"),
             )
             state["budget"].donate_unused("dependency", "risk")
             ctx = build_partial_report_context(partial)
@@ -348,6 +404,12 @@ class ImpactAnalysisOrchestrator:
                 temporal_risk=state.get("res_temporal"),
                 schema_change=state.get("res_schema"),
                 qa_scenarios=state.get("res_qa"),
+                reference_impact=state.get("res_ref"),
+                performance_impact=state.get("res_perf"),
+                data_privacy=state.get("res_privacy"),
+                maintainability=state.get("res_maint"),
+                license_compliance=state.get("res_license"),
+                observability=state.get("res_obs"),
                 risk=state.get("res_risk"),
             )
             ctx = build_full_report_context(full)
@@ -364,8 +426,17 @@ class ImpactAnalysisOrchestrator:
         builder.add_node("temporal", node_temporal)
         builder.add_node("schema",   node_schema)
         builder.add_node("qa",       node_qa)
+        builder.add_node("ref",      node_ref)
+        builder.add_node("perf",     node_perf)
+        builder.add_node("privacy",  node_privacy)
+        builder.add_node("maint",    node_maint)
+        builder.add_node("license",  node_license)
+        builder.add_node("obs",      node_obs)
 
-        _advanced = ("security", "ast", "entropy", "taint", "iac", "temporal", "schema", "qa")
+        _advanced = (
+            "security", "ast", "entropy", "taint", "iac", "temporal",
+            "schema", "qa", "ref", "perf", "privacy", "maint", "license", "obs",
+        )
 
         # Fan-out from code: security + all advanced detection run in parallel
         builder.set_entry_point("code")
@@ -408,7 +479,9 @@ class ImpactAnalysisOrchestrator:
             "res_code": None, "res_security": None,
             "res_ast": None, "res_entropy": None, "res_taint": None,
             "res_iac": None, "res_temporal": None, "res_schema": None,
-            "res_qa": None,
+            "res_qa": None, "res_ref": None,
+            "res_perf": None, "res_privacy": None, "res_maint": None,
+            "res_license": None, "res_obs": None,
             "res_dep": None, "res_test": None, "res_iface": None,
             "res_risk": None, "res_rem": None,
         }
@@ -431,6 +504,12 @@ class ImpactAnalysisOrchestrator:
             temporal_risk=final.get("res_temporal"),
             schema_change=final.get("res_schema"),
             qa_scenarios=final.get("res_qa"),
+            reference_impact=final.get("res_ref"),
+            performance_impact=final.get("res_perf"),
+            data_privacy=final.get("res_privacy"),
+            maintainability=final.get("res_maint"),
+            license_compliance=final.get("res_license"),
+            observability=final.get("res_obs"),
             dependency=final.get("res_dep"),
             test_coverage=final.get("res_test"),
             interface=final.get("res_iface"),
@@ -448,7 +527,13 @@ class ImpactAnalysisOrchestrator:
             (AgentName.TEMPORAL_RISK,   "res_temporal"),
             (AgentName.SCHEMA_CHANGE,   "res_schema"),
             (AgentName.QA_SCENARIOS,    "res_qa"),
-            (AgentName.DEPENDENCY,      "res_dep"),
+            (AgentName.REFERENCE_IMPACT,   "res_ref"),
+            (AgentName.PERFORMANCE_IMPACT, "res_perf"),
+            (AgentName.DATA_PRIVACY,       "res_privacy"),
+            (AgentName.MAINTAINABILITY,    "res_maint"),
+            (AgentName.LICENSE_COMPLIANCE, "res_license"),
+            (AgentName.OBSERVABILITY,      "res_obs"),
+            (AgentName.DEPENDENCY,         "res_dep"),
             (AgentName.TEST_COVERAGE,   "res_test"),
             (AgentName.INTERFACE,       "res_iface"),
             (AgentName.RISK,            "res_risk"),
@@ -481,8 +566,14 @@ class ImpactAnalysisOrchestrator:
             "temporal": self._temporal,
             "schema":   self._schema,
             "qa":       self._qa,
+            "ref":      self._ref,
+            "perf":     self._perf,
+            "privacy":  self._privacy,
+            "maint":    self._maint,
+            "license":  self._license,
+            "obs":      self._obs,
         }
-        with ThreadPoolExecutor(max_workers=7) as pool:
+        with ThreadPoolExecutor(max_workers=13) as pool:
             futures = {
                 pool.submit(agent.run, request, budget, ctx): name
                 for name, agent in agents_map.items()
@@ -599,7 +690,13 @@ class ImpactAnalysisOrchestrator:
             "iac":      AgentName.IAC_ANALYSIS,
             "temporal": AgentName.TEMPORAL_RISK,
             "schema":   AgentName.SCHEMA_CHANGE,
-            "qa":       AgentName.QA_SCENARIOS,
+            "qa":      AgentName.QA_SCENARIOS,
+            "ref":     AgentName.REFERENCE_IMPACT,
+            "perf":    AgentName.PERFORMANCE_IMPACT,
+            "privacy": AgentName.DATA_PRIVACY,
+            "maint":   AgentName.MAINTAINABILITY,
+            "license": AgentName.LICENSE_COMPLIANCE,
+            "obs":     AgentName.OBSERVABILITY,
         }
         for key, agent_name in advanced_map.items():
             result = results.get(key)

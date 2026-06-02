@@ -51,6 +51,8 @@ class InterfaceAnalysisAgent(BaseAgent[InterfaceResult]):
                 breaks.extend(_parse_proto_diff(hunk.content, path))
             elif _is_asyncapi(path):
                 breaks.extend(_parse_asyncapi_diff(hunk.content, path))
+            elif _is_shared_lib(path):
+                breaks.extend(_parse_shared_lib_break(hunk.content, path))
         return breaks
 
     # ── Override run to apply both passes ────────────────────────────────────
@@ -90,8 +92,8 @@ class InterfaceAnalysisAgent(BaseAgent[InterfaceResult]):
             if _is_openapi(h.file_path) or _is_proto(h.file_path) or _is_asyncapi(h.file_path)
         ] or request.hunks   # fall back to all if no specific interface files
 
-        diff     = "\n\n".join(h.content for h in iface_hunks)
-        trimmed  = trim_diff_for_budget(diff, max_tokens_approx=3000)
+        from agents.base_agent import format_hunks_for_prompt
+        trimmed  = format_hunks_for_prompt(iface_hunks, max_chars_per_hunk=3000, focus="interface")
         consumers = context.get("known_consumers", {})
 
         return (
@@ -99,6 +101,7 @@ class InterfaceAnalysisAgent(BaseAgent[InterfaceResult]):
             f"Known consumers: {json.dumps(consumers)}\n\n"
             f"Interface diffs:\n{trimmed}"
         )
+
 
     def fallback_result(self, request: AnalysisRequest) -> InterfaceResult:
         breaks = self.detect_structural_breaks(request)
@@ -188,6 +191,42 @@ def _parse_asyncapi_diff(diff: str, file_path: str) -> list[ContractBreak]:
 
 
 # ── File type detectors ───────────────────────────────────────────────────────
+
+_SHARED_LIB_RE = re.compile(
+    r'(?:^|/)(?:shared|common|core|lib|libs|util|utils|base|sdk|'
+    r'platform|framework|contract|domain|kernel|foundation)(?:/|$)',
+    re.I,
+)
+
+def _is_shared_lib(path: str) -> bool:
+    return bool(_SHARED_LIB_RE.search(path)) and not _is_openapi(path) and not _is_proto(path)
+
+
+def _parse_shared_lib_break(diff: str, file_path: str) -> list[ContractBreak]:
+    """Flag removed public symbols in shared/common modules as potential cross-project breaks."""
+    breaks: list[ContractBreak] = []
+    # Look for removed function/class/method signatures in shared code
+    sig_pattern = re.compile(
+        r'^-(.*(?:def|func|function|class|interface|struct|public|export)\s+\w+)',
+        re.I,
+    )
+    for line in diff.splitlines():
+        if line.startswith("---"):
+            continue
+        m = sig_pattern.match(line)
+        if m:
+            symbol = m.group(1).strip()[:80]
+            breaks.append(ContractBreak(
+                interface_type="SharedLib",
+                path=f"{file_path}: {symbol}",
+                break_type="removed",
+                consumers=[],
+                severity=RiskLevel.HIGH,
+            ))
+            if len(breaks) >= 5:   # cap noise
+                break
+    return breaks
+
 
 def _is_openapi(path: str) -> bool:
     return any(s in path.lower() for s in ("openapi", "swagger", "api-spec", "api_spec", "oas"))

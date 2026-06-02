@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,500;0,600;1,400&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.11.0/tabler-icons.min.css"/>
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
 <style>
   :root {
     --bg: #f7f8fa; --surface: #ffffff; --card: #ffffff; --border: #e8eaed;
@@ -116,10 +117,19 @@
   .list-scroll { max-height: 280px; overflow-y: auto; }
 
   /* Tabs */
-  .tabs { display: flex; gap: 2px; border-bottom: 1px solid #e8eaed; margin-bottom: 18px; }
-  .tab { padding: 8px 16px; font-size: 13px; cursor: pointer; color: #7a8494; border-bottom: 2px solid transparent; margin-bottom: -1px; font-family: var(--sans); background: none; border-top: none; border-left: none; border-right: none; transition: all 0.15s; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 0; border-bottom: 1px solid #e8eaed; margin-bottom: 18px; align-items: flex-end; }
+  .tab { padding: 7px 13px; font-size: 12px; cursor: pointer; color: #7a8494; border-bottom: 2px solid transparent; margin-bottom: -1px; font-family: var(--sans); background: none; border-top: none; border-left: none; border-right: none; transition: all 0.15s; white-space: nowrap; }
   .tab:hover { color: #0d1117; }
-  .tab.active { color: #1a6cf6; border-bottom-color: #1a6cf6; }
+  .tab.active { color: #1a6cf6; border-bottom-color: #1a6cf6; font-weight: 500; }
+  .tab-group-label { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: #c0c9d8; padding: 0 6px 8px 10px; align-self: flex-end; white-space: nowrap; }
+  .tab-sep { width: 1px; background: #e8eaed; margin: 4px 4px 4px 4px; align-self: stretch; flex-shrink: 0; }
+  /* Pipeline scroll */
+  .pipeline-scroll { max-height: 72vh; overflow-y: auto; padding-right: 2px; }
+  .pipeline-scroll::-webkit-scrollbar { width: 4px; }
+  .pipeline-scroll::-webkit-scrollbar-track { background: transparent; }
+  .pipeline-scroll::-webkit-scrollbar-thumb { background: #e8eaed; border-radius: 2px; }
+  /* Phase 1b compact 2-col grid */
+  .pipeline-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
 
   /* Badges */
   .badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 500; padding: 2px 8px; border-radius: 12px; border: 1px solid; }
@@ -476,14 +486,27 @@ const AGENT_META = {
   taint_analysis:  { label:'Taint Analysis',       icon:'ti-arrows-diff',       phase:'Phase 1b', color:'#f97316' },
   iac_analysis:    { label:'IaC Scan',             icon:'ti-server',            phase:'Phase 1b', color:'#14b8a6' },
   temporal_risk:   { label:'Temporal Risk',        icon:'ti-clock-record',      phase:'Phase 1b', color:'#a855f7' },
-  schema_change:   { label:'Schema Changes',       icon:'ti-database',          phase:'Phase 1b', color:'#06b6d4' },
-  dependency:      { label:'Dependency Mapping',   icon:'ti-topology-star-3',   phase:'Phase 2',  color:'#f59e0b' },
-  test_coverage:   { label:'Test Coverage',        icon:'ti-test-pipe',         phase:'Phase 2',  color:'#10b981' },
-  interface:       { label:'Interface / API',      icon:'ti-api',               phase:'Phase 2',  color:'#3b82f6' },
-  risk:            { label:'Risk Assessment',      icon:'ti-scale',             phase:'Phase 2',  color:'#0ea5e9' },
-  remediation:     { label:'Remediation',          icon:'ti-tool',              phase:'Phase 3',  color:'#84cc16' },
+  schema_change:      { label:'Schema Changes',       icon:'ti-database',          phase:'Phase 1b', color:'#06b6d4' },
+  qa_scenarios:       { label:'QA Scenarios',          icon:'ti-checklist',         phase:'Phase 1b', color:'#d97706' },
+  reference_impact:   { label:'Reference Impact',      icon:'ti-git-branch',        phase:'Phase 1b', color:'#7c3aed' },
+  performance_impact: { label:'Performance Impact',    icon:'ti-rocket',            phase:'Phase 1b', color:'#0284c7' },
+  data_privacy:       { label:'Data Privacy',          icon:'ti-lock',              phase:'Phase 1b', color:'#db2777' },
+  maintainability:    { label:'Maintainability',       icon:'ti-tool',              phase:'Phase 1b', color:'#6366f1' },
+  license_compliance: { label:'License Compliance',    icon:'ti-license',           phase:'Phase 1b', color:'#059669' },
+  observability:      { label:'Observability',         icon:'ti-eye',               phase:'Phase 1b', color:'#0ea5e9' },
+  dependency:         { label:'Dependency Mapping',    icon:'ti-topology-star-3',   phase:'Phase 2',  color:'#f59e0b' },
+  test_coverage:      { label:'Test Coverage',         icon:'ti-test-pipe',         phase:'Phase 2',  color:'#10b981' },
+  interface:          { label:'Interface / API',       icon:'ti-api',               phase:'Phase 2',  color:'#3b82f6' },
+  risk:               { label:'Risk Assessment',       icon:'ti-scale',             phase:'Phase 2',  color:'#0ea5e9' },
+  remediation:        { label:'Remediation',           icon:'ti-tool',              phase:'Phase 3',  color:'#84cc16' },
 };
-const AGENT_ORDER = ['code_analysis','security','ast_analysis','secrets_entropy','taint_analysis','iac_analysis','temporal_risk','schema_change','dependency','test_coverage','interface','risk','remediation'];
+const AGENT_ORDER = [
+  'code_analysis','security',
+  'ast_analysis','secrets_entropy','taint_analysis','iac_analysis','temporal_risk',
+  'schema_change','qa_scenarios','reference_impact',
+  'performance_impact','data_privacy','maintainability','license_compliance','observability',
+  'dependency','test_coverage','interface','risk','remediation',
+];
 
 function saveState() {
   ['provider','authMode','token','username','workspace','baseUrl',
@@ -1214,7 +1237,7 @@ function renderResults(el) {
       </div>
 
       <!-- Live agent pipeline -->
-      <div id="agent-pipeline"></div>
+      <div class="pipeline-scroll"><div id="agent-pipeline"></div></div>
 
       <div style="margin-top:14px;text-align:center;font-size:11px;color:#c0c9d8" id="sim-hint"></div>
     </div>`;
@@ -1325,7 +1348,28 @@ function renderResults(el) {
     </div>
 
     <div class="tabs" id="result-tabs">
-      ${['summary','security','advanced','dependency','interface','schema','qa','remediation','timings'].map(t=>`<button class="tab ${t==='summary'?'active':''}" data-tab="${t}" onclick="switchResultTab('${t}')">${{summary:'Summary',security:'Security',advanced:'⚗ Advanced',dependency:'Dependency',interface:'Interface',schema:'Schema',qa:'🧪 QA Scenarios',remediation:'Remediation',timings:'⏱ Timings'}[t]||t}</button>`).join('')}
+      <span class="tab-group-label">Overview</span>
+      <button class="tab active" data-tab="summary"     onclick="switchResultTab('summary')">Summary</button>
+      <div class="tab-sep"></div>
+      <span class="tab-group-label">Security</span>
+      <button class="tab" data-tab="security"    onclick="switchResultTab('security')">Security</button>
+      <button class="tab" data-tab="advanced"    onclick="switchResultTab('advanced')">⚗ Advanced</button>
+      <div class="tab-sep"></div>
+      <span class="tab-group-label">Impact</span>
+      <button class="tab" data-tab="references"  onclick="switchResultTab('references')">🔗 References</button>
+      <button class="tab" data-tab="dependency"  onclick="switchResultTab('dependency')">Dependency</button>
+      <button class="tab" data-tab="interface"   onclick="switchResultTab('interface')">Interface</button>
+      <button class="tab" data-tab="schema"      onclick="switchResultTab('schema')">Schema</button>
+      <div class="tab-sep"></div>
+      <span class="tab-group-label">Quality</span>
+      <button class="tab" data-tab="qa"          onclick="switchResultTab('qa')">🧪 QA Scenarios</button>
+      <button class="tab" data-tab="performance" onclick="switchResultTab('performance')">🚀 Performance</button>
+      <button class="tab" data-tab="privacy"     onclick="switchResultTab('privacy')">🔒 Privacy</button>
+      <button class="tab" data-tab="quality"     onclick="switchResultTab('quality')">🔧 Quality</button>
+      <div class="tab-sep"></div>
+      <span class="tab-group-label">Actions</span>
+      <button class="tab" data-tab="remediation" onclick="switchResultTab('remediation')">Remediation</button>
+      <button class="tab" data-tab="timings"     onclick="switchResultTab('timings')">⏱ Timings</button>
     </div>
 
     <div id="result-tab-content">${renderResultTab('summary',r)}</div>
@@ -1573,6 +1617,157 @@ function renderResultTab(tab, r) {
     </div>`;
   }
 
+  if(tab==='performance') {
+    const perf = r.performance_impact;
+    if(!perf) return `<div class="card"><div class="empty-state"><i class="ti ti-rocket"></i>No performance data available.</div></div>`;
+    const sevColor = s => ({critical:'#b81c1c',high:'#8a5200',medium:'#1a6cf6',low:'#6b7280'})[s?.toLowerCase()]||'#6b7280';
+    const findings = perf.findings || [];
+    return `
+    <div class="card" style="margin-bottom:12px">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+        <div>
+          <div class="card-title" style="margin-bottom:4px"><i class="ti ti-rocket"></i>Performance Impact Analysis</div>
+          <div style="font-size:12px;color:#7a8494">${escHtml(perf.summary||'')}</div>
+        </div>
+        <div style="display:flex;gap:12px;font-size:12px;align-items:center">
+          <span style="color:${sevColor(perf.overall_severity)};font-weight:700;font-size:13px">${(perf.overall_severity||'low').toUpperCase()} impact</span>
+          ${perf.regression_risk?`<span class="badge badge-amber"><i class="ti ti-alert-triangle" style="font-size:11px"></i>Regression risk</span>`:''}
+          <span style="color:#7a8494">${findings.length} finding${findings.length!==1?'s':''}</span>
+        </div>
+      </div>
+      ${findings.length===0
+        ? `<div class="empty-state"><i class="ti ti-circle-check"></i>No performance issues found</div>`
+        : findings.map(f=>`<div class="finding">
+            <span class="sev sev-${(f.severity||'low').toLowerCase()}">${f.severity||'low'}</span>
+            <div class="finding-body">
+              <div class="finding-desc"><code>${escHtml(f.kind||'')}</code> — ${escHtml(f.description||'')}</div>
+              <div class="finding-file">${escHtml(f.file||'')}${f.line?' · line '+f.line:''}</div>
+              ${f.suggestion?`<div style="font-size:11px;color:#0c7c4b;margin-top:4px"><i class="ti ti-bulb" style="margin-right:3px"></i>${escHtml(f.suggestion)}</div>`:''}
+              ${getCodeSnippet(f.file, f.line, 3)}
+            </div></div>`).join('')}
+    </div>`;
+  }
+
+  if(tab==='privacy') {
+    const priv = r.data_privacy;
+    if(!priv) return `<div class="card"><div class="empty-state"><i class="ti ti-lock"></i>No data privacy data available.</div></div>`;
+    const findings = priv.findings || [];
+    const violations = priv.compliance_violations || [];
+    return `
+    <div class="card" style="margin-bottom:12px">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+        <div>
+          <div class="card-title" style="margin-bottom:4px"><i class="ti ti-lock"></i>Data Privacy Analysis</div>
+          <div style="font-size:12px;color:#7a8494">${escHtml(priv.summary||'')}</div>
+        </div>
+        <div style="display:flex;gap:12px;font-size:12px;align-items:center">
+          ${priv.pii_detected?`<span class="badge badge-red"><i class="ti ti-alert-circle" style="font-size:11px"></i>PII Detected</span>`:''}
+          ${violations.length?`<span class="badge badge-amber">${violations.length} violation${violations.length!==1?'s':''}</span>`:''}
+          <span style="color:#7a8494">${findings.length} finding${findings.length!==1?'s':''}</span>
+        </div>
+      </div>
+      ${violations.length?`
+      <div style="margin-bottom:14px">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:#9fadbf;margin-bottom:6px">Compliance frameworks affected</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          ${violations.map(v=>`<span class="badge badge-red">${escHtml(v)}</span>`).join('')}
+        </div>
+      </div>`:''}
+      ${findings.length===0
+        ? `<div class="empty-state"><i class="ti ti-shield-check"></i>No PII or privacy violations found</div>`
+        : findings.map(f=>`<div class="finding">
+            <span class="sev sev-${(f.severity||'medium').toLowerCase()}">${f.severity||'medium'}</span>
+            <div class="finding-body">
+              <div class="finding-desc"><code>${escHtml(f.pii_type||f.kind||'')}</code> — ${escHtml(f.description||'')}</div>
+              <div class="finding-file">${escHtml(f.file||'')}${f.line?' · line '+f.line:''}</div>
+              ${f.recommendation?`<div style="font-size:11px;color:#0c7c4b;margin-top:4px"><i class="ti ti-bulb" style="margin-right:3px"></i>${escHtml(f.recommendation)}</div>`:''}
+              ${getCodeSnippet(f.file, f.line, 3)}
+            </div></div>`).join('')}
+    </div>`;
+  }
+
+  if(tab==='quality') {
+    const maint   = r.maintainability;
+    const license = r.license_compliance;
+    const obs     = r.observability;
+
+    const agentSection = (icon, color, title, body) =>
+      `<div style="margin-bottom:20px;padding-bottom:20px;border-bottom:1px solid #e8eaed">
+         <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+           <i class="ti ${icon}" style="font-size:16px;color:${color}"></i>
+           <span style="font-size:13px;font-weight:600;color:#0d1117">${title}</span>
+         </div>${body}</div>`;
+    const emptyState = msg =>
+      `<div style="font-size:12px;color:#9fadbf;padding:8px 0"><i class="ti ti-circle-check" style="margin-right:5px"></i>${msg}</div>`;
+
+    // ── Maintainability ───────────────────────────────────────────────────────
+    const maintBody = !maint ? emptyState('Agent did not run') : (() => {
+      const issues = maint.issues || [];
+      const score  = maint.score ?? 100;
+      const scoreColor = score >= 80 ? '#0c7c4b' : score >= 60 ? '#8a5200' : '#b81c1c';
+      return `<div style="display:flex;gap:16px;align-items:center;margin-bottom:12px">
+        <div style="text-align:center">
+          <div style="font-size:28px;font-weight:700;color:${scoreColor}">${score}</div>
+          <div style="font-size:10px;color:#9fadbf;text-transform:uppercase;letter-spacing:.06em">score /100</div>
+        </div>
+        <div style="flex:1"><div class="score-bar"><div class="score-fill" style="width:${score}%;background:${scoreColor}"></div></div></div>
+      </div>` +
+      (issues.length===0 ? emptyState('No maintainability issues found') :
+        issues.map(i=>`<div class="finding">
+          <span class="sev sev-${(i.severity||'low').toLowerCase()}">${i.severity||'low'}</span>
+          <div class="finding-body">
+            <div class="finding-desc"><code>${escHtml(i.kind||'')}</code> — ${escHtml(i.description||'')}</div>
+            <div class="finding-file">${escHtml(i.file||'')}${i.line?' · line '+i.line:''}</div>
+            ${i.suggestion?`<div style="font-size:11px;color:#0c7c4b;margin-top:4px"><i class="ti ti-bulb" style="margin-right:3px"></i>${escHtml(i.suggestion)}</div>`:''}
+          </div></div>`).join(''));
+    })();
+
+    // ── License Compliance ────────────────────────────────────────────────────
+    const licenseBody = !license ? emptyState('Agent did not run') : (() => {
+      const findings = license.findings || [];
+      return (findings.length===0 ? emptyState('No license issues detected') :
+        `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+          ${license.has_copyleft?`<span class="badge badge-red"><i class="ti ti-alert-circle" style="font-size:11px"></i>Copyleft detected</span>`:''}
+          ${license.has_unknown?`<span class="badge badge-amber">Unknown licenses</span>`:''}
+        </div>` +
+        findings.map(f=>`<div class="finding">
+          <span class="sev sev-${(f.severity||'low').toLowerCase()}">${f.severity||'low'}</span>
+          <div class="finding-body">
+            <div class="finding-desc"><code>${escHtml(f.package||'')}</code> — <code>${escHtml(f.license||'unknown')}</code></div>
+            <div class="finding-file">${escHtml(f.file||'')}${f.reason?` — ${escHtml(f.reason)}`:''}${f.recommendation?`<br><i class="ti ti-bulb" style="margin-right:3px;color:#0c7c4b"></i><span style="color:#0c7c4b">${escHtml(f.recommendation)}</span>`:''}</div>
+          </div></div>`).join(''));
+    })();
+
+    // ── Observability ─────────────────────────────────────────────────────────
+    const obsBody = !obs ? emptyState('Agent did not run') : (() => {
+      const findings = obs.findings || [];
+      const score    = obs.observability_score ?? 100;
+      const scoreColor = score >= 80 ? '#0c7c4b' : score >= 60 ? '#8a5200' : '#b81c1c';
+      return `<div style="display:flex;gap:16px;align-items:center;margin-bottom:12px">
+        <div style="text-align:center">
+          <div style="font-size:28px;font-weight:700;color:${scoreColor}">${score}</div>
+          <div style="font-size:10px;color:#9fadbf;text-transform:uppercase;letter-spacing:.06em">obs score /100</div>
+        </div>
+        <div style="flex:1"><div class="score-bar"><div class="score-fill" style="width:${score}%;background:${scoreColor}"></div></div></div>
+      </div>` +
+      (findings.length===0 ? emptyState('No observability gaps found') :
+        findings.map(f=>`<div class="finding">
+          <span class="sev sev-${(f.severity||'low').toLowerCase()}">${f.severity||'low'}</span>
+          <div class="finding-body">
+            <div class="finding-desc"><code>${escHtml(f.kind||'')}</code> — ${escHtml(f.description||'')}</div>
+            <div class="finding-file">${escHtml(f.file||'')}${f.line?' · line '+f.line:''}</div>
+            ${f.suggestion?`<div style="font-size:11px;color:#0c7c4b;margin-top:4px"><i class="ti ti-bulb" style="margin-right:3px"></i>${escHtml(f.suggestion)}</div>`:''}
+            ${getCodeSnippet(f.file, f.line, 3)}
+          </div></div>`).join(''));
+    })();
+
+    return `<div class="card">
+      ${agentSection('ti-tool','#6366f1','Maintainability',maintBody)}
+      ${agentSection('ti-license','#10b981','License Compliance',licenseBody)}
+      <div>${agentSection('ti-eye','#0ea5e9','Observability',obsBody)}</div>
+    </div>`;
+  }
+
   if(tab==='timings') {
     const timings = r.agent_timings || [];
     const totalTokens = r.token_usage || 0;
@@ -1748,7 +1943,337 @@ function renderResultTab(tab, r) {
     <div id="qa-scenario-list">${renderScenarios('all')}</div>`;
   }
 
+  if(tab==='references') {
+    const ref = r.reference_impact;
+    if(!ref) return `<div class="card"><div class="empty-state"><i class="ti ti-git-branch"></i>No reference impact data.<br><span style="font-size:12px;color:#9fadbf">Configure REPO_LOCAL_PATH or GITHUB_TOKEN to enable cross-file reference search.</span></div></div>`;
+
+    const riskColor = v => ({CRITICAL:'#b81c1c',HIGH:'#8a5200',MEDIUM:'#1a6cf6',LOW:'#6b7280'})[v?.toUpperCase()]||'#6b7280';
+    const risk = (ref.intra_project_risk||'LOW').toUpperCase();
+    const graphId = 'ref-graph-' + Date.now();
+
+    // Schedule graph render after the DOM update settles
+    setTimeout(() => renderReferenceGraph(graphId, ref), 60);
+
+    return `
+    <div class="card" style="margin-bottom:12px">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+        <div>
+          <div class="card-title" style="margin-bottom:4px"><i class="ti ti-git-branch"></i>Reference Impact Analysis</div>
+          <div style="font-size:12px;color:#7a8494">${escHtml(ref.summary||'')}</div>
+        </div>
+        <div style="display:flex;gap:14px;font-size:12px;align-items:center">
+          <span style="color:${riskColor(risk)};font-weight:700;font-size:13px">${risk} intra-project risk</span>
+          <span style="color:#7a8494">${ref.total_references||0} references</span>
+          <span style="color:#7a8494;font-size:11px">via <code style="background:${ref.search_backend==='diff_scan'?'#fff7ed':'#f0f2f5'};padding:1px 5px;border-radius:4px">${({'local_grep':'local grep','auto_clone':'auto clone','github_api':'GitHub API','diff_scan':'PR diff scan','none':'none'})[ref.search_backend||'none']||ref.search_backend}</code>${ref.search_backend==='diff_scan'?'<span style="font-size:10px;color:#9fadbf;margin-left:4px">(set REPO_LOCAL_PATH for full-repo search)</span>':''}</span>
+        </div>
+      </div>
+      <div style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:14px">
+        <div style="flex:1;min-width:180px">
+          <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:#9fadbf;margin-bottom:6px">Changed symbols (${(ref.changed_symbols||[]).length})</div>
+          <div style="display:flex;flex-wrap:wrap;gap:4px">
+            ${(ref.changed_symbols||[]).slice(0,30).map(s=>`<code style="background:#fff7ed;border:1px solid #fed7aa;padding:2px 7px;border-radius:4px;font-size:11px;color:#c2410c">${escHtml(s)}</code>`).join('')}
+            ${(ref.changed_symbols||[]).length>30?`<span style="font-size:11px;color:#9fadbf">+${(ref.changed_symbols||[]).length-30} more</span>`:''}
+          </div>
+        </div>
+        ${(ref.shared_lib_breaks||[]).length ? `
+        <div style="flex:1;min-width:180px">
+          <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:#e05e00;margin-bottom:6px">⚠ Shared-lib paths modified</div>
+          <div style="display:flex;flex-wrap:wrap;gap:4px">
+            ${(ref.shared_lib_breaks||[]).map(p=>`<code style="background:#fff3e0;padding:2px 7px;border-radius:4px;font-size:11px;color:#8a5200">${escHtml(p)}</code>`).join('')}
+          </div>
+        </div>` : ''}
+      </div>
+
+      <!-- Call graph legend -->
+      <div style="display:flex;gap:12px;font-size:11px;color:#7a8494;margin-bottom:8px;flex-wrap:wrap;align-items:center">
+        <span style="font-weight:600;color:#4b5563">Call graph:</span>
+        <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#fff7ed;border:2px solid #f97316;margin-right:4px;vertical-align:middle"></span>Changed symbol</span>
+        <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#eff6ff;border:1.5px solid #3b82f6;margin-right:4px;vertical-align:middle"></span>Direct callers</span>
+        <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#f0fdfa;border:1.5px solid #0d9488;margin-right:4px;vertical-align:middle"></span>Callers of callers</span>
+        <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#f5f3ff;border:1.5px solid #7c3aed;margin-right:4px;vertical-align:middle"></span>3rd level</span>
+        ${(ref.shared_lib_breaks||[]).length?`<span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#fffbeb;border:1.5px solid #f59e0b;margin-right:4px;vertical-align:middle"></span>Shared-lib</span>`:''}
+        <span style="color:#9fadbf;margin-left:auto">Solid edge = direct · Dashed = indirect · Drag · Scroll to zoom</span>
+      </div>
+
+      <!-- D3 graph container -->
+      <div id="${graphId}" style="position:relative;width:100%;height:420px;border-radius:8px;overflow:hidden;border:1px solid #e8eaed"></div>
+    </div>
+
+    ${(ref.high_impact_files||[]).length ? `
+    <div class="card" style="margin-bottom:12px">
+      <div class="card-title" style="margin-bottom:10px"><i class="ti ti-flame"></i>High-Impact Files (≥3 references)</div>
+      ${(ref.high_impact_files||[]).map(f=>`<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #f0f2f5"><i class="ti ti-file-code" style="color:#1a6cf6;font-size:13px"></i><code style="font-size:12px">${escHtml(f)}</code></div>`).join('')}
+    </div>` : ''}
+
+    ${(ref.references||[]).length ? `
+    <div class="card">
+      <div class="card-title" style="margin-bottom:10px"><i class="ti ti-list-search"></i>All References (${ref.total_references})</div>
+      <div style="max-height:420px;overflow-y:auto">
+        ${(ref.references||[]).slice(0,100).map(r2=>{
+          const dColor = (['#3b82f6','#0d9488','#7c3aed','#6b7280'])[Math.min((r2.depth||1),4)-1];
+          const dLabel = (['L1','L2','L3','L4+'])[Math.min((r2.depth||1),4)-1];
+          return `
+        <div style="display:flex;align-items:flex-start;gap:10px;padding:7px 0;border-bottom:1px solid #f0f2f5;font-size:12px">
+          <span style="flex-shrink:0;padding:1px 5px;border-radius:4px;font-size:10px;font-weight:700;background:${dColor}18;color:${dColor};border:1px solid ${dColor}40">${dLabel}</span>
+          <code style="color:#1a6cf6;white-space:nowrap;min-width:160px;flex-shrink:0">${escHtml(r2.file_path||'')}${r2.line?`:${r2.line}`:''}</code>
+          <code style="color:#c2410c;white-space:nowrap;font-size:11px">[${escHtml(r2.symbol||'')}]</code>
+          <span style="color:#4b5563;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(r2.context||'')}</span>
+          ${r2.repo?`<span style="font-size:10px;color:#9fadbf;white-space:nowrap">${escHtml(r2.repo)}</span>`:''}
+        </div>`;}).join('')}
+        ${(ref.references||[]).length>100?`<div style="padding:8px;text-align:center;font-size:11px;color:#9fadbf">Showing first 100 of ${ref.total_references}</div>`:''}
+      </div>
+    </div>` : `<div class="card"><div class="empty-state"><i class="ti ti-list-search"></i>No call-site references found.<br><span style="font-size:12px;color:#9fadbf">Set REPO_LOCAL_PATH to a local clone for full grep-based search.</span></div></div>`}`;
+  }
+
   return '';
+}
+
+// ── Reference Impact Graph (D3 force-directed) ────────────────────────────────
+
+let _refSimulation = null;  // track active simulation for cleanup
+
+function renderReferenceGraph(containerId, ref) {
+  const el = document.getElementById(containerId);
+  if (!el || typeof d3 === 'undefined') return;
+  el.innerHTML = '';
+  if (_refSimulation) { _refSimulation.stop(); _refSimulation = null; }
+
+  const W = el.clientWidth || 900;
+  const H = 420;
+
+  // ── Build graph data ────────────────────────────────────────────────────────
+  const symbols = (ref.changed_symbols || []).slice(0, 25);
+  const sharedLibs = (ref.shared_lib_breaks || []).slice(0, 8);
+
+  // Depth colour palette: depth 1 = blue, 2 = teal, 3 = purple, 4+ = grey
+  const depthColor  = d => (['#3b82f6','#0d9488','#7c3aed','#6b7280'])[Math.min(d,4)-1] || '#6b7280';
+  const depthBg     = d => (['#eff6ff','#f0fdfa','#f5f3ff','#f9fafb'])[Math.min(d,4)-1] || '#f9fafb';
+  const depthLabel  = d => (['Direct callers','Callers of callers','3rd level','4th level+'])[Math.min(d,4)-1] || 'Deep';
+
+  // Count references per file, tracking min depth
+  const fileMeta = {};
+  (ref.references || []).forEach(r => {
+    const fp = r.file_path;
+    if (!fileMeta[fp]) fileMeta[fp] = { count: 0, depth: r.depth||1, symbols: new Set() };
+    fileMeta[fp].count++;
+    fileMeta[fp].depth = Math.min(fileMeta[fp].depth, r.depth||1);
+    fileMeta[fp].symbols.add(r.symbol);
+    // also register from_file so parent files always get a node
+    if (r.from_file && !fileMeta[r.from_file]) {
+      fileMeta[r.from_file] = { count: 0, depth: (r.depth||2)-1, symbols: new Set() };
+    }
+  });
+
+  // Top 50 files by reference count
+  const topFiles = Object.entries(fileMeta)
+    .sort(([,a],[,b]) => b.count - a.count)
+    .slice(0, 50)
+    .map(([fp, meta]) => {
+      const parts = fp.replace(/\\/g,'/').split('/');
+      return { id: 'file:' + fp, label: parts.slice(-2).join('/'), fullPath: fp,
+               count: meta.count, depth: meta.depth, type: 'file',
+               r: Math.min(7 + meta.count * 1.5, 18) };
+    });
+
+  const symNodes = symbols.map(s => ({
+    id: 'sym:' + s, label: s.length > 20 ? s.slice(0,18)+'…' : s,
+    fullLabel: s, type: 'symbol', r: 14,
+    fx: null, fy: null,
+  }));
+
+  const libNodes = sharedLibs.map(p => {
+    const parts = p.replace(/\\/g,'/').split('/');
+    return { id: 'lib:' + p, label: parts.slice(-2).join('/'), fullPath: p,
+             type: 'shared_lib', r: 11 };
+  });
+
+  const nodes = [...symNodes, ...topFiles, ...libNodes];
+  const nodeIds = new Set(nodes.map(n => n.id));
+
+  // Build links:
+  //  depth-1 refs  → sym:changed_symbol  →  file:caller
+  //  depth-2+ refs → file:from_file      →  file:caller  (true hierarchy)
+  const linkSet = new Set();
+  const links   = [];
+
+  (ref.references || []).forEach(r => {
+    const depth = r.depth || 1;
+    const tgt   = 'file:' + r.file_path;
+    let   src;
+
+    if (depth === 1 || !r.from_file) {
+      // Connect to the original changed symbol
+      src = 'sym:' + (r.symbol || '');
+    } else {
+      // Connect to the parent file that contained the searched symbol
+      src = 'file:' + r.from_file;
+    }
+
+    const key = src + '→' + tgt;
+    if (!linkSet.has(key) && nodeIds.has(src) && nodeIds.has(tgt)) {
+      linkSet.add(key);
+      links.push({ source: src, target: tgt, depth });
+    }
+  });
+
+  // Connect shared-lib nodes to the most-referenced symbol (or first)
+  libNodes.forEach(ln => {
+    if (symNodes.length) {
+      links.push({ source: symNodes[0].id, target: ln.id, shared: true });
+    }
+  });
+
+  if (!nodes.length) {
+    el.innerHTML = `<div class="empty-state" style="padding:30px"><i class="ti ti-topology-star-3"></i>No graph data to display</div>`;
+    return;
+  }
+
+  // ── SVG setup with zoom/pan ─────────────────────────────────────────────────
+  const svg = d3.select(el).append('svg')
+    .attr('width', '100%').attr('height', H)
+    .style('border-radius','8px').style('background','#f7f8fa');
+
+  const defs = svg.append('defs');
+  // Arrow marker
+  defs.append('marker')
+    .attr('id','arrowhead').attr('viewBox','0 -4 8 8').attr('refX',20)
+    .attr('refY',0).attr('markerWidth',6).attr('markerHeight',6).attr('orient','auto')
+    .append('path').attr('d','M0,-4L8,0L0,4').attr('fill','#c9d4e8');
+
+  const zoomLayer = svg.append('g');
+
+  svg.call(d3.zoom()
+    .scaleExtent([0.3, 3])
+    .on('zoom', e => zoomLayer.attr('transform', e.transform)));
+
+  // ── Simulation ──────────────────────────────────────────────────────────────
+  const sim = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(links).id(d => d.id).distance(d => d.shared ? 100 : 80).strength(0.5))
+    .force('charge', d3.forceManyBody().strength(d => d.type === 'symbol' ? -400 : -180))
+    .force('center', d3.forceCenter(W / 2, H / 2))
+    .force('collision', d3.forceCollide().radius(d => d.r + 6));
+
+  _refSimulation = sim;
+
+  // ── Edges ───────────────────────────────────────────────────────────────────
+  const linkEl = zoomLayer.append('g').selectAll('line')
+    .data(links).join('line')
+    .attr('stroke', d => d.shared ? '#f59e0b' : depthColor(d.depth || 1))
+    .attr('stroke-width', d => d.shared ? 1.5 : d.depth === 1 ? 1.5 : 1)
+    .attr('stroke-opacity', d => d.shared ? 0.8 : d.depth === 1 ? 0.6 : 0.35)
+    .attr('stroke-dasharray', d => {
+      if (d.shared) return '4 3';
+      if (d.depth === 2) return '3 2';
+      if (d.depth >= 3) return '2 3';
+      return null;
+    })
+    .attr('marker-end', 'url(#arrowhead)');
+
+  // ── Node groups ─────────────────────────────────────────────────────────────
+  const nodeColor = d => {
+    if (d.type === 'symbol')     return '#f97316';
+    if (d.type === 'shared_lib') return '#f59e0b';
+    return depthColor(d.depth || 1);
+  };
+  const nodeBg = d => {
+    if (d.type === 'symbol')     return '#fff7ed';
+    if (d.type === 'shared_lib') return '#fffbeb';
+    return depthBg(d.depth || 1);
+  };
+
+  const nodeEl = zoomLayer.append('g').selectAll('g')
+    .data(nodes).join('g')
+    .style('cursor','pointer')
+    .call(d3.drag()
+      .on('start', (event, d) => { if (!event.active) sim.alphaTarget(0.3).restart(); d.fx=d.x; d.fy=d.y; })
+      .on('drag',  (event, d) => { d.fx=event.x; d.fy=event.y; })
+      .on('end',   (event, d) => { if (!event.active) sim.alphaTarget(0); d.fx=null; d.fy=null; }));
+
+  // Circle
+  nodeEl.append('circle')
+    .attr('r', d => d.r)
+    .attr('fill', d => nodeBg(d))
+    .attr('stroke', d => nodeColor(d))
+    .attr('stroke-width', d => d.type === 'symbol' ? 2.5 : 1.5);
+
+  // Icon inside symbol nodes
+  nodeEl.filter(d => d.type === 'symbol').append('text')
+    .attr('text-anchor','middle').attr('dominant-baseline','central')
+    .attr('font-size', '10px').attr('fill', '#f97316').text('ƒ');
+
+  nodeEl.filter(d => d.type === 'file').append('text')
+    .attr('text-anchor','middle').attr('dominant-baseline','central')
+    .attr('font-size', '9px').attr('fill', '#3b82f6').text('{ }');
+
+  nodeEl.filter(d => d.type === 'shared_lib').append('text')
+    .attr('text-anchor','middle').attr('dominant-baseline','central')
+    .attr('font-size', '9px').attr('fill', '#d97706').text('⚠');
+
+  // Label
+  nodeEl.append('text')
+    .attr('dy', d => d.r + 12)
+    .attr('text-anchor','middle')
+    .attr('font-size', d => d.type === 'symbol' ? '11px' : '10px')
+    .attr('font-weight', d => d.type === 'symbol' ? '600' : '400')
+    .attr('fill', d => nodeColor(d))
+    .attr('font-family', "'JetBrains Mono', monospace")
+    .text(d => d.label);
+
+  // Ref-count badge on file nodes
+  nodeEl.filter(d => d.type === 'file' && d.count > 1).append('text')
+    .attr('dy', d => -d.r - 3)
+    .attr('text-anchor','middle')
+    .attr('font-size','9px')
+    .attr('fill','#6b7280')
+    .text(d => `×${d.count}`);
+
+  // ── Tooltip ─────────────────────────────────────────────────────────────────
+  const tooltip = d3.select(el).append('div')
+    .style('position','absolute').style('pointer-events','none')
+    .style('background','#1c2333').style('color','#e8f0ff')
+    .style('padding','8px 12px').style('border-radius','6px')
+    .style('font-size','12px').style('max-width','280px')
+    .style('line-height','1.5').style('opacity','0')
+    .style('transition','opacity .15s').style('z-index','100')
+    .style('font-family',"'JetBrains Mono', monospace");
+
+  nodeEl
+    .on('mouseenter', (event, d) => {
+      let html = `<div style="font-weight:700;color:${nodeColor(d)}">${escHtml(d.fullLabel||d.fullPath||d.label)}</div>`;
+      if (d.type === 'file') {
+        html += `<div style="color:#9fadbf;font-size:11px">${d.count} reference${d.count!==1?'s':''}</div>`;
+        html += `<div style="color:${depthColor(d.depth||1)};font-size:11px;margin-top:2px">${depthLabel(d.depth||1)}</div>`;
+      }
+      if (d.type === 'shared_lib') html += `<div style="color:#f59e0b;font-size:11px">⚠ Shared library — cross-project risk</div>`;
+      if (d.type === 'symbol')     html += `<div style="color:#9fadbf;font-size:11px">Changed symbol</div>`;
+      tooltip.html(html).style('opacity','1')
+        .style('left', (event.offsetX + 14) + 'px')
+        .style('top',  (event.offsetY - 10) + 'px');
+    })
+    .on('mousemove', event => {
+      tooltip.style('left', (event.offsetX + 14) + 'px').style('top', (event.offsetY - 10) + 'px');
+    })
+    .on('mouseleave', () => tooltip.style('opacity','0'));
+
+  // ── Tick ────────────────────────────────────────────────────────────────────
+  sim.on('tick', () => {
+    linkEl
+      .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+      .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+    nodeEl.attr('transform', d => `translate(${d.x},${d.y})`);
+  });
+
+  // ── "Fit" button ────────────────────────────────────────────────────────────
+  svg.append('g').attr('transform',`translate(${W-50},${H-36})`).append('foreignObject')
+    .attr('width',42).attr('height',24)
+    .append('xhtml:button')
+    .style('font-size','10px').style('padding','2px 7px')
+    .style('background','#fff').style('border','1px solid #e8eaed')
+    .style('border-radius','5px').style('cursor','pointer').style('color','#4b5563')
+    .text('Reset')
+    .on('click', () => svg.transition().duration(300).call(
+      d3.zoom().transform, d3.zoomIdentity
+    ));
 }
 
 function qaFilterClick(filter, key) {
@@ -1821,49 +2346,69 @@ function renderLivePipeline(agentMap) {
 
   const maxTok = Math.max(1, ...Object.values(agentMap).map(e => e.tokens||0));
 
+  const renderRow = ({ key, meta, entry }, compact = false) => {
+    const st         = entry.status;
+    const isRunning  = st === 'running';
+    const isDone     = st === 'done';
+    const isFallback = st === 'fallback';
+    const isPending  = st === 'pending';
+
+    const timeVal = isRunning
+      ? `<span class="agent-stat" data-elapsed="${key}" style="color:#1a6cf6">${(entry.elapsed_s||0).toFixed(1)}s</span>`
+      : (isDone||isFallback)
+        ? `<span class="agent-stat">${(entry.duration_s||0).toFixed(2)}s</span>`
+        : `<span class="agent-stat dim">—</span>`;
+
+    const tokVal = (isDone && entry.tokens)
+      ? `<span class="agent-tok">${entry.tokens.toLocaleString()} tok</span>`
+      : isFallback
+        ? `<span class="agent-tok" style="color:#f59e0b">fallback</span>`
+        : `<span class="agent-tok" style="color:#e8eaed">—</span>`;
+
+    const tokPct  = isDone ? Math.round((entry.tokens/maxTok)*100) : 0;
+    const barFill = isDone
+      ? `<div class="agent-bar-fill" style="width:${tokPct}%;background:${meta.color}"></div>`
+      : isRunning
+        ? `<div class="agent-bar-fill" style="width:30%;background:#bfdbfe;animation:pulse-dot 1.2s infinite"></div>`
+        : '';
+
+    // Compact variant (used in 2-col grid): hide tok bar, shorter padding
+    const rowStyle = compact ? 'padding:6px 10px;' : '';
+    return `<div class="agent-row ${isPending?'':''+st}" style="${rowStyle}">
+      <div class="agent-dot ${st}"></div>
+      <i class="ti ${meta.icon}" style="font-size:13px;color:${isDone?meta.color:isFallback?'#f59e0b':isRunning?'#3b82f6':'#d1d5db'};flex-shrink:0"></i>
+      <span class="agent-name ${isPending?'pending':''}" style="font-size:${compact?'11.5':'13'}px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${meta.label}</span>
+      ${isRunning ? `<span class="agent-badge running">running</span>` : ''}
+      ${isDone    ? `<span class="agent-badge done">done</span>` : ''}
+      ${isFallback? `<span class="agent-badge fallback">fallback</span>` : ''}
+      ${timeVal}
+      ${compact ? '' : tokVal}
+      ${compact ? '' : `<div class="agent-bar">${barFill}</div>`}
+    </div>`;
+  };
+
   let html = '';
   phases.forEach(phase => {
     const rows = byPhase[phase];
     if(!rows || !rows.length) return;
-    html += `<div class="pipeline-phase">${phase}</div>`;
-    rows.forEach(({ key, meta, entry }) => {
-      const st = entry.status;
-      const isRunning  = st === 'running';
-      const isDone     = st === 'done';
-      const isFallback = st === 'fallback';
-      const isPending  = st === 'pending';
 
-      const timeVal = isRunning
-        ? `<span class="agent-stat" data-elapsed="${key}" style="color:#1a6cf6">${(entry.elapsed_s||0).toFixed(1)}s</span>`
-        : (isDone||isFallback)
-          ? `<span class="agent-stat">${(entry.duration_s||0).toFixed(2)}s</span>`
-          : `<span class="agent-stat dim">—</span>`;
+    const phaseLabel = {
+      'Phase 1':  'Phase 1 — Core',
+      'Phase 1b': 'Phase 1b — Deep Scan (parallel)',
+      'Phase 2':  'Phase 2 — Integration',
+      'Phase 3':  'Phase 3 — Synthesis',
+    }[phase] || phase;
 
-      const tokVal = (isDone && entry.tokens)
-        ? `<span class="agent-tok">${entry.tokens.toLocaleString()} tok</span>`
-        : isFallback
-          ? `<span class="agent-tok" style="color:#f59e0b">fallback</span>`
-          : `<span class="agent-tok" style="color:#e8eaed">—</span>`;
+    html += `<div class="pipeline-phase">${phaseLabel}</div>`;
 
-      const tokPct = isDone ? Math.round((entry.tokens/maxTok)*100) : 0;
-      const barFill = isDone
-        ? `<div class="agent-bar-fill" style="width:${tokPct}%;background:${meta.color}"></div>`
-        : isRunning
-          ? `<div class="agent-bar-fill" style="width:30%;background:#bfdbfe;animation:pulse-dot 1.2s infinite"></div>`
-          : '';
-
-      html += `<div class="agent-row ${isPending?'':''+st}">
-        <div class="agent-dot ${st}"></div>
-        <i class="ti ${meta.icon}" style="font-size:14px;color:${isDone?meta.color:isFallback?'#f59e0b':isRunning?'#3b82f6':'#d1d5db'};flex-shrink:0"></i>
-        <span class="agent-name ${isPending?'pending':''}">${meta.label}</span>
-        ${isRunning ? `<span class="agent-badge running">running</span>` : ''}
-        ${isDone    ? `<span class="agent-badge done">done</span>` : ''}
-        ${isFallback? `<span class="agent-badge fallback">fallback</span>` : ''}
-        ${timeVal}
-        ${tokVal}
-        <div class="agent-bar">${barFill}</div>
-      </div>`;
-    });
+    // Phase 1b has many agents → render as 2-column grid
+    if(phase === 'Phase 1b') {
+      html += `<div class="pipeline-grid">`;
+      rows.forEach(row => { html += renderRow(row, true); });
+      html += `</div>`;
+    } else {
+      rows.forEach(row => { html += renderRow(row, false); });
+    }
   });
   return html;
 }
@@ -1914,7 +2459,7 @@ async function runAnalysis() {
   if(state.backendUrl) {
     try {
       const payload = {
-        repo_url:    repoName(state.primaryRepo),
+        repo_url:    state.provider==='github' ? `https://github.com/${repoName(state.primaryRepo)}` : repoName(state.primaryRepo),
         source_ref:  target.source,
         target_ref:  target.target,
         change_type: target.changeType,
@@ -2286,6 +2831,105 @@ function normalizeReport(r) {
     change_fatigue: tr.change_fatigue||[],
   } : null;
 
+  // ── Normalise reference impact ────────────────────────────────────────────
+  const ri = r.reference_impact || null;
+  const riNorm = ri ? {
+    changed_symbols:   ri.changed_symbols   || [],
+    references:        (ri.references||[]).map(ref=>({
+      symbol:    ref.symbol    || '',
+      file_path: ref.file_path || '',
+      line:      ref.line      || 0,
+      context:   ref.context   || '',
+      repo:      ref.repo      || '',
+      depth:     ref.depth     || 1,
+      from_file: ref.from_file || '',
+    })),
+    total_references:  ri.total_references  || (ri.references||[]).length,
+    high_impact_files: ri.high_impact_files || [],
+    shared_lib_breaks: ri.shared_lib_breaks || [],
+    intra_project_risk: ri.intra_project_risk || 'LOW',
+    search_backend:    ri.search_backend    || 'none',
+    summary:           ri.summary           || '',
+  } : null;
+
+  // ── Normalise performance impact ──────────────────────────────────────────
+  const perf = r.performance_impact || null;
+  const perfNorm = perf ? {
+    summary:          perf.summary          || '',
+    overall_severity: perf.overall_severity || 'low',
+    regression_risk:  perf.regression_risk  || false,
+    findings: (perf.findings||[]).map(f=>({
+      kind:        f.kind        || '',
+      severity:    (f.severity||'low').toLowerCase(),
+      description: f.description || '',
+      file:        f.file_path   || f.file || '',
+      line:        f.line        || 0,
+      suggestion:  f.suggestion  || '',
+    })),
+  } : null;
+
+  // ── Normalise data privacy ────────────────────────────────────────────────
+  const priv = r.data_privacy || null;
+  const privNorm = priv ? {
+    summary:               priv.summary               || '',
+    pii_detected:          priv.pii_detected          || false,
+    compliance_violations: priv.compliance_violations || [],
+    findings: (priv.findings||[]).map(f=>({
+      pii_type:       f.pii_type       || f.kind || '',
+      severity:       (f.severity||'medium').toLowerCase(),
+      description:    f.description    || '',
+      file:           f.file_path      || f.file || '',
+      line:           f.line           || 0,
+      recommendation: f.recommendation || '',
+    })),
+  } : null;
+
+  // ── Normalise maintainability ─────────────────────────────────────────────
+  const maint = r.maintainability || null;
+  const maintNorm = maint ? {
+    score:   maint.score   ?? 100,
+    summary: maint.summary || '',
+    issues: (maint.issues||[]).map(i=>({
+      kind:        i.kind        || '',
+      severity:    (i.severity||'low').toLowerCase(),
+      description: i.description || '',
+      file:        i.file_path   || i.file || '',
+      line:        i.line        || 0,
+      suggestion:  i.suggestion  || '',
+    })),
+  } : null;
+
+  // ── Normalise license compliance ──────────────────────────────────────────
+  const lic = r.license_compliance || null;
+  const licNorm = lic ? {
+    has_copyleft: lic.has_copyleft || false,
+    has_unknown:  lic.has_unknown  || false,
+    summary:      lic.summary      || '',
+    findings: (lic.findings||[]).map(f=>({
+      package:        f.package        || '',
+      license:        f.license        || 'unknown',
+      severity:       (f.severity||'low').toLowerCase(),
+      file:           f.file_path      || f.file || '',
+      reason:         f.reason         || '',
+      recommendation: f.recommendation || '',
+    })),
+  } : null;
+
+  // ── Normalise observability ───────────────────────────────────────────────
+  const obs = r.observability || null;
+  const obsNorm = obs ? {
+    observability_score: obs.observability_score ?? 100,
+    summary:             obs.summary             || '',
+    findings: (obs.findings||[]).map(f=>({
+      kind:        f.kind        || '',
+      severity:    (f.severity||'low').toLowerCase(),
+      description: f.description || '',
+      file:        f.file_path   || f.file || '',
+      line:        f.line        || 0,
+      suggestion:  f.suggestion  || '',
+    })),
+  } : null;
+
   // ── Normalise QA scenarios ─────────────────────────────────────────────────
   const qar = r.qa_scenarios || null;
   const qaNorm = qar ? {
@@ -2324,6 +2968,12 @@ function normalizeReport(r) {
     interface:        ifaceNorm,
     schema_change:    scNorm,
     qa_scenarios:     qaNorm,
+    reference_impact: riNorm,
+    performance_impact:  perfNorm,
+    data_privacy:        privNorm,
+    maintainability:     maintNorm,
+    license_compliance:  licNorm,
+    observability:       obsNorm,
     risk:             riskObj,
     remediation:      remNorm,
     token_usage:    r.total_tokens || (Array.isArray(r.token_usage) ? r.token_usage.reduce((s,u)=>s+(u.tokens_used||0),0) : r.token_usage) || 0,
