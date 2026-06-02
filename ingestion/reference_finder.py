@@ -197,17 +197,14 @@ def _auto_clone_and_grep(
     repo_url: str,
     token:    str,
     ref:      str = "",
-) -> tuple[list[SymbolReference], str]:
+) -> tuple[list[SymbolReference], bool]:
     """
     Shallow-clone the repo into a temp directory, run local grep against it,
     and clean up afterwards.
 
-    Returns (refs, clone_path_used).  The caller is responsible for deleting
-    the temp dir on error (we do it in a finally block here).
-
-    Uses --depth=1 --filter=blob:none --sparse so only tree metadata is
-    fetched first; we then enable sparse-checkout to get all files (this is
-    still much faster than a full clone for large repos).
+    Returns (refs, clone_succeeded).  The second element allows callers to
+    distinguish "clone ok but symbol has no callers" from "clone failed" — the
+    latter should fall through to the GitHub API backend.
     """
     clone_url = _build_clone_url(repo_url, token)
     tmp_dir   = tempfile.mkdtemp(prefix="ciaa_clone_")
@@ -234,7 +231,7 @@ def _auto_clone_and_grep(
             # Mask token in log output
             err = result.stderr.replace(token, "***")
             log.warning("Auto-clone failed (rc=%d): %s", result.returncode, err[:300])
-            return [], tmp_dir
+            return [], False   # signal failure so caller can try GitHub API
 
         log.info("Auto-clone succeeded — starting grep phase")
         refs: list[SymbolReference] = []
@@ -250,14 +247,14 @@ def _auto_clone_and_grep(
                 log.warning("Auto-clone grep hit wall-clock limit — results are partial")
 
         log.info("Auto-clone (auto_clone): %d refs for %d symbols", len(refs), len(symbols))
-        return refs, tmp_dir
+        return refs, True   # clone succeeded (refs may be empty if symbol has no callers)
 
     except subprocess.TimeoutExpired:
         log.warning("Auto-clone timed out after %ds", _CLONE_TIMEOUT_S)
-        return [], tmp_dir
+        return [], False
     except Exception as exc:
         log.warning("Auto-clone unexpected error: %s", exc)
-        return [], tmp_dir
+        return [], False
     finally:
         # Always remove the temp clone — it can be hundreds of MB
         try:
@@ -308,11 +305,23 @@ def find_references_in_diff(
     refs: list[SymbolReference] = []
     for hunk in hunks:
         lines = hunk.content.splitlines()
-        for lineno, raw in enumerate(lines, start=1):
-            # Skip diff metadata and deletion lines
-            if raw.startswith("---") or raw.startswith("+++") or raw.startswith("-"):
+        # Parse the starting source line from the @@ hunk header so we can
+        # report accurate source line numbers rather than diff-file offsets.
+        src_line = 0
+        _hdr = re.search(r'@@ -\d+(?:,\d+)? \+(\d+)', hunk.content)
+        if _hdr:
+            src_line = int(_hdr.group(1)) - 1  # will be incremented before first use
+
+        for raw in lines:
+            # Skip diff metadata lines (don't advance src_line for them)
+            if raw.startswith("---") or raw.startswith("+++") or raw.startswith("@@"):
                 continue
-            # Strip leading +/space
+            # Deletion lines exist in source but not in new file — don't count
+            if raw.startswith("-"):
+                continue
+            # Context and added lines advance the new-file line counter
+            src_line += 1
+            # Strip leading +/space to get actual source content
             content = raw[1:] if raw.startswith("+") or raw.startswith(" ") else raw
 
             for sym in symbols:
@@ -324,7 +333,7 @@ def find_references_in_diff(
                     refs.append(SymbolReference(
                         symbol=sym,
                         file_path=hunk.file_path,
-                        line=lineno,
+                        line=src_line,
                         context=content.strip()[:200],
                         depth=1,
                     ))
@@ -390,17 +399,22 @@ def find_references(
     #   • supports multi-level BFS (L2/L3) via local grep on the clone
     #   • has no rate limits beyond the initial clone bandwidth
     if github_token and repo_url and "github.com" in repo_url and _has_git():
-        refs, _ = _auto_clone_and_grep(symbols, repo_url, github_token, ref=source_ref)
-        if refs:
+        refs, clone_ok = _auto_clone_and_grep(symbols, repo_url, github_token, ref=source_ref)
+        if not clone_ok:
+            # Clone itself failed (bad token, network, permissions) — fall through to
+            # GitHub code-search API which may still work for public/indexed repos.
+            log.info("Auto-clone failed — falling back to GitHub code-search API")
+        elif refs:
             return refs, "auto_clone"
-        # Clone succeeded but symbol genuinely has no callers — fall through to
-        # diff_scan so we still surface intra-PR cross-file usages.
-        log.info("Auto-clone returned 0 refs — falling back to diff_scan")
-        if hunks:
-            diff_refs = find_references_in_diff(symbols, hunks)
-            if diff_refs:
-                return diff_refs, "diff_scan"
-        return [], "auto_clone"
+        else:
+            # Clone succeeded but symbol genuinely has no callers — supplement with
+            # intra-PR diff scan and report auto_clone as the primary backend.
+            log.info("Auto-clone returned 0 refs — supplementing with diff_scan")
+            if hunks:
+                diff_refs = find_references_in_diff(symbols, hunks)
+                if diff_refs:
+                    return diff_refs, "diff_scan"
+            return [], "auto_clone"
 
     # Backend 3: GitHub code search API (fallback when git binary is unavailable)
     if github_token and repo_url and "github.com" in repo_url:

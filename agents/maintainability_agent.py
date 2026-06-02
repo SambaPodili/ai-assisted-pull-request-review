@@ -22,37 +22,13 @@ import time
 import logging
 from typing import Any
 
-from pydantic import BaseModel
-
-from core.models import AgentName, AnalysisRequest, AgentResultBase
+from core.models import (
+    AgentName, AnalysisRequest, AgentResultBase,
+    MaintainabilityIssue, MaintainabilityResult,
+)
 from agents.base_agent import BaseAgent, format_hunks_for_prompt
 
 log = logging.getLogger(__name__)
-
-
-# ── Output models ─────────────────────────────────────────────────────────────
-
-class MaintainabilityIssue(BaseModel):
-    kind: str        # "long_function"|"deep_nesting"|"bare_except"|"swallowed_exception"
-                     # |"magic_number"|"dead_code"|"missing_type_hint"|"todo_left_in"|"other"
-    severity: str    # "low"|"medium"|"high"
-    description: str
-    file_path: str = ""
-    line: int = 0
-    suggestion: str = ""
-
-
-class MaintainabilityResult(AgentResultBase):
-    issues: list[MaintainabilityIssue] = []
-    maintainability_score: int = 100   # 0-100; deducted per issue by severity
-    long_function_count: int = 0
-    error_handling_gaps: int = 0
-    overall_severity: str = "low"
-    summary: str = ""
-    fallback_used: bool = False
-    token_usage: int = 0
-    model_used: str = ""
-    duration_s: float = 0.0
 
 
 # ── Severity deductions ───────────────────────────────────────────────────────

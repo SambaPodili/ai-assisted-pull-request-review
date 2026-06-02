@@ -21,37 +21,13 @@ import time
 import logging
 from typing import Any
 
-from pydantic import BaseModel
-
-from core.models import AgentName, AnalysisRequest, AgentResultBase
+from core.models import (
+    AgentName, AnalysisRequest, AgentResultBase,
+    ObservabilityFinding, ObservabilityResult,
+)
 from agents.base_agent import BaseAgent, format_hunks_for_prompt
 
 log = logging.getLogger(__name__)
-
-
-# ── Output models ─────────────────────────────────────────────────────────────
-
-class ObservabilityFinding(BaseModel):
-    kind: str        # "log_removed"|"unobserved_branch"|"unobserved_error"
-                     # |"metric_removed"|"missing_tracing"|"missing_correlation_id"
-    severity: str    # "low"|"medium"|"high"
-    description: str
-    file_path: str = ""
-    line: int = 0
-    suggestion: str = ""
-
-
-class ObservabilityResult(AgentResultBase):
-    findings: list[ObservabilityFinding] = []
-    logs_removed: int = 0
-    metrics_removed: int = 0
-    unobserved_branches: int = 0
-    overall_severity: str = "low"
-    summary: str = ""
-    fallback_used: bool = False
-    token_usage: int = 0
-    model_used: str = ""
-    duration_s: float = 0.0
 
 
 # ── Detection patterns ────────────────────────────────────────────────────────

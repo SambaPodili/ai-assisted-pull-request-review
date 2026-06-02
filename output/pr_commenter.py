@@ -13,6 +13,52 @@ log = logging.getLogger(__name__)
 
 _BOT_TAG = "<!-- impact-analyzer-bot -->"
 
+# Required GitHub token scopes for comment posting
+_GH_REQUIRED_SCOPES = {"repo", "public_repo"}   # at least one of these must be present
+
+# Minimum required scopes message shown to users
+_GH_SCOPE_HELP = (
+    "Token needs one of: 'repo' (private repos) or 'public_repo' (public repos). "
+    "For fine-grained PATs: enable 'Pull requests: Read and write'. "
+    "Update at: https://github.com/settings/tokens"
+)
+
+
+class InsufficientScopeError(Exception):
+    """Raised when a GitHub token lacks the write scopes needed to post PR comments."""
+    def __init__(self, found: set[str], required: set[str], hint: str = "") -> None:
+        self.found    = found
+        self.required = required
+        self.hint     = hint or _GH_SCOPE_HELP
+        super().__init__(
+            f"Token missing required scope. Has: {found or {'(none)'}}, "
+            f"needs one of: {required}. {self.hint}"
+        )
+
+
+def _get_github_scopes(token: str, api_base: str, session: requests.Session) -> set[str]:
+    """
+    Return the set of OAuth scopes granted to a GitHub token.
+
+    GitHub returns the granted scopes in the 'X-OAuth-Scopes' response header
+    on every API call.  Fine-grained PATs do NOT return this header — for those
+    we return an empty set and let the caller decide whether to proceed.
+    """
+    try:
+        resp = session.get(
+            f"{api_base}/user",
+            headers={"Authorization": f"token {token}",
+                     "Accept": "application/vnd.github.v3+json"},
+            timeout=10,
+        )
+        scope_header = resp.headers.get("X-OAuth-Scopes", "")
+        scopes = {s.strip() for s in scope_header.split(",") if s.strip()}
+        log.debug("GitHub token scopes: %s", scopes)
+        return scopes
+    except Exception as exc:
+        log.debug("Could not fetch GitHub token scopes: %s", exc)
+        return set()
+
 
 class PRCommenter:
 
@@ -20,33 +66,65 @@ class PRCommenter:
         self._token     = token
         self._provider  = provider
         self._workspace = workspace
-        self._api_url   = api_url
+        self._api_url   = _normalise_api_url(api_url, provider)
         self._session   = requests.Session()
         self._session.timeout = 15
 
-    def post(self, report: AnalysisReport) -> bool:
-        """Post or update the bot comment. Returns True on success."""
-        pr_id = report.pr.pr_number if report.pr.pr_number else None
-        if not pr_id:
-            pr_id = report.request_id   # fallback for direct requests
+    def post(
+        self,
+        report:    AnalysisReport,
+        pr_id:     str | int | None = None,
+        repo_slug: str = "",
+    ) -> bool:
+        """
+        Post or update the bot comment. Returns True on success.
 
-        repo_slug = _extract_repo_slug(report.repo_url, self._provider, self._workspace)
-        body      = self._render(report)
+        pr_id and repo_slug can be supplied explicitly (from the API request body)
+        so the method doesn't fall back to the analysis request_id when the report
+        was submitted without webhook PR metadata.
+        """
+        # Prefer explicit pr_id, then report metadata, never fall back to request_id
+        resolved_pr = (
+            pr_id
+            or (report.pr.pr_number if report.pr and report.pr.pr_number else None)
+        )
+        if not resolved_pr:
+            log.warning("post_pr_comment: no PR id available — cannot post comment")
+            return False
+
+        resolved_slug = (
+            repo_slug
+            or _extract_repo_slug(report.repo_url, self._provider, self._workspace)
+        )
+        body = self._render(report)
 
         try:
-            if self._provider == "bitbucket":
-                return self._bb_post(repo_slug, pr_id, body)
-            return self._gh_post(repo_slug, pr_id, body)
+            if self._provider in ("bitbucket", "bitbucket_cloud"):
+                return self._bb_post(resolved_slug, resolved_pr, body)
+            elif self._provider == "bitbucket_server":
+                return self._bb_server_post(resolved_slug, resolved_pr, body)
+            else:
+                return self._gh_post(resolved_slug, resolved_pr, body)
         except Exception as exc:
             log.error("Failed to post PR comment: %s", exc)
             return False
 
-    # ── Bitbucket ─────────────────────────────────────────────────────────────
+    # ── Bitbucket Cloud ───────────────────────────────────────────────────────
 
     def _bb_post(self, repo_slug: str, pr_id: int | str, body: str) -> bool:
-        url  = f"{self._api_url}/repositories/{self._workspace}/{repo_slug}/pullrequests/{pr_id}/comments"
+        url     = f"https://api.bitbucket.org/2.0/repositories/{self._workspace}/{repo_slug}/pullrequests/{pr_id}/comments"
         headers = {"Authorization": f"Bearer {self._token}", "Content-Type": "application/json"}
-        resp = self._session.post(url, json={"content": {"raw": body}}, headers=headers)
+        resp    = self._session.post(url, json={"content": {"raw": body}}, headers=headers)
+        resp.raise_for_status()
+        return True
+
+    # ── Bitbucket Server ──────────────────────────────────────────────────────
+
+    def _bb_server_post(self, repo_slug: str, pr_id: int | str, body: str) -> bool:
+        proj, repo = (repo_slug.split("/", 1) + [""])[:2] if "/" in repo_slug else (self._workspace, repo_slug)
+        url     = f"{self._api_url}/projects/{proj}/repos/{repo}/pull-requests/{pr_id}/comments"
+        headers = {"Authorization": f"Bearer {self._token}", "Content-Type": "application/json"}
+        resp    = self._session.post(url, json={"text": body}, headers=headers)
         resp.raise_for_status()
         return True
 
@@ -140,15 +218,487 @@ class PRCommenter:
         return "\n".join(sections)
 
 
+def _normalise_api_url(url: str, provider: str) -> str:
+    """
+    Return the correct REST API base URL for the given provider.
+
+    Users often paste the web UI URL (https://github.com) instead of the
+    API endpoint — we correct that silently so callers never see 404/422.
+    """
+    if provider in ("github",):
+        # Strip any accidentally supplied web-UI URL
+        if not url or url.rstrip("/") in ("https://github.com", "http://github.com", "github.com"):
+            return "https://api.github.com"
+        # GitHub Enterprise Server — append /api/v3 if missing
+        if "github.com" not in url and "/api/v3" not in url:
+            return url.rstrip("/") + "/api/v3"
+        return url.rstrip("/")
+    elif provider == "bitbucket_server":
+        # Bitbucket Server REST API
+        base = url.rstrip("/")
+        if base and "/rest/api/1.0" not in base:
+            return base + "/rest/api/1.0"
+        return base
+    elif provider in ("bitbucket", "bitbucket_cloud"):
+        return "https://api.bitbucket.org/2.0"
+    return url.rstrip("/")
+
+
 def _extract_repo_slug(repo_url: str, provider: str, workspace: str) -> str:
     parts = repo_url.rstrip("/").split("/")
-    if provider == "github":
+    if provider in ("github", "github_enterprise"):
         return f"{parts[-2]}/{parts[-1]}"
     return parts[-1]   # Bitbucket uses workspace separately
 
 
 def _report_link(request_id: str) -> str:
-    return f"#"   # Phase 3: replace with actual dashboard URL
+    return f"#"   # Replace with actual dashboard URL if hosted
+
+
+# ── Finding collection ────────────────────────────────────────────────────────
+
+def _collect_inline_findings(report: AnalysisReport) -> list[dict]:
+    """
+    Gather all findings that have a file path, normalised to:
+      { file_path, line, severity, category, message }
+
+    line=0 means we know the file but not an exact line — we still include
+    these so they appear as file-level comments rather than being dropped.
+    """
+    findings: list[dict] = []
+
+    def _add(file_path: str, line: int, severity: str, category: str, message: str) -> None:
+        if not file_path:
+            return
+        findings.append({
+            "file_path": file_path.strip(),
+            "line":      max(0, int(line or 0)),
+            "severity":  severity.lower(),
+            "category":  category,
+            "message":   message,
+        })
+
+    # Security
+    for f in (report.security.findings if report.security else []):
+        _add(getattr(f, "file_path", ""),
+             getattr(f, "line_number", 0) or getattr(f, "line", 0),
+             str(getattr(f, "severity", "medium")), "Security",
+             getattr(f, "title", str(f)))
+
+    # Performance
+    for f in (report.performance_impact.findings if report.performance_impact else []):
+        _add(f.file_path, f.line, f.severity, "Performance", f.description)
+
+    # Data privacy
+    for f in (report.data_privacy.pii_findings if report.data_privacy else []):
+        _add(f.file_path, f.line, f.risk_level, "Privacy",
+             f"{f.pii_type.upper()} field — {f.description}")
+
+    # Maintainability
+    for f in (report.maintainability.issues if report.maintainability else []):
+        _add(f.file_path, f.line, f.severity, "Quality", f.description)
+
+    # Observability
+    for f in (report.observability.findings if report.observability else []):
+        _add(f.file_path, f.line, f.severity, "Observability", f.description)
+
+    # Reference impact — annotate direct callers
+    for ref in (report.reference_impact.references if report.reference_impact else [])[:15]:
+        if ref.depth == 1:
+            _add(ref.file_path, ref.line, "low", "Impact",
+                 f"Calls `{ref.symbol}` — this site may be affected by the change")
+
+    # Deduplicate by (file, line, category, first-60-chars of message)
+    seen: set[tuple] = set()
+    deduped = []
+    for f in findings:
+        key = (f["file_path"], f["line"], f["category"], f["message"][:60])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(f)
+
+    return deduped
+
+
+def _group_by_file(findings: list[dict]) -> dict[str, list[dict]]:
+    """
+    Group findings by file_path, sorted by severity (critical first) within each group.
+    """
+    sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    groups: dict[str, list[dict]] = {}
+    for f in findings:
+        groups.setdefault(f["file_path"], []).append(f)
+    for fp in groups:
+        groups[fp].sort(key=lambda x: sev_order.get(x["severity"], 9))
+    return groups
+
+
+def _render_file_comment(file_path: str, findings: list[dict]) -> str:
+    """
+    Render all findings for a single file into one markdown comment block.
+    This becomes the body of a single file-level review comment.
+    """
+    sev_icon = {"critical": "🚨", "high": "🔴", "medium": "🟡", "low": "🔵"}
+    lines = [
+        f"<!-- impact-analyzer-file -->\n### 🔍 CIAA findings — `{file_path}`\n",
+        "| Severity | Category | Line | Finding |",
+        "|---|---|---|---|",
+    ]
+    for f in findings:
+        icon    = sev_icon.get(f["severity"], "ℹ️")
+        line_s  = str(f["line"]) if f["line"] else "—"
+        msg     = f["message"].replace("|", "\\|")
+        lines.append(f"| {icon} **{f['severity']}** | {f['category']} | {line_s} | {msg} |")
+
+    lines.append(f"\n<sub>_CIAA auto-review · {len(findings)} finding(s)_</sub>")
+    return "\n".join(lines)
+
+
+def _render_pr_summary_comment(report: AnalysisReport, file_groups: dict[str, list[dict]]) -> str:
+    """
+    Render the top-level PR comment: overall risk + gate + per-file finding count.
+    This replaces the per-agent summary table with a developer-friendly overview.
+    """
+    gate      = report.gate_decision
+    risk      = report.final_risk
+    gate_icon = {"APPROVE": "✅", "HOLD": "⚠️", "BLOCK": "🚫"}.get(gate.value, "❓")
+    total_findings = sum(len(v) for v in file_groups.values())
+
+    lines = [
+        f"{_BOT_TAG}",
+        f"## {gate_icon} CIAA Impact Analysis — **{gate.value}**",
+        f"",
+        f"> **Risk Level:** `{risk.value.upper()}` &nbsp;·&nbsp; "
+        f"**{total_findings}** finding(s) across **{len(file_groups)}** file(s)",
+        f"",
+    ]
+
+    # Deployment strategy
+    if report.remediation:
+        strategy = getattr(report.remediation, "deployment_strategy", None)
+        if strategy:
+            lines += [f"**Deployment strategy:** `{strategy.value}`", ""]
+
+    # Risk rationale
+    if report.risk and report.risk.rationale:
+        lines += [f"> {report.risk.rationale}", ""]
+
+    # Per-file summary table
+    if file_groups:
+        sev_icon = {"critical": "🚨", "high": "🔴", "medium": "🟡", "low": "🔵"}
+        lines += [
+            "### Files with findings",
+            "",
+            "| File | Findings | Top severity |",
+            "|---|---|---|",
+        ]
+        for fp, flist in sorted(file_groups.items()):
+            top_sev  = flist[0]["severity"]
+            icon     = sev_icon.get(top_sev, "ℹ️")
+            lines.append(f"| `{fp}` | {len(flist)} | {icon} {top_sev} |")
+        lines.append("")
+
+    # Key actions
+    if report.remediation and getattr(report.remediation, "fix_suggestions", []):
+        lines += ["### Top actions", ""]
+        for fix in report.remediation.fix_suggestions[:5]:
+            lines.append(f"- {fix}")
+        lines.append("")
+
+    lines.append(
+        f"<sub>Analysis ID: `{report.request_id}` &nbsp;·&nbsp; "
+        f"[View full report in CIAA dashboard]({_report_link(report.request_id)})</sub>"
+    )
+    return "\n".join(lines)
+
+
+# ── Comment posting ───────────────────────────────────────────────────────────
+
+def post_inline_comments(
+    report:    AnalysisReport,
+    token:     str,
+    provider:  str,
+    workspace: str = "",
+    base_url:  str = "",
+    repo_slug: str = "",
+    pr_id:     str = "",
+) -> int:
+    """
+    Post a grouped file-level comment for every file that has findings, plus
+    one overall PR summary comment at the PR level.
+
+    Strategy per provider
+    ─────────────────────
+    GitHub / GHE
+      • One GitHub PR Review (POST /pulls/{pr}/reviews) containing:
+          - body:     overall summary (replaces the PRCommenter summary comment)
+          - comments: one entry per file, anchored to the first finding's line
+        This is a single API call that posts everything atomically.
+      • Falls back to individual issue-level comments if the Review API fails
+        (e.g. no commit SHA available, or token lacks pull_requests write scope).
+
+    Bitbucket Server
+      1. POST top-level PR comment → overall summary
+      2. POST one anchored comment per file → grouped findings table
+
+    Bitbucket Cloud
+      Same two-step pattern as Bitbucket Server.
+
+    Returns total number of comments successfully posted.
+    """
+    all_findings = _collect_inline_findings(report)
+    file_groups  = _group_by_file(all_findings)
+    summary_body = _render_pr_summary_comment(report, file_groups)
+    api_base     = _normalise_api_url(base_url, provider)
+
+    if not file_groups and not summary_body:
+        return 0
+
+    session = requests.Session()
+    session.timeout = 20
+    posted = 0
+    pid = str(pr_id).replace("#", "") or str(getattr(report.pr, "pr_number", ""))
+
+    # ── GitHub / GitHub Enterprise ────────────────────────────────────────────
+    if provider in ("github", "github_enterprise"):
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept":        "application/vnd.github.v3+json",
+        }
+        slug = repo_slug or _extract_repo_slug(report.repo_url, provider, workspace)
+        if not pid:
+            log.warning("post_inline_comments: no PR id — skipping")
+            return 0
+
+        # ── Scope check — fail fast with a helpful message ────────────────
+        # Classic PATs return X-OAuth-Scopes; fine-grained PATs return nothing
+        # (empty set). We proceed for fine-grained PATs and let the API decide.
+        scopes = _get_github_scopes(token, api_base, session)
+        is_fine_grained = len(scopes) == 0   # no X-OAuth-Scopes header → fine-grained
+        has_write_scope  = bool(scopes & _GH_REQUIRED_SCOPES)
+
+        if scopes and not has_write_scope:
+            # Classic PAT confirmed missing write scope — raise immediately
+            raise InsufficientScopeError(
+                found=scopes,
+                required=_GH_REQUIRED_SCOPES,
+                hint=_GH_SCOPE_HELP,
+            )
+
+        if is_fine_grained:
+            log.info(
+                "GitHub fine-grained PAT detected (no X-OAuth-Scopes header) — "
+                "proceeding; if 403 occurs add 'Pull requests: Read and write' permission."
+            )
+
+        # Fetch PR to get the head commit SHA
+        head_sha = ""
+        try:
+            pr_data  = session.get(f"{api_base}/repos/{slug}/pulls/{pid}", headers=headers)
+            pr_data.raise_for_status()
+            head_sha = pr_data.json().get("head", {}).get("sha", "")
+        except Exception as exc:
+            log.warning("Could not fetch PR head SHA: %s", exc)
+
+        if head_sha and file_groups:
+            # ── Strategy A: single Review call (preferred) ────────────────
+            review_comments = []
+            for fp, flist in file_groups.items():
+                anchor_line = next((f["line"] for f in flist if f["line"] > 0), 1)
+                review_comments.append({
+                    "path":  fp,
+                    "line":  anchor_line,
+                    "side":  "RIGHT",
+                    "body":  _render_file_comment(fp, flist),
+                })
+
+            review_payload = {
+                "commit_id": head_sha,
+                "body":      summary_body,
+                "event":     "COMMENT",
+                "comments":  review_comments,
+            }
+            try:
+                resp = session.post(
+                    f"{api_base}/repos/{slug}/pulls/{pid}/reviews",
+                    headers=headers, json=review_payload,
+                )
+                if resp.status_code in (200, 201):
+                    posted = len(file_groups) + 1
+                    log.info(
+                        "GitHub PR review posted: %d file comment(s) + summary (pid=%s)",
+                        len(file_groups), pid,
+                    )
+                    return posted
+                elif resp.status_code == 403:
+                    err_msg = resp.json().get("message", resp.text[:200])
+                    if is_fine_grained:
+                        raise InsufficientScopeError(
+                            found=set(),
+                            required={"pull_requests: write"},
+                            hint=(
+                                f"Fine-grained PAT error: {err_msg}. "
+                                "Go to GitHub → Settings → Developer settings → "
+                                "Personal access tokens → Fine-grained tokens → "
+                                "your token → Repository permissions → "
+                                "Pull requests → set to 'Read and write'."
+                            ),
+                        )
+                    raise InsufficientScopeError(
+                        found=scopes,
+                        required=_GH_REQUIRED_SCOPES,
+                        hint=f"GitHub returned 403: {err_msg}. {_GH_SCOPE_HELP}",
+                    )
+                else:
+                    log.warning(
+                        "GitHub review API returned %d — falling back to issue comments: %s",
+                        resp.status_code, resp.text[:300],
+                    )
+            except InsufficientScopeError:
+                raise   # propagate to route
+            except Exception as exc:
+                log.warning("GitHub review API failed, falling back to issue comments: %s", exc)
+
+        # ── Strategy B: issue-level comments (fallback when no commit SHA) ─
+        # Summary first
+        try:
+            resp = session.post(
+                f"{api_base}/repos/{slug}/issues/{pid}/comments",
+                headers=headers, json={"body": summary_body},
+            )
+            if resp.status_code == 403:
+                err_msg = resp.json().get("message", resp.text[:150])
+                raise InsufficientScopeError(
+                    found=scopes,
+                    required=_GH_REQUIRED_SCOPES,
+                    hint=f"GitHub returned 403 on issues comment: {err_msg}. {_GH_SCOPE_HELP}",
+                )
+            if resp.status_code in (200, 201):
+                posted += 1
+        except InsufficientScopeError:
+            raise
+        except Exception as exc:
+            log.debug("Summary comment fallback failed: %s", exc)
+
+        # One comment per file
+        for fp, flist in file_groups.items():
+            body = _render_file_comment(fp, flist)
+            try:
+                if head_sha:
+                    anchor = next((f["line"] for f in flist if f["line"] > 0), 1)
+                    payload: dict = {
+                        "body": body, "commit_id": head_sha,
+                        "path": fp, "line": anchor, "side": "RIGHT",
+                    }
+                    resp = session.post(
+                        f"{api_base}/repos/{slug}/pulls/{pid}/comments",
+                        headers=headers, json=payload,
+                    )
+                else:
+                    resp = session.post(
+                        f"{api_base}/repos/{slug}/issues/{pid}/comments",
+                        headers=headers, json={"body": body},
+                    )
+                if resp.status_code in (200, 201):
+                    posted += 1
+                elif resp.status_code == 403:
+                    log.warning("File comment 403 for %s — token may lack write scope", fp)
+                else:
+                    log.debug("File comment failed (%d) for %s: %s",
+                              resp.status_code, fp, resp.text[:200])
+            except Exception as exc:
+                log.debug("File comment error for %s: %s", fp, exc)
+
+    # ── Bitbucket Server ──────────────────────────────────────────────────────
+    elif provider == "bitbucket_server":
+        headers  = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        slug     = repo_slug or _extract_repo_slug(report.repo_url, provider, workspace)
+        proj, repo = (slug.split("/", 1) + [""])[:2] if "/" in slug else (workspace, slug)
+        if not pid:
+            log.warning("post_inline_comments: no PR id for Bitbucket Server")
+            return 0
+        base_pr  = f"{api_base}/projects/{proj}/repos/{repo}/pull-requests/{pid}"
+
+        # 1. Overall summary as top-level PR comment
+        try:
+            resp = session.post(f"{base_pr}/comments", headers=headers,
+                                json={"text": summary_body})
+            if resp.status_code in (200, 201):
+                posted += 1
+                log.info("BB Server: posted PR summary comment (pid=%s)", pid)
+            else:
+                log.warning("BB Server summary comment failed (%d): %s",
+                            resp.status_code, resp.text[:200])
+        except Exception as exc:
+            log.warning("BB Server summary comment error: %s", exc)
+
+        # 2. One anchored comment per file
+        for fp, flist in file_groups.items():
+            anchor_line = next((f["line"] for f in flist if f["line"] > 0), 1)
+            payload = {
+                "text": _render_file_comment(fp, flist),
+                "anchor": {
+                    "line":     anchor_line,
+                    "lineType": "ADDED",
+                    "fileType": "TO",
+                    "path":     fp,
+                },
+            }
+            try:
+                resp = session.post(f"{base_pr}/comments", headers=headers, json=payload)
+                if resp.status_code in (200, 201):
+                    posted += 1
+                else:
+                    log.debug("BB Server file comment failed (%d) for %s: %s",
+                              resp.status_code, fp, resp.text[:200])
+            except Exception as exc:
+                log.debug("BB Server file comment error for %s: %s", fp, exc)
+
+    # ── Bitbucket Cloud ───────────────────────────────────────────────────────
+    elif provider in ("bitbucket", "bitbucket_cloud"):
+        ws      = workspace
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        slug    = repo_slug or _extract_repo_slug(report.repo_url, provider, workspace)
+        if not pid:
+            log.warning("post_inline_comments: no PR id for Bitbucket Cloud")
+            return 0
+        base_pr = f"https://api.bitbucket.org/2.0/repositories/{ws}/{slug}/pullrequests/{pid}"
+
+        # 1. Overall summary as top-level PR comment
+        try:
+            resp = session.post(f"{base_pr}/comments", headers=headers,
+                                json={"content": {"raw": summary_body}})
+            if resp.status_code in (200, 201):
+                posted += 1
+                log.info("BB Cloud: posted PR summary comment (pid=%s)", pid)
+            else:
+                log.warning("BB Cloud summary comment failed (%d): %s",
+                            resp.status_code, resp.text[:200])
+        except Exception as exc:
+            log.warning("BB Cloud summary comment error: %s", exc)
+
+        # 2. One anchored comment per file
+        for fp, flist in file_groups.items():
+            anchor_line = next((f["line"] for f in flist if f["line"] > 0), 1)
+            payload = {
+                "content": {"raw": _render_file_comment(fp, flist)},
+                "inline":  {"to": anchor_line, "path": fp},
+            }
+            try:
+                resp = session.post(f"{base_pr}/comments", headers=headers, json=payload)
+                if resp.status_code in (200, 201):
+                    posted += 1
+                else:
+                    log.debug("BB Cloud file comment failed (%d) for %s: %s",
+                              resp.status_code, fp, resp.text[:200])
+            except Exception as exc:
+                log.debug("BB Cloud file comment error for %s: %s", fp, exc)
+
+    log.info(
+        "post_inline_comments: posted %d comment(s) covering %d file(s) + summary",
+        posted, len(file_groups),
+    )
+    return posted
 
 
 # ── Factory ────────────────────────────────────────────────────────────────────

@@ -198,8 +198,11 @@ class ReferenceImpactAgent(BaseAgent[ReferenceImpactResult]):
                 llm_result.high_impact_files = static.high_impact_files
             llm_result.fallback_used = False
             return llm_result
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning(
+                "[%s] reference_impact LLM enhancement failed, using static result: %s",
+                request.request_id, exc,
+            )
 
         # Return static result
         return static

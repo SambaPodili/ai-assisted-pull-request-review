@@ -27,35 +27,13 @@ import re
 import time
 import logging
 
-from pydantic import BaseModel
-
-from core.models import AgentName, AnalysisRequest, AgentResultBase
+from core.models import (
+    AgentName, AnalysisRequest, AgentResultBase,
+    LicenseFinding, LicenseComplianceResult,
+)
 from agents.base_agent import BaseAgent
 
 log = logging.getLogger(__name__)
-
-
-# ── Output models ─────────────────────────────────────────────────────────────
-
-class LicenseFinding(BaseModel):
-    package: str
-    detected_license: str = "unknown"
-    risk_level: str       # "low"|"medium"|"high"|"critical"
-    description: str
-    file_path: str = ""
-
-
-class LicenseComplianceResult(AgentResultBase):
-    findings: list[LicenseFinding] = []
-    has_copyleft: bool = False
-    has_license_conflict: bool = False
-    packages_reviewed: int = 0
-    overall_risk: str = "low"
-    summary: str = ""
-    fallback_used: bool = False
-    token_usage: int = 0
-    model_used: str = ""
-    duration_s: float = 0.0
 
 
 # ── Known license keyword maps ────────────────────────────────────────────────

@@ -3,6 +3,7 @@ api/routes/git_proxy.py - Backend proxy for Git providers (fixes CORS for Bitbuc
 """
 from __future__ import annotations
 import base64, logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import quote
 import requests
 from fastapi import APIRouter, HTTPException
@@ -13,13 +14,15 @@ router = APIRouter(prefix="/api/v1/git", tags=["git-proxy"])
 TIMEOUT = 20
 
 class GitConfig(BaseModel):
-    provider:  str             # github | github_enterprise | bitbucket_cloud | bitbucket_server
-    base_url:  str = ""
-    auth_mode: str = "token"   # token | basic
-    token:     str = ""
-    username:  str = ""
-    password:  str = ""
-    workspace: str = ""
+    provider:    str           # github | github_enterprise | bitbucket_cloud | bitbucket_server
+    base_url:    str = ""
+    auth_mode:   str = "token" # token | basic
+    token:       str = ""
+    username:    str = ""
+    password:    str = ""
+    workspace:   str = ""      # Bitbucket Cloud workspace slug
+    project_key: str = ""      # Bitbucket Server: optional project key (e.g. "BANK")
+                               # If blank, repos are fetched for ALL projects
 
 def _headers(cfg: GitConfig) -> dict:
     h = {"Content-Type": "application/json", "Accept": "application/json"}
@@ -72,9 +75,85 @@ async def verify_credentials(cfg: GitConfig):
         d = _get("https://api.bitbucket.org/2.0/user", h)
         return {"ok": True, "login": d.get("username", d.get("nickname","")), "name": d.get("display_name","")}
 
+# ── Bitbucket Server helpers ─────────────────────────────────────────────────
+
+def _bb_list_all_projects(base: str, h: dict) -> list[dict]:
+    """Paginate through all projects on a Bitbucket Server instance."""
+    projects = []
+    start = 0
+    while True:
+        d = _get(f"{base}/projects", h, {"limit": 100, "start": start})
+        for p in d.get("values", []):
+            projects.append({
+                "key":         p.get("key", ""),
+                "name":        p.get("name", ""),
+                "description": p.get("description", ""),
+                "type":        p.get("type", "NORMAL"),
+            })
+        if d.get("isLastPage", True):
+            break
+        start = d.get("nextPageStart", start + 100)
+    return projects
+
+
+def _bb_repos_for_project(base: str, h: dict, project_key: str, limit: int = 300) -> list[dict]:
+    """Paginate through all repos in one Bitbucket Server project."""
+    repos = []
+    start = 0
+    while len(repos) < limit:
+        d = _get(
+            f"{base}/projects/{project_key}/repos",
+            h,
+            {"limit": 100, "start": start},
+        )
+        for r in d.get("values", []):
+            repos.append(_normalise_bb_server_repo(r, project_key))
+        if d.get("isLastPage", True):
+            break
+        start = d.get("nextPageStart", start + 100)
+    return repos
+
+
+def _normalise_bb_server_repo(r: dict, project_key: str = "") -> dict:
+    proj = r.get("project", {})
+    key  = project_key or proj.get("key", "")
+    slug = r.get("slug", "")
+    return {
+        "full_name":   f"{key}/{slug}",
+        "name":        r.get("name", slug),
+        "slug":        slug,
+        "project":     key,
+        "description": r.get("description", ""),
+        "language":    None,
+        # Clone URLs — handy for auto-clone reference search
+        "clone_urls": {
+            lnk.get("name"): lnk.get("href")
+            for lnk in r.get("links", {}).get("clone", [])
+        },
+    }
+
+
+# ── List projects (Bitbucket Server only) ─────────────────────────────────────
+
+@router.post("/projects")
+async def list_projects(cfg: GitConfig):
+    """
+    Return all projects visible to the authenticated user on Bitbucket Server.
+    For other providers returns an empty list.
+    """
+    if cfg.provider != "bitbucket_server":
+        return {"projects": [], "count": 0}
+    h = _headers(cfg)
+    projects = _bb_list_all_projects(_bb_server_base(cfg), h)
+    return {"projects": projects, "count": len(projects)}
+
+
+# ── List repos ────────────────────────────────────────────────────────────────
+
 @router.post("/repos")
 async def list_repos(cfg: GitConfig):
     h = _headers(cfg); repos = []
+
     if cfg.provider in ("github", "github_enterprise"):
         page = 1
         while len(repos) < 300:
@@ -82,19 +161,47 @@ async def list_repos(cfg: GitConfig):
             repos.extend(d if isinstance(d, list) else [])
             if not d or len(d) < 100: break
             page += 1
+
     elif cfg.provider == "bitbucket_server":
-        start = 0
-        while len(repos) < 300:
-            d = _get(f"{_bb_server_base(cfg)}/repos", h, {"limit":100,"start":start})
-            for r in d.get("values",[]):
-                proj = r.get("project",{})
-                repos.append({"full_name":f"{proj.get('key','')}/{r.get('slug','')}","name":r.get("name",r.get("slug","")),"slug":r.get("slug",""),"project":proj.get("key",""),"description":r.get("description",""),"language":None})
-            if d.get("isLastPage",True): break
-            start = d.get("nextPageStart", start+100)
+        base = _bb_server_base(cfg)
+        key  = (cfg.project_key or cfg.workspace or "").strip().upper()
+
+        if key:
+            # ── Fast path: single project ──────────────────────────────────
+            log.info("BB Server: fetching repos for project %s", key)
+            repos = _bb_repos_for_project(base, h, key)
+        else:
+            # ── Fan-out: all projects → all repos ──────────────────────────
+            log.info("BB Server: no project key — fetching all projects first")
+            projects = _bb_list_all_projects(base, h)
+            log.info("BB Server: found %d projects — fetching repos in parallel", len(projects))
+
+            # Fetch each project's repos concurrently (up to 10 threads)
+            MAX_REPOS = 500
+            def _fetch_project(proj_key: str) -> list[dict]:
+                try:
+                    return _bb_repos_for_project(base, h, proj_key, limit=100)
+                except Exception as exc:
+                    log.warning("BB Server: failed to fetch repos for %s: %s", proj_key, exc)
+                    return []
+
+            with ThreadPoolExecutor(max_workers=min(10, len(projects) or 1)) as pool:
+                futures = {pool.submit(_fetch_project, p["key"]): p["key"] for p in projects}
+                for future in as_completed(futures):
+                    repos.extend(future.result())
+                    if len(repos) >= MAX_REPOS:
+                        break
+
+            repos = repos[:MAX_REPOS]
+            log.info("BB Server: collected %d repos across %d projects", len(repos), len(projects))
+
     else:
-        ws = cfg.workspace; url = f"https://api.bitbucket.org/2.0/repositories/{ws}?pagelen=100&sort=-updated_on"
+        # Bitbucket Cloud
+        ws  = cfg.workspace
+        url = f"https://api.bitbucket.org/2.0/repositories/{ws}?pagelen=100&sort=-updated_on"
         while url and len(repos) < 300:
             d = _get(url, h); repos.extend(d.get("values",[])); url = d.get("next","")
+
     return {"repos": repos, "count": len(repos)}
 
 @router.post("/prs/{repo_slug:path}")

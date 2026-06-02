@@ -447,13 +447,15 @@ h1, h2, h3 { font-family: 'Instrument Serif', serif; }
 // ── State ────────────────────────────────────────────────────────────────────
 const state = {
   step: 0,
+  analysisRequested: false,   // true only after user explicitly clicks "Run Analysis"
   // Provider: github | github_enterprise | bitbucket | bitbucket_server
   provider: localStorage.getItem('provider') || 'github',
   authMode: localStorage.getItem('authMode') || 'token',
   token: localStorage.getItem('token') || '',
   username: localStorage.getItem('username') || '',
   password: '',  // never persisted
-  workspace: localStorage.getItem('workspace') || '',
+  workspace:  localStorage.getItem('workspace')   || '',
+  projectKey: localStorage.getItem('projectKey')  || '',  // Bitbucket Server project key (optional)
   baseUrl: localStorage.getItem('baseUrl') || '',  // enterprise/server base URL
   useProxy: true,  // always use backend proxy (solves CORS for all providers)
   userInfo: null,
@@ -509,7 +511,7 @@ const AGENT_ORDER = [
 ];
 
 function saveState() {
-  ['provider','authMode','token','username','workspace','baseUrl',
+  ['provider','authMode','token','username','workspace','projectKey','baseUrl',
    'modelProvider','modelName','modelApiKey','modelBaseUrl','modelApiVer',
    'backendUrl','backendKey'].forEach(k => {
     if(state[k] !== undefined && state[k] !== null) localStorage.setItem(k, state[k]);
@@ -530,6 +532,8 @@ function showView(name) {
   document.getElementById('footer-bar').style.display = (idx >= 0 && idx < 3) ? 'flex' : 'none';
   updateTopbar(name);
   renderView(name);
+  // Update footer button label after render so it reflects the new active step
+  setTimeout(updateNextButton, 0);
 }
 
 function updateTopbar(name) {
@@ -550,11 +554,17 @@ function goNext() {
   const views = STEP_VIEWS;
   const cur = views.findIndex(v => document.getElementById('view-'+v).style.display !== 'none');
   if(cur === 2) {
-    // Validate target selection before advancing
-    if(!canProceedFromTarget()) { alert('Please select a pull request, branch pair, or commit SHA first.'); return; }
+    // Target step — validate then explicitly request analysis
+    if(!canProceedFromTarget()) {
+      alert('Please select a pull request, branch pair, or commit SHA first.');
+      return;
+    }
+    state.report             = null;
+    state.analysisRequested  = true;   // ← explicit intent: run the analysis
+    showView('results');
+    return;
   }
   if(cur < 2) showView(views[cur+1]);
-  else if(cur === 2) { state.report = null; showView('results'); }
 }
 
 // ── Render views ─────────────────────────────────────────────────────────────
@@ -710,11 +720,24 @@ function renderConfigure(el) {
           </div>
         </div>`}
 
-        ${isBB ? `
+        ${isBB && isEnt ? `
+        <div style="margin-bottom:14px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+            <label style="margin:0">Project Key <span style="font-weight:400;color:#7a8494">(optional)</span></label>
+            <button onclick="browseBBProjects()" style="margin-left:auto;font-size:11px;padding:3px 10px;border:1px solid #c5d8fb;background:#eff5ff;color:#1a56db;border-radius:6px;cursor:pointer">
+              <i class="ti ti-folder-search"></i> Browse projects
+            </button>
+          </div>
+          <input id="bb-project-key-input" type="text" value="${esc(state.projectKey)}"
+            oninput="state.projectKey=this.value.toUpperCase();saveState()"
+            placeholder="e.g. BANK — leave blank to load all projects &amp; repos"/>
+          <div class="field-hint">Enter a project key to load only its repos, or leave blank to fetch all projects and their repos.</div>
+          <div id="bb-project-list" style="display:none;margin-top:8px;max-height:200px;overflow-y:auto;border:1px solid #e8eaed;border-radius:8px;background:#fff"></div>
+        </div>` : isBB ? `
         <div class="field-group" style="margin-bottom:14px">
-          <label>${isEnt ? 'Project key / Workspace' : 'Workspace slug'} <span style="font-weight:400;color:#7a8494">(optional)</span></label>
-          <input type="text" value="${esc(state.workspace)}" oninput="state.workspace=this.value;saveState()" placeholder="${isEnt ? 'MYPROJECT' : 'my-workspace'}"/>
-          <div class="field-hint">${isEnt ? 'Bitbucket Server project key (e.g. BANK). Leave blank to list all accessible repos.' : 'Your workspace slug from bitbucket.org/<strong>workspace</strong>/'}</div>
+          <label>Workspace slug</label>
+          <input type="text" value="${esc(state.workspace)}" oninput="state.workspace=this.value;saveState()" placeholder="my-workspace"/>
+          <div class="field-hint">Your workspace slug from bitbucket.org/<strong>workspace</strong>/</div>
         </div>` : ''}
 
         <div id="auth-msg" style="margin-bottom:10px"></div>
@@ -828,47 +851,150 @@ function updateConnIndicator(ok, name) {
 
 // ── REPOS ────────────────────────────────────────────────────────────────────
 function renderRepos(el) {
-  const hasRepos = state.repos.length > 0;
+  const hasRepos  = state.repos.length > 0;
+  const isBBSrv   = state.provider === 'bitbucket_server';
+  const projKey   = state.projectKey || '';
+  const scopeHint = isBBSrv
+    ? (projKey
+        ? `<span style="background:#e8f5e9;color:#1b5e20;border-radius:5px;padding:2px 8px;font-size:11px;font-weight:600;margin-left:8px">📁 ${escHtml(projKey)}</span>`
+        : `<span style="background:#fff7ed;color:#92400e;border-radius:5px;padding:2px 8px;font-size:11px;font-weight:600;margin-left:8px">All projects</span>`)
+    : '';
+
   el.innerHTML = stepsHtml(1) + `
   ${!state.userInfo ? `<div class="err-msg"><i class="ti ti-alert-circle"></i>Please connect your provider first.</div>` : ''}
   <div class="card">
-    <div class="card-title"><i class="ti ti-git-branch"></i>Primary repository <span style="margin-left:auto">${state.primaryRepo ? `<span class="badge badge-green"><i class="ti ti-check"></i>${repoName(state.primaryRepo)}</span>` : ''}</span></div>
+    <div class="card-title">
+      <i class="ti ti-git-branch"></i>Primary repository ${scopeHint}
+      <span style="margin-left:auto">${state.primaryRepo ? `<span class="badge badge-green"><i class="ti ti-check"></i>${repoName(state.primaryRepo)}</span>` : ''}</span>
+    </div>
     <div class="info-msg"><i class="ti ti-info-circle"></i>Click a repository to set it as the primary impact analysis target.</div>
-    <div class="search-wrap"><i class="ti ti-search" aria-hidden="true"></i><input type="text" id="repo-search" placeholder="Search repositories..." oninput="filterRepos()" /></div>
+    ${isBBSrv ? `
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+      <div class="search-wrap" style="flex:1;min-width:160px;margin-bottom:0"><i class="ti ti-search"></i><input type="text" id="repo-search" placeholder="Search repositories..." oninput="filterRepos()"/></div>
+      <input id="bb-project-filter" type="text" value="${esc(projKey)}" placeholder="Project key (e.g. BANK)"
+        style="width:160px;border:1.5px solid #e8eaed;border-radius:8px;padding:6px 10px;font-size:12px"
+        oninput="state.projectKey=this.value.toUpperCase();saveState()"
+        onkeydown="if(event.key==='Enter')reloadRepos()"/>
+      <button onclick="reloadRepos()" style="padding:6px 14px;border:1.5px solid #c5d8fb;background:#eff5ff;color:#1a56db;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600">
+        <i class="ti ti-reload"></i> Load
+      </button>
+      <button onclick="browseBBProjectsInline()" style="padding:6px 14px;border:1.5px solid #e8eaed;background:#f7f8fa;color:#3d4652;border-radius:8px;cursor:pointer;font-size:12px">
+        <i class="ti ti-folder-search"></i> Browse
+      </button>
+    </div>
+    <div id="bb-inline-project-list"></div>` : `
+    <div class="search-wrap"><i class="ti ti-search" aria-hidden="true"></i><input type="text" id="repo-search" placeholder="Search repositories..." oninput="filterRepos()"/></div>`}
     <div id="repo-load-status">${!hasRepos && state.userInfo ? '<div class="empty-state"><span class="spinner" style="width:24px;height:24px"></span><div style="margin-top:12px">Loading repositories...</div></div>' : ''}</div>
-    <div class="repo-grid" id="primary-grid">${hasRepos ? renderRepoGrid(state.repos, 'primary') : ''}</div>
+    <div id="primary-grid">${hasRepos ? renderRepoGridGrouped(state.repos, 'primary') : ''}</div>
   </div>
 
   <div class="card">
     <div class="card-title"><i class="ti ti-topology-star-3"></i>Connected applications <span style="font-size:11px;font-weight:400;color:#7a8494;margin-left:4px">multi-repo blast radius</span></div>
     <div class="info-msg"><i class="ti ti-info-circle"></i>Select additional repos that call or depend on the primary. Their APIs and dependencies will be included in the analysis.</div>
     <div class="chips" id="connected-chips">${renderChips()}</div>
-    <div class="repo-grid" id="connected-grid">${hasRepos ? renderRepoGrid(state.repos.filter(r => repoName(r) !== (state.primaryRepo ? repoName(state.primaryRepo) : '')), 'connected') : ''}</div>
+    <div id="connected-grid">${hasRepos ? renderRepoGridGrouped(state.repos.filter(r => repoName(r) !== (state.primaryRepo ? repoName(state.primaryRepo) : '')), 'connected') : ''}</div>
   </div>`;
 
   if(!hasRepos && state.userInfo) loadRepos();
+}
+
+async function reloadRepos() {
+  state.repos = [];
+  renderView('repos');
+  await loadRepos();
+}
+
+async function browseBBProjectsInline() {
+  const el = document.getElementById('bb-inline-project-list');
+  if (!el) return;
+  el.innerHTML = '<div style="padding:8px;color:#7a8494;font-size:12px"><span class="spinner" style="width:14px;height:14px;display:inline-block;vertical-align:middle;margin-right:6px"></span>Loading projects…</div>';
+  try {
+    const d = await _proxyPost('/api/v1/git/projects', _gitConfig());
+    const projects = d.projects || [];
+    if (!projects.length) {
+      el.innerHTML = '<div style="padding:8px;color:#7a8494;font-size:12px">No projects found.</div>';
+      return;
+    }
+    el.innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:6px;padding:6px 0 10px">` +
+      projects.map(p => `
+        <div onclick="selectBBProjectAndReload('${escHtml(p.key)}')"
+             style="border:1.5px solid #e8eaed;border-radius:8px;padding:7px 12px;cursor:pointer;transition:all .15s;background:#fff;min-width:100px"
+             onmouseover="this.style.borderColor='#1a56db';this.style.background='#eff5ff'"
+             onmouseout="this.style.borderColor='#e8eaed';this.style.background='#fff'">
+          <div style="font-weight:700;font-size:12px;color:#1a2332">📁 ${escHtml(p.key)}</div>
+          <div style="font-size:10px;color:#7a8494;margin-top:2px">${escHtml(p.name)}</div>
+        </div>`).join('') +
+      `<div onclick="selectBBProjectAndReload('')"
+            style="border:1.5px dashed #e8eaed;border-radius:8px;padding:7px 12px;cursor:pointer;transition:all .15s;background:#fff"
+            onmouseover="this.style.borderColor='#f59e0b';this.style.background='#fffbeb'"
+            onmouseout="this.style.borderColor='#e8eaed';this.style.background='#fff'">
+         <div style="font-weight:600;font-size:12px;color:#92400e">🔍 All projects</div>
+         <div style="font-size:10px;color:#7a8494;margin-top:2px">Load all repos</div>
+       </div>` +
+      `</div>`;
+  } catch(e) {
+    el.innerHTML = `<div style="padding:8px;color:#b91c1c;font-size:12px">Error: ${escHtml(e.message)}</div>`;
+  }
+}
+
+function selectBBProjectAndReload(key) {
+  state.projectKey = key;
+  saveState();
+  const inp = document.getElementById('bb-project-filter');
+  if (inp) inp.value = key;
+  const el = document.getElementById('bb-inline-project-list');
+  if (el) el.innerHTML = '';
+  reloadRepos();
 }
 
 function renderChips() {
   return state.connectedRepos.map(r => `<div class="chip"><i class="ti ti-git-branch" style="font-size:12px"></i>${shortName(r)}<button onclick="removeConnected('${repoName(r)}')"><i class="ti ti-x"></i></button></div>`).join('');
 }
 
+function _repoTileHtml(r, mode) {
+  const n         = repoName(r);
+  const isPrimary = state.primaryRepo && repoName(state.primaryRepo) === n;
+  const isConn    = state.connectedRepos.some(x => repoName(x) === n);
+  const cls       = isPrimary ? 'primary' : isConn ? 'connected' : '';
+  const lang      = repoLang(r);
+  return `<div class="repo-tile ${cls}" onclick="selectRepo('${n}','${mode}')">
+    <div class="repo-tile-name" title="${n}">${shortName(r)}</div>
+    <div class="repo-tile-meta">
+      ${lang ? `<span class="lang-dot" style="background:${LANG_COLORS[lang]||'#4a5b7a'}"></span><span>${lang}</span>` : ''}
+      ${isPrimary ? '<span class="badge badge-green" style="font-size:10px;padding:1px 5px">primary</span>' : ''}
+      ${isConn    ? '<span class="badge badge-blue"  style="font-size:10px;padding:1px 5px">+</span>' : ''}
+    </div>
+  </div>`;
+}
+
 function renderRepoGrid(repos, mode) {
-  return repos.slice(0, 80).map(r => {
-    const n = repoName(r);
-    const isPrimary = state.primaryRepo && repoName(state.primaryRepo) === n;
-    const isConn = state.connectedRepos.some(x => repoName(x) === n);
-    let cls = isPrimary ? 'primary' : isConn ? 'connected' : '';
-    const lang = repoLang(r);
-    return `<div class="repo-tile ${cls}" onclick="selectRepo('${n}','${mode}')">
-      <div class="repo-tile-name" title="${n}">${shortName(r)}</div>
-      <div class="repo-tile-meta">
-        ${lang ? `<span class="lang-dot" style="background:${LANG_COLORS[lang]||'#4a5b7a'}"></span><span>${lang}</span>` : ''}
-        ${isPrimary ? '<span class="badge badge-green" style="font-size:10px;padding:1px 5px">primary</span>' : ''}
-        ${isConn ? '<span class="badge badge-blue" style="font-size:10px;padding:1px 5px">+</span>' : ''}
+  return `<div class="repo-grid">${repos.slice(0, 80).map(r => _repoTileHtml(r, mode)).join('')}</div>`;
+}
+
+function renderRepoGridGrouped(repos, mode) {
+  const isBBSrv = state.provider === 'bitbucket_server';
+  if (!isBBSrv) return renderRepoGrid(repos, mode);
+
+  // Group by project key
+  const groups = {};
+  repos.slice(0, 200).forEach(r => {
+    const proj = r.project || r.full_name?.split('/')[0] || 'OTHER';
+    if (!groups[proj]) groups[proj] = [];
+    groups[proj].push(r);
+  });
+
+  const projectKeys = Object.keys(groups).sort();
+  if (projectKeys.length <= 1) return renderRepoGrid(repos, mode);  // no grouping needed
+
+  return projectKeys.map(proj => `
+    <div style="margin-bottom:14px">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+        <span style="font-size:13px">📁</span>
+        <span style="font-weight:700;font-size:12px;color:#1a2332;letter-spacing:.04em">${escHtml(proj)}</span>
+        <span style="font-size:10px;color:#9fadbf;margin-left:2px">${groups[proj].length} repo${groups[proj].length!==1?'s':''}</span>
       </div>
-    </div>`;
-  }).join('');
+      <div class="repo-grid">${groups[proj].map(r => _repoTileHtml(r, mode)).join('')}</div>
+    </div>`).join('');
 }
 
 function selectRepo(name, mode) {
@@ -897,10 +1023,10 @@ function selectRepo(name, mode) {
 function removeConnected(name) { state.connectedRepos = state.connectedRepos.filter(x => repoName(x) !== name); renderView('repos'); }
 
 function filterRepos() {
-  const q = document.getElementById('repo-search').value.toLowerCase();
-  const filtered = state.repos.filter(r => repoName(r).toLowerCase().includes(q));
-  document.getElementById('primary-grid').innerHTML = renderRepoGrid(filtered, 'primary');
-  document.getElementById('connected-grid').innerHTML = renderRepoGrid(filtered.filter(r => !state.primaryRepo || repoName(r) !== repoName(state.primaryRepo)), 'connected');
+  const q = (document.getElementById('repo-search')?.value || '').toLowerCase();
+  const filtered = q ? state.repos.filter(r => repoName(r).toLowerCase().includes(q) || (r.project||'').toLowerCase().includes(q)) : state.repos;
+  document.getElementById('primary-grid').innerHTML   = renderRepoGridGrouped(filtered, 'primary');
+  document.getElementById('connected-grid').innerHTML = renderRepoGridGrouped(filtered.filter(r => !state.primaryRepo || repoName(r) !== repoName(state.primaryRepo)), 'connected');
 }
 
 // Shared proxy helper - all git API calls go through backend proxy (no CORS)
@@ -1185,11 +1311,28 @@ function selectPR(id) {
 // ── TARGET ───────────────────────────────────────────────────────────────────
 
 function updateNextButton() {
-  const btn = document.getElementById('btn-next');
+  const btn  = document.getElementById('btn-next');
   if(!btn) return;
-  const ok = canProceedFromTarget();
-  btn.disabled = !ok;
-  btn.title = ok ? '' : 'Select a PR, branch pair, or commit SHA first';
+
+  // Determine which step is currently visible
+  const cur = STEP_VIEWS.findIndex(v => document.getElementById('view-'+v)?.style.display !== 'none');
+
+  if(cur === 2) {
+    // Target step — button becomes "Run Analysis"
+    const ok = canProceedFromTarget();
+    btn.disabled = !ok;
+    btn.innerHTML = '<i class="ti ti-player-play"></i> Run Analysis';
+    btn.title = ok ? 'Fetch diff and run all 20 agents' : 'Select a PR, branch pair, or commit SHA first';
+    btn.style.background = ok ? '#059669' : '';
+    btn.style.borderColor = ok ? '#059669' : '';
+  } else {
+    // Other steps — normal "Continue" label
+    btn.disabled = false;
+    btn.innerHTML = 'Continue <i class="ti ti-arrow-right"></i>';
+    btn.title = '';
+    btn.style.background = '';
+    btn.style.borderColor = '';
+  }
 }
 
 function canProceedFromTarget() {
@@ -1202,6 +1345,35 @@ function canProceedFromTarget() {
 // ── RESULTS ──────────────────────────────────────────────────────────────────
 function renderResults(el) {
   if(!state.report) {
+    if(!state.analysisRequested) {
+      // User navigated here without explicitly requesting an analysis
+      // (e.g. clicked Results sidebar item directly) — show an idle state
+      const hasTarget = canProceedFromTarget();
+      el.innerHTML = `
+      <div style="max-width:560px;margin:60px auto;text-align:center;padding:0 20px">
+        <div style="font-size:56px;margin-bottom:16px">🔬</div>
+        <div style="font-size:22px;font-weight:700;color:#0d1117;margin-bottom:8px">No analysis running</div>
+        <div style="font-size:14px;color:#7a8494;margin-bottom:28px;line-height:1.6">
+          ${hasTarget
+            ? 'An analysis target is selected and ready. Click <strong>Run Analysis</strong> to start.'
+            : 'Select a pull request, branch diff, or commit on the <strong>Analysis target</strong> screen, then click <strong>Run Analysis</strong>.'}
+        </div>
+        <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+          ${hasTarget
+            ? `<button class="btn btn-primary" style="font-size:14px;padding:10px 24px" onclick="state.analysisRequested=true;renderView('results')">
+                 <i class="ti ti-player-play"></i> Run Analysis
+               </button>`
+            : ''}
+          <button class="btn" style="font-size:14px;padding:10px 24px" onclick="showView('target')">
+            <i class="ti ti-target"></i> Go to Analysis target
+          </button>
+        </div>
+      </div>`;
+      return;
+    }
+
+    // Analysis was explicitly requested — show running state
+    state.analysisRequested = false;   // consume the flag so Back+re-enter stays idle
     el.innerHTML = `
     <div style="max-width:700px;margin:0 auto;padding:20px 0">
       <!-- Header -->
@@ -1368,6 +1540,7 @@ function renderResults(el) {
       <button class="tab" data-tab="quality"     onclick="switchResultTab('quality')">🔧 Quality</button>
       <div class="tab-sep"></div>
       <span class="tab-group-label">Actions</span>
+      <button class="tab" data-tab="checklist"   onclick="switchResultTab('checklist')">✅ Checklist</button>
       <button class="tab" data-tab="remediation" onclick="switchResultTab('remediation')">Remediation</button>
       <button class="tab" data-tab="timings"     onclick="switchResultTab('timings')">⏱ Timings</button>
     </div>
@@ -1377,14 +1550,56 @@ function renderResults(el) {
     <div id="judge-panel-results"></div>
     <div id="review-summary-panel"></div>
 
+    <!-- PR Description modal -->
+    <div id="pr-desc-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;align-items:center;justify-content:center">
+      <div style="background:#fff;border-radius:14px;width:min(720px,95vw);max-height:80vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.25)">
+        <div style="padding:18px 22px;border-bottom:1px solid #f0f2f5;display:flex;align-items:center;gap:10px">
+          <span style="font-size:18px">📋</span>
+          <strong style="font-size:15px">PR Description</strong>
+          <span style="font-size:11px;color:#7a8494;margin-left:4px">Copy and paste into your PR</span>
+          <button onclick="document.getElementById('pr-desc-modal').style.display='none'" style="margin-left:auto;border:none;background:none;font-size:20px;cursor:pointer;color:#7a8494">✕</button>
+        </div>
+        <div style="flex:1;overflow-y:auto;padding:18px 22px">
+          <textarea id="pr-desc-text" style="width:100%;height:400px;font-family:monospace;font-size:12px;border:1px solid #e8eaed;border-radius:8px;padding:12px;resize:vertical;line-height:1.6" readonly></textarea>
+        </div>
+        <div style="padding:14px 22px;border-top:1px solid #f0f2f5;display:flex;gap:10px">
+          <button onclick="copyPRDescription()" class="btn btn-primary"><i class="ti ti-copy"></i> Copy to clipboard</button>
+          <button onclick="document.getElementById('pr-desc-modal').style.display='none'" class="btn">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Keyboard shortcuts hint -->
+    <div id="kb-hint" style="display:none;position:fixed;bottom:20px;right:20px;background:#1a2332;color:#fff;border-radius:10px;padding:14px 18px;font-size:11px;z-index:8000;line-height:1.8;box-shadow:0 4px 20px rgba(0,0,0,.3)">
+      <div style="font-weight:700;margin-bottom:6px">⌨️ Keyboard shortcuts</div>
+      <div><kbd style="background:#2d3f55;padding:1px 5px;border-radius:3px">← →</kbd> Previous / next tab</div>
+      <div><kbd style="background:#2d3f55;padding:1px 5px;border-radius:3px">1-9</kbd> Jump to tab by number</div>
+      <div><kbd style="background:#2d3f55;padding:1px 5px;border-radius:3px">P</kbd> Generate PR description</div>
+      <div><kbd style="background:#2d3f55;padding:1px 5px;border-radius:3px">C</kbd> Load reviewer checklist</div>
+      <div><kbd style="background:#2d3f55;padding:1px 5px;border-radius:3px">?</kbd> Toggle this help</div>
+      <button onclick="document.getElementById('kb-hint').style.display='none'" style="margin-top:8px;width:100%;border:1px solid #2d3f55;background:none;color:#9fadbf;border-radius:6px;padding:4px;cursor:pointer;font-size:11px">Close</button>
+    </div>
+
     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-top:16px">
-      <button class="btn btn-primary" onclick="toggleReviewSummary()" id="btn-review-summary">
-        <i class="ti ti-clipboard-text"></i>Review Summary
-      </button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-primary" onclick="toggleReviewSummary()" id="btn-review-summary">
+          <i class="ti ti-clipboard-text"></i>Review Summary
+        </button>
+        <button class="btn" onclick="showPRDescription()" title="Generate a PR description to paste into GitHub/Bitbucket">
+          <i class="ti ti-file-description"></i>PR Description
+        </button>
+        <button class="btn" onclick="switchResultTab('checklist')" title="Open structured reviewer checklist">
+          <i class="ti ti-list-check"></i>Checklist
+        </button>
+        <button class="btn" onclick="postPRComments()" title="Post findings as inline PR comments">
+          <i class="ti ti-message-2-code"></i>Post to PR
+        </button>
+      </div>
       <div style="display:flex;align-items:center;gap:10px">
         <button class="btn" onclick="resetAnalysis()"><i class="ti ti-plus"></i>New analysis</button>
         <button class="btn" onclick="runJudgePanel()" id="btn-judge" title="Evaluate analysis quality with multiple LLM judges"><i class="ti ti-gavel"></i>Judge panel</button>
         <button class="btn" onclick="submitToBackend()"><i class="ti ti-upload"></i>Submit to backend</button>
+        <button class="btn" onclick="document.getElementById('kb-hint').style.display='flex'" title="Keyboard shortcuts" style="padding:7px 10px"><i class="ti ti-keyboard"></i></button>
       </div>
     </div>
   `;
@@ -2025,8 +2240,403 @@ function renderResultTab(tab, r) {
     </div>` : `<div class="card"><div class="empty-state"><i class="ti ti-list-search"></i>No call-site references found.<br><span style="font-size:12px;color:#9fadbf">Set REPO_LOCAL_PATH to a local clone for full grep-based search.</span></div></div>`}`;
   }
 
+  if (tab === 'checklist') return renderChecklistTab(r);
+
   return '';
 }
+
+// ── Reviewer Checklist ────────────────────────────────────────────────────────
+
+function renderChecklistTab(r) {
+  const statusIcon  = { pass:'✅', warn:'⚠️', fail:'❌', skip:'⬜' };
+  const statusColor = { pass:'#166534', warn:'#92400e', fail:'#991b1b', skip:'#9fadbf' };
+  const statusBg    = { pass:'#f0fdf4', warn:'#fffbeb', fail:'#fff1f2', skip:'#f9fafb' };
+
+  const domains = {
+    security:      { icon:'🔒', label:'Security' },
+    privacy:       { icon:'🔐', label:'Data Privacy' },
+    performance:   { icon:'🚀', label:'Performance' },
+    testing:       { icon:'🧪', label:'Test Coverage' },
+    interface:     { icon:'🔌', label:'API Contract' },
+    schema:        { icon:'🗄',  label:'Database Schema' },
+    license:       { icon:'⚖️', label:'Licence Compliance' },
+    deployment:    { icon:'🚀', label:'Deployment Risk' },
+    observability: { icon:'📊', label:'Observability' },
+  };
+
+  // Build checklist from local report data (no backend call needed)
+  const items = _buildLocalChecklist(r);
+  const pass  = items.filter(i=>i.status==='pass').length;
+  const fail  = items.filter(i=>i.status==='fail').length;
+  const warn  = items.filter(i=>i.status==='warn').length;
+
+  const gateColor = fail>0 ? '#b91c1c' : warn>0 ? '#92400e' : '#166534';
+  const gateLabel = fail>0 ? '🚫 BLOCK' : warn>0 ? '⚠️ HOLD' : '✅ APPROVE';
+
+  // Group by domain
+  const byDomain = {};
+  items.forEach(i => {
+    if (!byDomain[i.domain]) byDomain[i.domain] = [];
+    byDomain[i.domain].push(i);
+  });
+
+  return `
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px;flex-wrap:wrap">
+        <div style="font-size:22px;font-weight:800;color:${gateColor}">${gateLabel}</div>
+        <div style="display:flex;gap:8px;margin-left:auto">
+          <span style="background:#f0fdf4;color:#166534;border:1px solid #86efac;border-radius:6px;padding:4px 12px;font-size:12px;font-weight:700">✅ ${pass} passed</span>
+          ${warn>0?`<span style="background:#fffbeb;color:#92400e;border:1px solid #fcd34d;border-radius:6px;padding:4px 12px;font-size:12px;font-weight:700">⚠️ ${warn} warnings</span>`:''}
+          ${fail>0?`<span style="background:#fff1f2;color:#991b1b;border:1px solid #fca5a5;border-radius:6px;padding:4px 12px;font-size:12px;font-weight:700">❌ ${fail} failed</span>`:''}
+        </div>
+        <button onclick="copyChecklist()" class="btn" style="font-size:12px"><i class="ti ti-copy"></i> Copy as Markdown</button>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:14px">
+        ${Object.entries(byDomain).map(([domain, domItems]) => {
+          const domInfo = domains[domain] || { icon:'📋', label: domain };
+          const domFail = domItems.some(i=>i.status==='fail');
+          const domWarn = domItems.some(i=>i.status==='warn');
+          const domColor = domFail ? '#fff1f2' : domWarn ? '#fffbeb' : '#f0fdf4';
+          const domBorder = domFail ? '#fca5a5' : domWarn ? '#fcd34d' : '#86efac';
+          return `
+          <div style="border:1.5px solid ${domBorder};border-radius:10px;background:${domColor};overflow:hidden">
+            <div style="padding:10px 14px;font-weight:700;font-size:13px;border-bottom:1px solid ${domBorder};display:flex;align-items:center;gap:8px">
+              ${domInfo.icon} ${domInfo.label}
+            </div>
+            ${domItems.map(item => `
+            <div style="padding:10px 14px;border-bottom:1px solid ${domBorder}26;display:flex;align-items:flex-start;gap:10px;background:${statusBg[item.status]}">
+              <span style="font-size:16px;flex-shrink:0;margin-top:1px">${statusIcon[item.status]}</span>
+              <div style="flex:1">
+                <div style="font-size:13px;font-weight:600;color:${statusColor[item.status]}">${escHtml(item.label)}</div>
+                ${item.detail?`<div style="font-size:11px;color:#7a8494;margin-top:2px">${escHtml(item.detail)}</div>`:''}
+              </div>
+            </div>`).join('')}
+          </div>`;
+        }).join('')}
+      </div>
+      <div style="margin-top:16px;font-size:11px;color:#9fadbf;text-align:center">
+        Checklist generated from analysis · Analysis ID: <code>${r.request_id||''}</code>
+      </div>
+    </div>`;
+}
+
+function _buildLocalChecklist(r) {
+  const item = (domain, label, status, detail='') => ({domain, label, status, detail});
+  const items = [];
+
+  // Security
+  if (r.security) {
+    const crit = (r.security.findings||[]).filter(f=>['critical','high'].includes((f.severity||'').toLowerCase()));
+    items.push(item('security','No critical/high security vulnerabilities', crit.length?'fail':'pass',
+      crit.length ? `${crit.length} finding(s)` : ''));
+    items.push(item('security','No hardcoded secrets or credentials', r.security.secrets_detected?'fail':'pass',
+      r.security.secrets_detected ? 'Secrets detected — rotate immediately' : ''));
+  } else items.push(item('security','Security analysis','skip','Agent did not run'));
+
+  // Privacy
+  if (r.data_privacy) {
+    items.push(item('privacy','PII fields encrypted/hashed', (r.data_privacy.unencrypted_pii_count||0)>0?'fail':'pass',
+      (r.data_privacy.unencrypted_pii_count||0)>0 ? `${r.data_privacy.unencrypted_pii_count} unencrypted field(s)` : ''));
+    items.push(item('privacy','No PII logged or printed', (r.data_privacy.logging_violations||[]).length>0?'fail':'pass',
+      (r.data_privacy.logging_violations||[]).length>0 ? `${(r.data_privacy.logging_violations||[]).length} violation(s)` : ''));
+  } else items.push(item('privacy','Data privacy review','skip','Agent did not run'));
+
+  // Performance
+  if (r.performance_impact) {
+    items.push(item('performance','No N+1 queries or unbounded DB calls', r.performance_impact.has_db_risk?'warn':'pass',
+      r.performance_impact.has_db_risk ? 'DB query risk detected' : ''));
+    items.push(item('performance','No algorithmic complexity regression', r.performance_impact.has_complexity_regression?'warn':'pass',
+      r.performance_impact.has_complexity_regression ? 'Nested loop / O(n²) detected' : ''));
+  } else items.push(item('performance','Performance review','skip','Agent did not run'));
+
+  // Testing
+  if (r.test_coverage) {
+    const delta = parseFloat(r.test_coverage.coverage_delta||0);
+    items.push(item('testing','Test coverage not reduced', delta<-5?'warn':'pass', delta<-5?`Coverage delta: ${delta.toFixed(1)}%`:''));
+    const untested = r.test_coverage.untested_functions||[];
+    items.push(item('testing','All changed functions have tests', untested.length?'warn':'pass',
+      untested.length ? `Untested: ${untested.slice(0,3).join(', ')}` : ''));
+  } else items.push(item('testing','Test coverage review','skip','Agent did not run'));
+
+  // Interface
+  if (r.interface) {
+    const breaking = r.interface.breaking_changes||[];
+    items.push(item('interface','No breaking API changes', breaking.length?'fail':'pass',
+      breaking.length ? `${breaking.length} breaking change(s)` : ''));
+  } else items.push(item('interface','API contract review','skip','Agent did not run'));
+
+  // Schema
+  if (r.schema_change) {
+    const risky = (r.schema_change.findings||[]).filter(f=>['high','critical'].includes((f.risk_level||'').toLowerCase()));
+    items.push(item('schema','Database migration is safe', risky.length?'fail':(r.schema_change.findings||[]).length?'pass':'skip',
+      risky.length ? `${risky.length} risky change(s)` : ''));
+  } else items.push(item('schema','Schema migration review','skip','Agent did not run'));
+
+  // License
+  if (r.license_compliance) {
+    items.push(item('license','No copyleft (GPL/AGPL) dependencies', r.license_compliance.has_copyleft?'fail':'pass',
+      r.license_compliance.has_copyleft ? 'Copyleft licence detected — legal review required' : ''));
+  } else items.push(item('license','Licence compliance','skip','Agent did not run'));
+
+  // Deployment
+  if (r.risk) {
+    const score = r.risk.risk_score||0;
+    const strategy = r.remediation?.deployment_strategy||'standard';
+    items.push(item('deployment','Deployment risk acceptable',
+      score>=7?'fail':score>=4?'warn':'pass',
+      `Risk score ${score}/10 · ${strategy}`));
+  } else items.push(item('deployment','Deployment risk review','skip','Agent did not run'));
+
+  // Observability
+  if (r.observability) {
+    const logsGone = r.observability.logs_removed||0;
+    const metricsGone = r.observability.metrics_removed||0;
+    items.push(item('observability','Logging and metrics intact',
+      (logsGone>0||metricsGone>0)?'warn':'pass',
+      (logsGone>0||metricsGone>0)?`${logsGone} log(s), ${metricsGone} metric(s) removed`:''));
+  } else items.push(item('observability','Observability review','skip','Agent did not run'));
+
+  return items;
+}
+
+function copyChecklist() {
+  const r = state.report; if (!r) return;
+  const items = _buildLocalChecklist(r);
+  const icon = {pass:'✅',warn:'⚠️',fail:'❌',skip:'⬜'};
+  const lines = ['## Reviewer Checklist', ''];
+  let domain = '';
+  items.forEach(i => {
+    if (i.domain !== domain) { lines.push(`### ${i.domain}`); domain = i.domain; }
+    lines.push(`- ${icon[i.status]} ${i.label}${i.detail ? ' — ' + i.detail : ''}`);
+  });
+  navigator.clipboard.writeText(lines.join('\n')).then(() => showToast('Checklist copied!'));
+}
+
+// ── PR Description ────────────────────────────────────────────────────────────
+
+async function showPRDescription() {
+  const r = state.report; if (!r) return;
+  const modal = document.getElementById('pr-desc-modal');
+  const ta    = document.getElementById('pr-desc-text');
+  if (!modal || !ta) return;
+
+  ta.value = 'Generating…';
+  modal.style.display = 'flex';
+
+  if (state.backendUrl && state.lastRequestId) {
+    try {
+      const headers = {'Content-Type':'application/json'};
+      if (state.backendKey) headers['X-API-Key'] = state.backendKey;
+      const resp = await fetch(`${state.backendUrl}/api/v1/report/${state.lastRequestId}/pr-description`, {headers});
+      if (resp.ok) { ta.value = (await resp.json()).markdown || ''; return; }
+    } catch (_) {}
+  }
+  // Client-side fallback
+  ta.value = _buildLocalPRDescription(r);
+}
+
+function _buildLocalPRDescription(r) {
+  const risk  = (r.risk?.overall_risk || 'unknown').toUpperCase();
+  const gate  = r.gate_decision || 'HOLD';
+  const gateIcon = {APPROVE:'✅',HOLD:'⚠️',BLOCK:'🚫'}[gate] || '❓';
+  const lines = [
+    '## Summary', '',
+    r.code_analysis?.summary || 'This PR introduces changes to the codebase.', '',
+    `**Risk Level:** \`${risk}\` ${gateIcon}  |  **Gate:** \`${gate}\``, '',
+    '## Changes', '',
+  ];
+  if (r.code_analysis?.change_type) lines.push(`- **Type:** ${r.code_analysis.change_type}`);
+  const delta = r.code_analysis?.complexity_delta || 0;
+  if (delta) lines.push(`- **Complexity:** ${delta > 0 ? 'increased' : 'decreased'} by ${Math.abs(delta)}`);
+  lines.push('');
+  const impacts = [];
+  if (r.reference_impact?.total_references > 0) impacts.push(`- **Callers affected:** ${r.reference_impact.total_references}`);
+  if ((r.interface?.breaking_changes||[]).length) impacts.push(`- **Breaking API changes:** ${r.interface.breaking_changes.length}`);
+  if (impacts.length) { lines.push('## Impact', '', ...impacts, ''); }
+  lines.push('## Testing', '');
+  if ((r.qa_scenarios?.scenarios||[]).length) {
+    (r.qa_scenarios.scenarios||[]).slice(0,5).forEach(s => lines.push(`- [ ] ${s.description||s}`));
+  } else {
+    lines.push('- [ ] Unit tests pass', '- [ ] Integration tests pass', '- [ ] Smoke test completed');
+  }
+  lines.push('', '---', `*Generated by CIAA · Analysis ID: \`${r.request_id||''}\`*`);
+  return lines.join('\n');
+}
+
+function copyPRDescription() {
+  const ta = document.getElementById('pr-desc-text');
+  if (!ta) return;
+  navigator.clipboard.writeText(ta.value).then(() => showToast('PR description copied to clipboard!'));
+}
+
+// ── Post to PR ────────────────────────────────────────────────────────────────
+
+async function postPRComments() {
+  if (!state.backendUrl || !state.lastRequestId) {
+    showToast('Need a backend URL and a completed analysis first.', 'error'); return;
+  }
+  const pr = state.selectedPR;
+  const prId = pr ? (pr.number || pr.id || '') : '';
+  if (!prId) { showToast('Select a PR in Analysis Target first.', 'error'); return; }
+
+  showToast('Posting comments to PR…', 'info');
+  try {
+    const headers = {'Content-Type':'application/json'};
+    if (state.backendKey) headers['X-API-Key'] = state.backendKey;
+    const body = {
+      provider:  state.provider,
+      token:     state.token,
+      base_url:  state.baseUrl || '',
+      workspace: state.workspace || '',
+      repo_slug: repoName(state.primaryRepo),
+      pr_id:     String(prId),
+      inline:    true,
+    };
+    const resp = await fetch(`${state.backendUrl}/api/v1/report/${state.lastRequestId}/comment-pr`,
+      {method:'POST', headers, body: JSON.stringify(body)});
+    const d = await resp.json();
+
+    if (resp.status === 403 || d.error === 'insufficient_token_scope') {
+      _showTokenScopeError(d.detail || d);
+      return;
+    }
+    if (d.ok) {
+      showToast(`✅ Posted to PR — ${d.files_commented} file comment(s) + summary`, 'success');
+    } else {
+      showToast('Failed to post comments — check server logs', 'error');
+    }
+  } catch(e) { showToast(`Error: ${e.message}`, 'error'); }
+}
+
+function _showTokenScopeError(detail) {
+  // Show a modal with exact fix instructions
+  const hint   = detail.hint   || detail.message || 'Token lacks write permissions.';
+  const found  = (detail.found   || []).join(', ')  || '(none detected)';
+  const needed = (detail.required || []).join(' or ') || 'repo / public_repo';
+  const fixUrl = detail.fix_url || 'https://github.com/settings/tokens';
+
+  const isFinegrained = found === '(none detected)';
+  const steps = isFinegrained ? `
+    <ol style="margin:10px 0 0 18px;font-size:12px;line-height:1.9;color:#1a2332">
+      <li>Go to <a href="${fixUrl}" target="_blank" style="color:#1a56db">GitHub → Settings → Developer settings → Fine-grained tokens</a></li>
+      <li>Select your token → <strong>Repository permissions</strong></li>
+      <li>Set <strong>Pull requests</strong> to <code>Read and write</code></li>
+      <li>Set <strong>Issues</strong> to <code>Read and write</code> (for fallback comments)</li>
+      <li>Save and update the token in the Configure panel</li>
+    </ol>` : `
+    <ol style="margin:10px 0 0 18px;font-size:12px;line-height:1.9;color:#1a2332">
+      <li>Go to <a href="${fixUrl}" target="_blank" style="color:#1a56db">GitHub → Settings → Developer settings → Classic tokens</a></li>
+      <li>Select your token → <strong>Edit</strong></li>
+      <li>Enable the <code>repo</code> scope (includes all repo write permissions)</li>
+      <li>Or enable <code>public_repo</code> for public repositories only</li>
+      <li>Save and update the token in the Configure panel</li>
+    </ol>`;
+
+  // Reuse the PR-desc modal as a permission error modal
+  const modal = document.getElementById('pr-desc-modal');
+  const ta    = document.getElementById('pr-desc-text');
+  if (!modal || !ta) { showToast(hint, 'error'); return; }
+
+  // Replace modal content temporarily
+  const origHeader = modal.querySelector('div').innerHTML;
+  modal.querySelector('div').innerHTML = `
+    <div style="padding:18px 22px;border-bottom:1px solid #fecaca;background:#fff1f2;display:flex;align-items:center;gap:10px;border-radius:14px 14px 0 0">
+      <span style="font-size:22px">🔑</span>
+      <div>
+        <div style="font-weight:700;font-size:15px;color:#991b1b">Token permission required</div>
+        <div style="font-size:12px;color:#b91c1c;margin-top:2px">GitHub returned 403 — the token needs write access to post comments</div>
+      </div>
+      <button onclick="document.getElementById('pr-desc-modal').style.display='none'" style="margin-left:auto;border:none;background:none;font-size:20px;cursor:pointer;color:#991b1b">✕</button>
+    </div>
+    <div style="padding:20px 24px;overflow-y:auto;flex:1">
+      <div style="background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:12px 16px;margin-bottom:16px">
+        <div style="font-size:12px;font-weight:700;color:#92400e;margin-bottom:4px">Current token scopes</div>
+        <code style="font-size:12px;color:#1a2332">${escHtml(found)}</code>
+      </div>
+      <div style="font-size:13px;font-weight:700;color:#1a2332;margin-bottom:4px">Required: <code>${escHtml(needed)}</code></div>
+      <div style="font-size:12px;color:#7a8494;margin-bottom:12px">${escHtml(hint.split('.')[0])}.</div>
+      <div style="font-size:13px;font-weight:700;color:#1a2332;margin-bottom:4px">How to fix${isFinegrained?' (fine-grained PAT)':' (classic PAT)'}:</div>
+      ${steps}
+    </div>
+    <div style="padding:14px 22px;border-top:1px solid #f0f2f5;display:flex;gap:10px">
+      <a href="${fixUrl}" target="_blank" class="btn btn-primary" style="text-decoration:none"><i class="ti ti-external-link"></i> Open GitHub token settings</a>
+      <button onclick="document.getElementById('pr-desc-modal').style.display='none'" class="btn">Close</button>
+    </div>`;
+  modal.style.display = 'flex';
+}
+
+// ── Toast helper ──────────────────────────────────────────────────────────────
+
+function showToast(msg, type='success') {
+  let t = document.getElementById('ciaa-toast');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'ciaa-toast';
+    t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);padding:10px 22px;border-radius:10px;font-size:13px;font-weight:600;z-index:99999;transition:opacity .3s;pointer-events:none;white-space:nowrap';
+    document.body.appendChild(t);
+  }
+  const bg = {success:'#059669',error:'#dc2626',info:'#1a56db'}[type]||'#059669';
+  t.style.background = bg;
+  t.style.color = '#fff';
+  t.style.opacity = '1';
+  t.textContent = msg;
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => { t.style.opacity='0'; }, 3000);
+}
+
+// ── Keyboard shortcuts ────────────────────────────────────────────────────────
+
+(function initKeyboardShortcuts() {
+  const TABS = ['summary','security','advanced','references','dependency','interface','schema',
+                'qa','performance','privacy','quality','checklist','remediation','timings'];
+
+  document.addEventListener('keydown', e => {
+    // Ignore when typing in inputs/textareas
+    if (['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return;
+    // Ignore modifier combos
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+    const view = state.step; // 0-3: configure, repos, target, results
+
+    switch(e.key) {
+      case '?':
+        const hint = document.getElementById('kb-hint');
+        if (hint) hint.style.display = hint.style.display==='flex' ? 'none' : 'flex';
+        break;
+
+      case 'ArrowRight':
+      case 'ArrowLeft': {
+        if (view !== 3) break;
+        const active = document.querySelector('.tab[data-tab].active');
+        if (!active) break;
+        const cur = TABS.indexOf(active.dataset.tab);
+        const next = e.key==='ArrowRight' ? (cur+1)%TABS.length : (cur-1+TABS.length)%TABS.length;
+        switchResultTab(TABS[next]);
+        break;
+      }
+
+      case '1': case '2': case '3': case '4': case '5':
+      case '6': case '7': case '8': case '9': {
+        if (view !== 3) break;
+        const idx = parseInt(e.key) - 1;
+        if (TABS[idx]) switchResultTab(TABS[idx]);
+        break;
+      }
+
+      case 'p': case 'P':
+        if (view === 3) showPRDescription();
+        break;
+
+      case 'c': case 'C':
+        if (view === 3) switchResultTab('checklist');
+        break;
+
+      case 'n': case 'N':
+        if (typeof resetAnalysis === 'function') resetAnalysis();
+        break;
+    }
+  });
+})();
 
 // ── Reference Impact Graph (D3 force-directed) ────────────────────────────────
 
@@ -2990,7 +3600,7 @@ function saveHistory(report, target) {
   localStorage.setItem('analysisHistory', JSON.stringify(state.history));
 }
 
-function resetAnalysis() { state.report=null; state.selectedPR=null; state.sourceBranch=''; state.commitSha=''; showView('configure'); }
+function resetAnalysis() { state.report=null; state.analysisRequested=false; state.selectedPR=null; state.sourceBranch=''; state.commitSha=''; showView('configure'); }
 
 async function submitToBackend() {
   if(!state.backendUrl) { alert('No backend URL configured. Go to Settings.'); return; }
@@ -3530,14 +4140,56 @@ function _applyReviewDecisionToUI(review, backendSaved) {
 function _gitConfig() {
   /** Build the GitConfig payload from current state for proxy calls */
   return {
-    provider:  state.provider,
-    base_url:  state.baseUrl || '',
-    auth_mode: state.authMode,
-    token:     state.token || '',
-    username:  state.username || '',
-    password:  state.password || '',
-    workspace: state.workspace || '',
+    provider:    state.provider,
+    base_url:    state.baseUrl    || '',
+    auth_mode:   state.authMode,
+    token:       state.token      || '',
+    username:    state.username   || '',
+    password:    state.password   || '',
+    workspace:   state.workspace  || '',
+    project_key: state.projectKey || '',   // Bitbucket Server: optional project key
   };
+}
+
+// ── Bitbucket Server project browser ─────────────────────────────────────────
+
+async function browseBBProjects() {
+  const el = document.getElementById('bb-project-list');
+  if (!el) return;
+  el.style.display = 'block';
+  el.innerHTML = '<div style="padding:10px;color:#7a8494;font-size:12px"><i class="ti ti-loader" style="animation:spin 1s linear infinite"></i> Loading projects…</div>';
+  try {
+    const d = await _proxyPost('/api/v1/git/projects', _gitConfig());
+    const projects = d.projects || [];
+    if (!projects.length) {
+      el.innerHTML = '<div style="padding:10px;color:#7a8494;font-size:12px">No projects found or insufficient permissions.</div>';
+      return;
+    }
+    el.innerHTML = projects.map(p => `
+      <div onclick="selectBBProject('${escHtml(p.key)}')"
+           style="padding:9px 14px;border-bottom:1px solid #f0f2f5;cursor:pointer;display:flex;align-items:center;gap:10px;transition:background .1s"
+           onmouseover="this.style.background='#f5f8ff'" onmouseout="this.style.background=''">
+        <span style="font-size:18px">📁</span>
+        <div>
+          <div style="font-weight:600;font-size:13px;color:#1a2332">${escHtml(p.key)}</div>
+          <div style="font-size:11px;color:#7a8494">${escHtml(p.name)}${p.description ? ' — ' + escHtml(p.description.slice(0,60)) : ''}</div>
+        </div>
+        <span style="margin-left:auto;font-size:10px;background:#e8f5e9;color:#1b5e20;border-radius:4px;padding:2px 6px">${p.type||'NORMAL'}</span>
+      </div>`).join('');
+  } catch(e) {
+    el.innerHTML = `<div style="padding:10px;color:#b91c1c;font-size:12px">Error: ${escHtml(e.message)}</div>`;
+  }
+}
+
+function selectBBProject(key) {
+  state.projectKey = key;
+  saveState();
+  const input = document.getElementById('bb-project-key-input');
+  if (input) input.value = key;
+  const el = document.getElementById('bb-project-list');
+  if (el) el.style.display = 'none';
+  // Trigger repo reload with the selected project
+  if (typeof loadRepos === 'function') loadRepos();
 }
 
 async function _proxyPost(path, body, opts = {}) {

@@ -18,9 +18,10 @@ import re
 import time
 from typing import Any
 
-from pydantic import BaseModel
-
-from core.models import AgentName, AgentResultBase, AnalysisRequest, DiffHunk
+from core.models import (
+    AgentName, AgentResultBase, AnalysisRequest, DiffHunk,
+    PIIFinding, DataPrivacyResult,
+)
 from agents.base_agent import BaseAgent, format_hunks_for_prompt
 
 log = logging.getLogger(__name__)
@@ -30,35 +31,6 @@ try:
     _AGENT_NAME: AgentName = AgentName.DATA_PRIVACY  # type: ignore[attr-defined]
 except AttributeError:
     _AGENT_NAME = "data_privacy"  # type: ignore[assignment]
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-#  Output models
-# ═════════════════════════════════════════════════════════════════════════════
-
-class PIIFinding(BaseModel):
-    pii_type: str       # "email" | "phone" | "ssn" | "credit_card" | "name"
-                        # | "dob" | "address" | "ip" | "passport" | "generic_pii"
-    description: str
-    file_path: str = ""
-    line: int = 0
-    context: str = ""
-    is_logged: bool = False
-    is_encrypted: bool = False
-    risk_level: str = "medium"   # "low" | "medium" | "high" | "critical"
-
-
-class DataPrivacyResult(AgentResultBase):
-    pii_findings: list[PIIFinding] = []
-    logging_violations: list[str] = []
-    gdpr_risk: str = "low"           # "low" | "medium" | "high" | "critical"
-    data_exposure_risk: str = "low"
-    unencrypted_pii_count: int = 0
-    summary: str = ""
-    fallback_used: bool = False
-    token_usage: int = 0
-    model_used: str = ""
-    duration_s: float = 0.0
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -183,6 +155,10 @@ class DataPrivacyAgent(BaseAgent[DataPrivacyResult]):
 
         if remaining > 1500:
             try:
+                # Pass static results via context so build_user_prompt reuses them
+                # instead of running detect_static_issues a second time.
+                ctx["_static_pii"]            = static_pii
+                ctx["_static_log_violations"] = static_log_violations
                 llm_result = super().run(request, budget, ctx)
             except Exception as exc:
                 log.warning("[%s] DataPrivacyAgent LLM error: %s", request.request_id, exc)
@@ -214,7 +190,12 @@ class DataPrivacyAgent(BaseAgent[DataPrivacyResult]):
         return result
 
     def build_user_prompt(self, request: AnalysisRequest, context: dict[str, Any]) -> str:
-        static_pii, log_violations = self.detect_static_issues(request)
+        # Reuse static results computed in run() if available — avoids double hunk scan
+        if "_static_pii" in context:
+            static_pii      = context["_static_pii"]
+            log_violations  = context["_static_log_violations"]
+        else:
+            static_pii, log_violations = self.detect_static_issues(request)
 
         pii_str = "\n".join(
             f"  [{f.risk_level.upper()}] {f.file_path}:{f.line} — {f.pii_type}: {f.description}"

@@ -19,45 +19,19 @@ import re
 import time
 from typing import Any
 
-from pydantic import BaseModel
-
-from core.models import AgentName, AgentResultBase, AnalysisRequest, DiffHunk
+from core.models import (
+    AgentName, AgentResultBase, AnalysisRequest, DiffHunk,
+    PerformanceFinding, PerformanceImpactResult,
+)
 from agents.base_agent import BaseAgent, format_hunks_for_prompt
 
 log = logging.getLogger(__name__)
 
 # ── AgentName resolution ──────────────────────────────────────────────────────
-# PERFORMANCE_IMPACT may not yet be in the enum; fall back to a sentinel string.
 try:
     _AGENT_NAME: AgentName = AgentName.PERFORMANCE_IMPACT  # type: ignore[attr-defined]
 except AttributeError:
     _AGENT_NAME = "performance_impact"  # type: ignore[assignment]
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-#  Output models
-# ═════════════════════════════════════════════════════════════════════════════
-
-class PerformanceFinding(BaseModel):
-    category: str    # "n_plus_1" | "select_star" | "nested_loop" | "sync_in_async"
-                     # | "no_pagination" | "memory_risk" | "other"
-    severity: str    # "low" | "medium" | "high" | "critical"
-    description: str
-    file_path: str = ""
-    line: int = 0
-    suggestion: str = ""
-
-
-class PerformanceImpactResult(AgentResultBase):
-    findings: list[PerformanceFinding] = []
-    has_db_risk: bool = False
-    has_complexity_regression: bool = False
-    overall_severity: str = "low"
-    summary: str = ""
-    fallback_used: bool = False
-    token_usage: int = 0
-    model_used: str = ""
-    duration_s: float = 0.0
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -153,6 +127,9 @@ class PerformanceImpactAgent(BaseAgent[PerformanceImpactResult]):
 
         if remaining > 1500:
             try:
+                # Pass static_findings via context so build_user_prompt reuses them
+                # instead of running detect_static_issues a second time.
+                ctx["_static_findings"] = static_findings
                 llm_result = super().run(request, budget, ctx)
             except Exception as exc:
                 log.warning("[%s] PerformanceImpactAgent LLM error: %s", request.request_id, exc)
@@ -183,7 +160,8 @@ class PerformanceImpactAgent(BaseAgent[PerformanceImpactResult]):
         return result
 
     def build_user_prompt(self, request: AnalysisRequest, context: dict[str, Any]) -> str:
-        static_findings = self.detect_static_issues(request)
+        # Reuse static findings computed in run() if available — avoids double hunk scan
+        static_findings = context.get("_static_findings") or self.detect_static_issues(request)
         findings_str = "\n".join(
             f"  [{f.severity.upper()}] {f.file_path}:{f.line} — {f.category}: {f.description}"
             for f in static_findings

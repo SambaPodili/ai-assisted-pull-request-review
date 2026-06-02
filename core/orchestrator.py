@@ -163,7 +163,7 @@ class ImpactAnalysisOrchestrator:
         Uses a dedicated thread pool so the analysis never blocks the event loop
         or contends with uvicorn's default executor.
         """
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()   # get_event_loop() is deprecated in 3.10+, raises on 3.12+
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="analysis") as executor:
             return await loop.run_in_executor(executor, self.analyse, request)
 

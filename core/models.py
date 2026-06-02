@@ -7,7 +7,7 @@ Every agent input/output is a Pydantic model defined here.
 from __future__ import annotations
 from enum import Enum
 from typing import Any
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from datetime import datetime
 
 
@@ -574,9 +574,11 @@ class AnalysisReport(BaseModel):
     errors:        list[str] = []
 
     # Stored gate/risk — set by orchestrator at finalization so the values
-    # are stable in the stored report and don't require re-deriving at read time
-    _gate_decision: GateDecision | None = None
-    _final_risk:    RiskLevel    | None = None
+    # are stable in the stored report and don't require re-deriving at read time.
+    # Declared as proper Pydantic PrivateAttr so freeze_gate() persists across
+    # assignments and model_dump() can expose them via the properties below.
+    _gate_decision: GateDecision | None = PrivateAttr(default=None)
+    _final_risk:    RiskLevel    | None = PrivateAttr(default=None)
 
     @property
     def total_tokens(self) -> int:
@@ -599,6 +601,16 @@ class AnalysisReport(BaseModel):
         return self.risk.overall_risk if self.risk else RiskLevel.LOW
 
     def freeze_gate(self) -> None:
-        """Snapshot the computed gate/risk into stored fields so they persist."""
-        object.__setattr__(self, "_gate_decision", self.gate_decision)
-        object.__setattr__(self, "_final_risk",    self.final_risk)
+        """Snapshot the computed gate/risk into private fields so they survive serialization."""
+        self._gate_decision = self.gate_decision
+        self._final_risk    = self.final_risk
+
+    def model_dump_with_gate(self, **kwargs) -> dict:
+        """model_dump() enriched with gate_decision and final_risk as top-level keys.
+        Use this everywhere a report is serialized to JSON/dict so CI gate consumers
+        always receive these fields regardless of whether freeze_gate() was called.
+        """
+        d = self.model_dump(**kwargs)
+        d["gate_decision"] = self.gate_decision.value
+        d["final_risk"]    = self.final_risk.value
+        return d
