@@ -117,12 +117,15 @@
   .list-scroll { max-height: 280px; overflow-y: auto; }
 
   /* Tabs */
-  .tabs { display: flex; flex-wrap: wrap; gap: 0; border-bottom: 1px solid #e8eaed; margin-bottom: 18px; align-items: flex-end; }
-  .tab { padding: 7px 13px; font-size: 12px; cursor: pointer; color: #7a8494; border-bottom: 2px solid transparent; margin-bottom: -1px; font-family: var(--sans); background: none; border-top: none; border-left: none; border-right: none; transition: all 0.15s; white-space: nowrap; }
-  .tab:hover { color: #0d1117; }
-  .tab.active { color: #1a6cf6; border-bottom-color: #1a6cf6; font-weight: 500; }
-  .tab-group-label { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: #c0c9d8; padding: 0 6px 8px 10px; align-self: flex-end; white-space: nowrap; }
-  .tab-sep { width: 1px; background: #e8eaed; margin: 4px 4px 4px 4px; align-self: stretch; flex-shrink: 0; }
+  /* Results tab bar — grouped columns that wrap as whole units */
+  .tabs { display: flex; flex-wrap: wrap; gap: 6px 18px; border-bottom: 1px solid #e8eaed; margin-bottom: 18px; align-items: flex-end; padding-bottom: 0; }
+  .tab-group { display: inline-flex; flex-direction: column; gap: 3px; }
+  .tab-group-label { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .09em; color: #aeb8c7; padding-left: 11px; }
+  .tab-group-tabs { display: flex; }
+  .tab { padding: 7px 12px; font-size: 12px; cursor: pointer; color: #7a8494; border-bottom: 2px solid transparent; margin-bottom: -1px; font-family: var(--sans); background: none; border-top: none; border-left: none; border-right: none; transition: all 0.15s; white-space: nowrap; border-radius: 6px 6px 0 0; }
+  .tab:hover { color: #0d1117; background: #f5f7fa; }
+  .tab.active { color: #1a6cf6; border-bottom-color: #1a6cf6; font-weight: 600; background: #eff5ff; }
+  .tab-sep { display: none; }   /* replaced by per-group columns */
   /* Pipeline scroll */
   .pipeline-scroll { max-height: 72vh; overflow-y: auto; padding-right: 2px; }
   .pipeline-scroll::-webkit-scrollbar { width: 4px; }
@@ -1604,29 +1607,45 @@ function renderResults(el) {
     </div>
 
     <div class="tabs" id="result-tabs">
-      <span class="tab-group-label">Overview</span>
-      <button class="tab active" data-tab="summary"     onclick="switchResultTab('summary')">Summary</button>
-      <div class="tab-sep"></div>
-      <span class="tab-group-label">Security</span>
-      <button class="tab" data-tab="security"    onclick="switchResultTab('security')">Security</button>
-      <button class="tab" data-tab="advanced"    onclick="switchResultTab('advanced')">⚗ Advanced</button>
-      <div class="tab-sep"></div>
-      <span class="tab-group-label">Impact</span>
-      <button class="tab" data-tab="references"  onclick="switchResultTab('references')">🔗 References</button>
-      <button class="tab" data-tab="dependency"  onclick="switchResultTab('dependency')">Dependency</button>
-      <button class="tab" data-tab="interface"   onclick="switchResultTab('interface')">Interface</button>
-      <button class="tab" data-tab="schema"      onclick="switchResultTab('schema')">Schema</button>
-      <div class="tab-sep"></div>
-      <span class="tab-group-label">Quality</span>
-      <button class="tab" data-tab="qa"          onclick="switchResultTab('qa')">🧪 QA Scenarios</button>
-      <button class="tab" data-tab="performance" onclick="switchResultTab('performance')">🚀 Performance</button>
-      <button class="tab" data-tab="privacy"     onclick="switchResultTab('privacy')">🔒 Privacy</button>
-      <button class="tab" data-tab="quality"     onclick="switchResultTab('quality')">🔧 Quality</button>
-      <div class="tab-sep"></div>
-      <span class="tab-group-label">Actions</span>
-      <button class="tab" data-tab="checklist"   onclick="switchResultTab('checklist')">✅ Checklist</button>
-      <button class="tab" data-tab="remediation" onclick="switchResultTab('remediation')">Remediation</button>
-      <button class="tab" data-tab="timings"     onclick="switchResultTab('timings')">⏱ Timings</button>
+      <div class="tab-group">
+        <span class="tab-group-label">Overview</span>
+        <div class="tab-group-tabs">
+          <button class="tab active" data-tab="summary" onclick="switchResultTab('summary')">Summary</button>
+        </div>
+      </div>
+      <div class="tab-group">
+        <span class="tab-group-label">Security</span>
+        <div class="tab-group-tabs">
+          <button class="tab" data-tab="security" onclick="switchResultTab('security')">Security</button>
+          <button class="tab" data-tab="advanced" onclick="switchResultTab('advanced')">⚗ Advanced</button>
+        </div>
+      </div>
+      <div class="tab-group">
+        <span class="tab-group-label">Impact</span>
+        <div class="tab-group-tabs">
+          <button class="tab" data-tab="references" onclick="switchResultTab('references')">🔗 References</button>
+          <button class="tab" data-tab="dependency" onclick="switchResultTab('dependency')">Dependency</button>
+          <button class="tab" data-tab="interface"  onclick="switchResultTab('interface')">Interface</button>
+          <button class="tab" data-tab="schema"     onclick="switchResultTab('schema')">Schema</button>
+        </div>
+      </div>
+      <div class="tab-group">
+        <span class="tab-group-label">Quality</span>
+        <div class="tab-group-tabs">
+          <button class="tab" data-tab="qa"          onclick="switchResultTab('qa')">🧪 QA Scenarios</button>
+          <button class="tab" data-tab="performance" onclick="switchResultTab('performance')">🚀 Performance</button>
+          <button class="tab" data-tab="privacy"     onclick="switchResultTab('privacy')">🔒 Privacy</button>
+          <button class="tab" data-tab="quality"     onclick="switchResultTab('quality')">🔧 Quality</button>
+        </div>
+      </div>
+      <div class="tab-group">
+        <span class="tab-group-label">Actions</span>
+        <div class="tab-group-tabs">
+          <button class="tab" data-tab="checklist"   onclick="switchResultTab('checklist')">✅ Checklist</button>
+          <button class="tab" data-tab="remediation" onclick="switchResultTab('remediation')">Remediation</button>
+          <button class="tab" data-tab="timings"     onclick="switchResultTab('timings')">⏱ Timings</button>
+        </div>
+      </div>
     </div>
 
     <div id="result-tab-content">${renderResultTab('summary',r)}</div>
@@ -1976,6 +1995,7 @@ function renderResultTab(tab, r) {
       <div style="margin-bottom:12px"><div style="font-size:12px;color:#7a8494;margin-bottom:5px">Blast radius score: ${r.dependency?.blast_radius_score||0}/100</div><div class="score-bar"><div class="score-fill" style="width:${r.dependency?.blast_radius_score||0}%;background:${(r.dependency?.blast_radius_score||0)>70?'var(--red)':(r.dependency?.blast_radius_score||0)>40?'#8a5200':'var(--green)'}"></div></div></div>
       ${(r.dependency?.affected_services||[]).length?`<div class="section-heading"><i class="ti ti-server"></i>Affected services</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">${(r.dependency?.affected_services||[]).map(s=>`<span class="badge badge-amber">${escHtml(s)}</span>`).join('')}</div>`:''}
       ${(r.dependency?.changed_packages||[]).length?`<div class="section-heading"><i class="ti ti-package"></i>Changed packages</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">${(r.dependency?.changed_packages||[]).map(p=>`<code>${escHtml(p)}</code>`).join('')}</div>`:''}
+      ${(r.dependency?.cve_hits||[]).length?`<div class="section-heading" style="color:#b91c1c"><i class="ti ti-bug"></i>Known CVEs (via OSV.dev)</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">${(r.dependency?.cve_hits||[]).map(c=>`<span class="badge badge-red" style="font-family:var(--mono)">${escHtml(c)}</span>`).join('')}</div>`:''}
       ${state.connectedRepos.length?`<div class="section-heading"><i class="ti ti-git-branch"></i>Connected repos in scope</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">${state.connectedRepos.map(r=>`<span class="badge badge-blue">${escHtml(shortName(r))}</span>`).join('')}</div>`:''}
       ${(r.dependency?.changed_packages||[]).length ? `
       <div style="margin-top:14px;border-top:1px solid #f0f2f5;padding-top:14px">
@@ -2562,8 +2582,17 @@ function renderChecklistTab(r) {
   const fail  = items.filter(i=>i.status==='fail').length;
   const warn  = items.filter(i=>i.status==='warn').length;
 
-  const gateColor = fail>0 ? '#b91c1c' : warn>0 ? '#92400e' : '#166534';
-  const gateLabel = fail>0 ? '🚫 BLOCK' : warn>0 ? '⚠️ HOLD' : '✅ APPROVE';
+  // The header reflects the ACTUAL gate decision from the analysis — NOT a value
+  // re-derived from these binary checks. The gate can be HOLD/BLOCK due to the
+  // overall risk assessment (e.g. coverage drop, risk score) even when every
+  // individual check passes, so deriving it locally would contradict the banner.
+  const realGate = (r.gate_decision || r.gate || 'HOLD').toUpperCase();
+  const gateColor = realGate==='BLOCK' ? '#b91c1c' : realGate==='HOLD' ? '#92400e' : '#166534';
+  const gateLabel = realGate==='BLOCK' ? '🚫 BLOCK' : realGate==='HOLD' ? '⚠️ HOLD' : '✅ APPROVE';
+
+  // Detect a mismatch so we can explain it instead of confusing the user.
+  const checksImply = fail>0 ? 'BLOCK' : warn>0 ? 'HOLD' : 'APPROVE';
+  const gateMismatch = checksImply !== realGate;
 
   // Group by domain
   const byDomain = {};
@@ -2585,6 +2614,13 @@ function renderChecklistTab(r) {
         </div>
         <button onclick="copyChecklist()" class="btn" style="font-size:12px"><i class="ti ti-copy"></i> Copy</button>
       </div>
+
+      ${gateMismatch ? `
+      <div style="padding:10px 14px;background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;margin-bottom:16px;font-size:12px;color:#92400e;display:flex;align-items:flex-start;gap:8px">
+        <i class="ti ti-info-circle" style="font-size:14px;margin-top:1px"></i>
+        <span>Individual checks below imply <strong>${checksImply}</strong>, but the overall gate is <strong>${realGate}</strong>.
+        The gate reflects the AI risk assessment (risk score ${r.risk_score||0}/100${r.rationale?` — ${escHtml(r.rationale)}`:''}), which weighs factors beyond these binary checks (e.g. coverage drop, change complexity).</span>
+      </div>` : ''}
 
       <!-- Approve / Block actions live in the single "Human Review" panel at the top of Results -->
       <div style="padding:10px 14px;background:#f7f8fa;border:1px solid #e8eaed;border-radius:8px;margin-bottom:16px;font-size:12px;color:#7a8494;display:flex;align-items:center;gap:8px">
@@ -3697,6 +3733,7 @@ function normalizeReport(r) {
     blast_radius_score: dep.blast_radius_score || 0,
     affected_services: dep.affected_services || [],
     changed_packages: dep.changed_packages || [],
+    cve_hits: dep.cve_hits || [],
   } : null;
 
   // ── Normalise test coverage ────────────────────────────────────────────────
@@ -3807,9 +3844,11 @@ function normalizeReport(r) {
   const perfNorm = perf ? {
     summary:          perf.summary          || '',
     overall_severity: perf.overall_severity || 'low',
-    regression_risk:  perf.regression_risk  || false,
+    // Backend uses has_complexity_regression / has_db_risk
+    regression_risk:  perf.has_complexity_regression || perf.regression_risk || false,
+    has_db_risk:      perf.has_db_risk || false,
     findings: (perf.findings||[]).map(f=>({
-      kind:        f.kind        || '',
+      kind:        f.category    || f.kind || '',   // PerformanceFinding.category
       severity:    (f.severity||'low').toLowerCase(),
       description: f.description || '',
       file:        f.file_path   || f.file || '',
@@ -3822,14 +3861,21 @@ function normalizeReport(r) {
   const priv = r.data_privacy || null;
   const privNorm = priv ? {
     summary:               priv.summary               || '',
-    pii_detected:          priv.pii_detected          || false,
-    compliance_violations: priv.compliance_violations || [],
-    findings: (priv.findings||[]).map(f=>({
+    // Backend DataPrivacyResult uses pii_findings / logging_violations /
+    // unencrypted_pii_count — map them to the UI's field names.
+    pii_detected:          (priv.pii_findings || priv.findings || []).length > 0
+                             || (priv.unencrypted_pii_count || 0) > 0,
+    compliance_violations: priv.logging_violations || priv.compliance_violations || [],
+    gdpr_risk:             priv.gdpr_risk || 'low',
+    unencrypted_pii_count: priv.unencrypted_pii_count || 0,
+    findings: (priv.pii_findings || priv.findings || []).map(f=>({
       pii_type:       f.pii_type       || f.kind || '',
-      severity:       (f.severity||'medium').toLowerCase(),
+      severity:       (f.risk_level || f.severity || 'medium').toLowerCase(),
       description:    f.description    || '',
       file:           f.file_path      || f.file || '',
       line:           f.line           || 0,
+      is_encrypted:   f.is_encrypted   || false,
+      is_logged:      f.is_logged      || false,
       recommendation: f.recommendation || '',
     })),
   } : null;
@@ -3837,7 +3883,7 @@ function normalizeReport(r) {
   // ── Normalise maintainability ─────────────────────────────────────────────
   const maint = r.maintainability || null;
   const maintNorm = maint ? {
-    score:   maint.score   ?? 100,
+    score:   maint.maintainability_score ?? maint.score ?? 100,
     summary: maint.summary || '',
     issues: (maint.issues||[]).map(i=>({
       kind:        i.kind        || '',
@@ -3853,22 +3899,29 @@ function normalizeReport(r) {
   const lic = r.license_compliance || null;
   const licNorm = lic ? {
     has_copyleft: lic.has_copyleft || false,
-    has_unknown:  lic.has_unknown  || false,
+    // backend: has_license_conflict (no has_unknown)
+    has_unknown:  lic.has_license_conflict || lic.has_unknown || false,
     summary:      lic.summary      || '',
     findings: (lic.findings||[]).map(f=>({
-      package:        f.package        || '',
-      license:        f.license        || 'unknown',
-      severity:       (f.severity||'low').toLowerCase(),
-      file:           f.file_path      || f.file || '',
-      reason:         f.reason         || '',
-      recommendation: f.recommendation || '',
+      package:        f.package          || '',
+      // LicenseFinding uses detected_license / risk_level / description
+      license:        f.detected_license || f.license || 'unknown',
+      severity:       (f.risk_level || f.severity || 'low').toLowerCase(),
+      file:           f.file_path        || f.file || '',
+      reason:         f.description      || f.reason || '',
+      recommendation: f.recommendation   || '',
     })),
   } : null;
 
   // ── Normalise observability ───────────────────────────────────────────────
   const obs = r.observability || null;
   const obsNorm = obs ? {
-    observability_score: obs.observability_score ?? 100,
+    // Backend has no observability_score — derive one from removed logs/metrics
+    // and unobserved branches so it isn't a misleading flat 100.
+    observability_score: obs.observability_score ?? Math.max(0, 100
+      - (obs.logs_removed||0)*8 - (obs.metrics_removed||0)*8 - (obs.unobserved_branches||0)*4),
+    logs_removed:        obs.logs_removed || 0,
+    metrics_removed:     obs.metrics_removed || 0,
     summary:             obs.summary             || '',
     findings: (obs.findings||[]).map(f=>({
       kind:        f.kind        || '',
@@ -3928,7 +3981,19 @@ function normalizeReport(r) {
     remediation:      remNorm,
     token_usage:    r.total_tokens || (Array.isArray(r.token_usage) ? r.token_usage.reduce((s,u)=>s+(u.tokens_used||0),0) : r.token_usage) || 0,
     duration_s:     r.duration_s || 0,
-    agent_timings:  Array.isArray(r.agent_timings) ? r.agent_timings : [],
+    // Per-agent timings: prefer an explicit agent_timings array (live run), else
+    // derive from the backend's token_usage list (loaded/historical reports).
+    // AgentTokenUsage uses `tokens_used`; the Timings tab expects `tokens`.
+    agent_timings:  (Array.isArray(r.agent_timings) && r.agent_timings.length)
+      ? r.agent_timings
+      : (Array.isArray(r.token_usage)
+          ? r.token_usage.map(u => ({
+              agent:      (u.agent && u.agent.value) || u.agent || '',
+              tokens:     u.tokens_used || 0,
+              model:      u.model || '',
+              duration_s: u.duration_s || 0,
+            }))
+          : []),
     errors:         r.errors || [],
   };
 }
