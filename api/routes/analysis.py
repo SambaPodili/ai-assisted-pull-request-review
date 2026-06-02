@@ -17,11 +17,15 @@ import time
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from core.models import (
     AnalysisRequest, AnalysisReport, ChangeType,
+)
+from governance.rbac import (
+    Permission, Subject, Role, ROLE_META,
+    get_current_subject, require_permission,
 )
 from ingestion.diff_parser import parse_diff
 from output.report_formatter import to_summary_json, to_markdown
@@ -226,6 +230,29 @@ def list_reports(limit: int = 20, offset: int = 0):
     return get_report_store().list_recent(limit=limit, offset=offset)
 
 
+@router.get("/me")
+def get_me(subject: Subject = Depends(get_current_subject)):
+    """
+    Return the current user's identity, role, and permissions.
+    The frontend calls this on connect to enforce role-based UI restrictions.
+    """
+    top_role = subject.roles[0] if subject.roles else Role.DEVELOPER
+    meta     = ROLE_META.get(top_role, ROLE_META[Role.DEVELOPER])
+    return {
+        "key_id":       subject.key_id,
+        "name":         subject.name or subject.key_id,
+        "team":         subject.team,
+        "roles":        [r.value for r in subject.roles],
+        "primary_role": top_role.value,
+        "permissions":  [p.value for p in subject.permissions],
+        "can_comment":  meta["can_comment"],
+        "can_override": meta["can_override"],
+        "role_label":   meta["label"],
+        "role_color":   meta["color"],
+        "description":  meta["description"],
+    }
+
+
 # ── Developer productivity endpoints ──────────────────────────────────────────
 
 @router.get("/report/{request_id}/checklist")
@@ -265,7 +292,11 @@ class CommentPRRequest(BaseModel):
 
 
 @router.post("/report/{request_id}/comment-pr")
-def comment_pr(request_id: str, body: CommentPRRequest):
+def comment_pr(
+    request_id: str,
+    body: CommentPRRequest,
+    subject: Subject = require_permission(Permission.PR_COMMENT),
+):
     """
     Post analysis findings as PR comments on GitHub or Bitbucket.
     Idempotent — updates the existing bot comment if one already exists.

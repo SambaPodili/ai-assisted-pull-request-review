@@ -402,6 +402,9 @@ h1, h2, h3 { font-family: 'Instrument Serif', serif; }
     <div class="nav-item" onclick="showView('quality')" id="nav-quality">
       <i class="ti ti-target-arrow"></i>Quality metrics
     </div>
+    <div class="nav-item" onclick="showView('insights')" id="nav-insights">
+      <i class="ti ti-chart-dots-3"></i>Insights
+    </div>
 
     <div class="nav-section">Settings</div>
     <div class="nav-item" onclick="showView('settings')" id="nav-settings">
@@ -434,7 +437,8 @@ h1, h2, h3 { font-family: 'Instrument Serif', serif; }
     <div id="view-results" class="content" style="display:none"></div>
     <div id="view-history" class="content" style="display:none"></div>
     <div id="view-settings" class="content" style="display:none"></div>
-    <div id="view-quality" class="content" style="display:none"></div>
+    <div id="view-quality"   class="content" style="display:none"></div>
+    <div id="view-insights" class="content" style="display:none"></div>
 
     <div class="footer-bar" id="footer-bar" style="display:none">
       <button class="btn" id="btn-back" onclick="goBack()"><i class="ti ti-arrow-left"></i>Back</button>
@@ -458,7 +462,9 @@ const state = {
   projectKey: localStorage.getItem('projectKey')  || '',  // Bitbucket Server project key (optional)
   baseUrl: localStorage.getItem('baseUrl') || '',  // enterprise/server base URL
   useProxy: true,  // always use backend proxy (solves CORS for all providers)
-  userInfo: null,
+  userInfo:   null,
+  ciaaRole:   localStorage.getItem('ciaaRole')   || null,  // role from /me endpoint
+  ciaaPerms:  JSON.parse(localStorage.getItem('ciaaPerms') || 'null') || null,
   backendUrl: localStorage.getItem('backendUrl') || 'http://localhost:8080',
   backendKey: localStorage.getItem('backendKey') || '',
   modelProvider: localStorage.getItem('modelProvider') || 'anthropic',
@@ -516,10 +522,52 @@ function saveState() {
    'backendUrl','backendKey'].forEach(k => {
     if(state[k] !== undefined && state[k] !== null) localStorage.setItem(k, state[k]);
   });
+  if(state.ciaaRole)  localStorage.setItem('ciaaRole',  state.ciaaRole);
+  if(state.ciaaPerms) localStorage.setItem('ciaaPerms', JSON.stringify(state.ciaaPerms));
+}
+
+// ── CIAA role helpers ─────────────────────────────────────────────────────────
+
+async function _fetchCiaaRole() {
+  if (!state.backendUrl || !state.backendKey) return;
+  try {
+    const h = {'Content-Type':'application/json','X-API-Key': state.backendKey};
+    const r = await fetch(`${state.backendUrl}/api/v1/me`, {headers: h});
+    if (!r.ok) return;
+    const d = await r.json();
+    state.ciaaRole  = d.primary_role || 'developer';
+    state.ciaaPerms = d;
+    localStorage.setItem('ciaaRole',  state.ciaaRole);
+    localStorage.setItem('ciaaPerms', JSON.stringify(state.ciaaPerms));
+  } catch(_) {
+    // Backend may not be reachable — fall back to no restrictions
+  }
+}
+
+/** True if the current user may post comments to GitHub/Bitbucket PRs */
+function canPostToGit() {
+  if (!state.backendKey || !state.backendUrl) return false;  // no backend auth configured
+  if (!state.ciaaPerms) return true;   // no role info fetched yet — allow (backend will enforce)
+  return !!state.ciaaPerms.can_comment;
+}
+
+/** True if the current user may approve/block (override the gate decision) */
+function canOverrideGate() {
+  if (!state.ciaaPerms) return true;
+  return !!state.ciaaPerms.can_override;
+}
+
+/** Role badge HTML for header or results page */
+function roleBadgeHtml(compact = false) {
+  if (!state.ciaaPerms) return '';
+  const color = state.ciaaPerms.role_color || '#1a56db';
+  const label = state.ciaaPerms.role_label || state.ciaaRole || 'Developer';
+  const desc  = compact ? '' : `title="${escHtml(state.ciaaPerms.description||'')}"`;
+  return `<span ${desc} style="background:${color}1a;color:${color};border:1px solid ${color}44;border-radius:5px;padding:2px 8px;font-size:11px;font-weight:700;cursor:default">${escHtml(label)}</span>`;
 }
 
 const LANG_COLORS = {JavaScript:'#f1e05a',TypeScript:'#3178c6',Python:'#3572A5',Java:'#b07219',Go:'#00ADD8',Ruby:'#701516',Kotlin:'#A97BFF',Rust:'#dea584',C:'#555555',Scala:'#c22d40',Shell:'#89e051'};
-const VIEWS = ['configure','repos','target','results','history','settings','quality'];
+const VIEWS = ['configure','repos','target','results','history','settings','quality','insights'];
 const STEP_VIEWS = ['configure','repos','target','results'];
 const STEPS = ['Connect','Repositories','Target','Results'];
 
@@ -574,6 +622,7 @@ function renderView(name) {
   else if(name === 'repos') renderRepos(el);
   else if(name === 'target') renderTarget(el);
   else if(name === 'results') renderResults(el);
+  else if(name === 'insights') renderInsights(el);
   else if(name === 'history') renderHistory(el);
   else if(name === 'settings') renderSettings(el);
   else if(name === 'quality') renderQuality(el);
@@ -829,10 +878,17 @@ async function doConnect() {
     state.userInfo = await r.json();
     const name = state.userInfo.login || state.userInfo.display_name || state.userInfo.username || state.username;
     if(!state.workspace && state.userInfo.username) state.workspace = state.userInfo.username;
+
+    // ── Fetch CIAA role from backend /me endpoint ─────────────────────────
+    await _fetchCiaaRole();
+
     saveState();
 
     const connLabel = GIT_PROVIDERS[state.provider]?.label || state.provider;
-    if(info) info.innerHTML = `<div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:#edfaf3;border:1px solid #b5e8cf;border-radius:8px;margin-bottom:12px;font-size:13px;color:#0c7c4b"><i class="ti ti-circle-check"></i>Connected as <strong>${esc(name)}</strong> on ${esc(connLabel)}</div>`;
+    const roleBadge = state.ciaaRole
+      ? `<span style="background:${state.ciaaPerms?.role_color||'#1a56db'}1a;color:${state.ciaaPerms?.role_color||'#1a56db'};border:1px solid ${state.ciaaPerms?.role_color||'#1a56db'}44;border-radius:4px;padding:1px 7px;font-size:11px;font-weight:700;margin-left:6px">${esc(state.ciaaPerms?.role_label||state.ciaaRole)}</span>`
+      : '';
+    if(info) info.innerHTML = `<div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:#edfaf3;border:1px solid #b5e8cf;border-radius:8px;margin-bottom:12px;font-size:13px;color:#0c7c4b"><i class="ti ti-circle-check"></i>Connected as <strong>${esc(name)}</strong>${roleBadge} on ${esc(connLabel)}</div>`;
     updateConnIndicator(true, name);
     setTimeout(() => showView('repos'), 600);
   } catch(e) {
@@ -1580,7 +1636,17 @@ function renderResults(el) {
       <button onclick="document.getElementById('kb-hint').style.display='none'" style="margin-top:8px;width:100%;border:1px solid #2d3f55;background:none;color:#9fadbf;border-radius:6px;padding:4px;cursor:pointer;font-size:11px">Close</button>
     </div>
 
-    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-top:16px">
+    <!-- Role badge in results bar -->
+    ${state.ciaaPerms ? `<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:8px 12px;background:${state.ciaaPerms.role_color||'#1a56db'}08;border:1px solid ${state.ciaaPerms.role_color||'#1a56db'}22;border-radius:8px">
+      <span style="font-size:16px">${state.ciaaPerms.can_comment?'🔍':'👨‍💻'}</span>
+      <div>
+        <span style="font-weight:700;font-size:12px;color:${state.ciaaPerms.role_color||'#1a56db'}">${escHtml(state.ciaaPerms.role_label||'Developer')}</span>
+        <span style="font-size:11px;color:#7a8494;margin-left:6px">${escHtml(state.ciaaPerms.description||'')}</span>
+      </div>
+      ${!state.ciaaPerms.can_comment ? `<span style="margin-left:auto;font-size:11px;color:#9fadbf;font-style:italic">Reviewer actions hidden — contact your lead for reviewer access</span>` : ''}
+    </div>` : ''}
+
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-top:8px">
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-primary" onclick="toggleReviewSummary()" id="btn-review-summary">
           <i class="ti ti-clipboard-text"></i>Review Summary
@@ -1591,9 +1657,15 @@ function renderResults(el) {
         <button class="btn" onclick="switchResultTab('checklist')" title="Open structured reviewer checklist">
           <i class="ti ti-list-check"></i>Checklist
         </button>
-        <button class="btn" onclick="postPRComments()" title="Post findings as inline PR comments">
+        ${canPostToGit() ? `
+        <button class="btn" onclick="postPRComments()" title="Post findings as PR comments (Reviewer only)"
+          style="background:#f0fdf4;border-color:#86efac;color:#166534">
           <i class="ti ti-message-2-code"></i>Post to PR
-        </button>
+        </button>` : `
+        <button class="btn" disabled title="Posting PR comments requires Reviewer role"
+          style="opacity:.45;cursor:not-allowed" onclick="showToast('Post to PR requires Reviewer role. Ask your tech lead to assign reviewer access.','error')">
+          <i class="ti ti-lock"></i>Post to PR
+        </button>`}
       </div>
       <div style="display:flex;align-items:center;gap:10px">
         <button class="btn" onclick="resetAnalysis()"><i class="ti ti-plus"></i>New analysis</button>
@@ -2280,16 +2352,47 @@ function renderChecklistTab(r) {
     byDomain[i.domain].push(i);
   });
 
+  const isReviewer = canOverrideGate();
+
   return `
     <div class="card">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px;flex-wrap:wrap">
         <div style="font-size:22px;font-weight:800;color:${gateColor}">${gateLabel}</div>
-        <div style="display:flex;gap:8px;margin-left:auto">
+        <div style="display:flex;gap:8px;margin-left:auto;flex-wrap:wrap">
           <span style="background:#f0fdf4;color:#166534;border:1px solid #86efac;border-radius:6px;padding:4px 12px;font-size:12px;font-weight:700">✅ ${pass} passed</span>
           ${warn>0?`<span style="background:#fffbeb;color:#92400e;border:1px solid #fcd34d;border-radius:6px;padding:4px 12px;font-size:12px;font-weight:700">⚠️ ${warn} warnings</span>`:''}
           ${fail>0?`<span style="background:#fff1f2;color:#991b1b;border:1px solid #fca5a5;border-radius:6px;padding:4px 12px;font-size:12px;font-weight:700">❌ ${fail} failed</span>`:''}
         </div>
-        <button onclick="copyChecklist()" class="btn" style="font-size:12px"><i class="ti ti-copy"></i> Copy as Markdown</button>
+        <button onclick="copyChecklist()" class="btn" style="font-size:12px"><i class="ti ti-copy"></i> Copy</button>
+      </div>
+
+      <!-- Reviewer gate actions — hidden for Developer role -->
+      ${isReviewer ? `
+      <div style="display:flex;gap:10px;margin-bottom:18px;padding:14px 16px;background:#f7f8fa;border:1px solid #e8eaed;border-radius:10px;align-items:center;flex-wrap:wrap">
+        <div style="flex:1;min-width:160px">
+          <div style="font-weight:700;font-size:13px;color:#1a2332;margin-bottom:2px">Reviewer decision</div>
+          <div style="font-size:11px;color:#7a8494">Your gate decision overrides the AI recommendation. Logged for audit.</div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button onclick="submitGateOverride('APPROVE')" style="padding:8px 18px;border:1.5px solid #059669;background:#f0fdf4;color:#166534;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;transition:all .15s" onmouseover="this.style.background='#059669';this.style.color='#fff'" onmouseout="this.style.background='#f0fdf4';this.style.color='#166534'">
+            ✅ Approve merge
+          </button>
+          <button onclick="submitGateOverride('HOLD')" style="padding:8px 18px;border:1.5px solid #f59e0b;background:#fffbeb;color:#92400e;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;transition:all .15s" onmouseover="this.style.background='#f59e0b';this.style.color='#fff'" onmouseout="this.style.background='#fffbeb';this.style.color='#92400e'">
+            ⚠️ Request changes
+          </button>
+          <button onclick="submitGateOverride('BLOCK')" style="padding:8px 18px;border:1.5px solid #dc2626;background:#fff1f2;color:#991b1b;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;transition:all .15s" onmouseover="this.style.background='#dc2626';this.style.color='#fff'" onmouseout="this.style.background='#fff1f2';this.style.color='#991b1b'">
+            🚫 Block merge
+          </button>
+          ${canPostToGit() ? `
+          <button onclick="postPRComments()" style="padding:8px 18px;border:1.5px solid #1a56db;background:#eff5ff;color:#1a56db;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px" title="Post findings to PR">
+            <i class="ti ti-message-2-code"></i> Post to PR
+          </button>` : ''}
+        </div>
+      </div>` : `
+      <div style="padding:10px 14px;background:#f7f8fa;border:1px solid #e8eaed;border-radius:8px;margin-bottom:16px;font-size:12px;color:#7a8494;display:flex;align-items:center;gap:8px">
+        <i class="ti ti-lock" style="font-size:14px"></i>
+        <span><strong>Approve / Block</strong> actions are available to Reviewers only. ${roleBadgeHtml(true)} — view-only access.</span>
+      </div>`}
       </div>
       <div style="display:flex;flex-direction:column;gap:14px">
         ${Object.entries(byDomain).map(([domain, domItems]) => {
@@ -2467,6 +2570,43 @@ function copyPRDescription() {
   const ta = document.getElementById('pr-desc-text');
   if (!ta) return;
   navigator.clipboard.writeText(ta.value).then(() => showToast('PR description copied to clipboard!'));
+}
+
+// ── Gate override (Reviewer only) ────────────────────────────────────────────
+
+async function submitGateOverride(decision) {
+  if (!canOverrideGate()) {
+    showToast('Gate override requires Reviewer or Analyst role.', 'error');
+    return;
+  }
+  if (!state.backendUrl || !state.lastRequestId) {
+    showToast('Backend URL and a completed analysis are required.', 'error');
+    return;
+  }
+
+  const reason = prompt(`Reason for ${decision === 'APPROVE' ? '✅ Approving' : decision === 'BLOCK' ? '🚫 Blocking' : '⚠️ Requesting changes'} this PR merge:`);
+  if (reason === null) return;   // cancelled
+
+  const label  = {APPROVE: 'Approved', HOLD: 'Changes requested', BLOCK: 'Blocked'}[decision] || decision;
+  const headers = {'Content-Type': 'application/json'};
+  if (state.backendKey) headers['X-API-Key'] = state.backendKey;
+
+  try {
+    const resp = await fetch(`${state.backendUrl}/api/v1/gate/${state.lastRequestId}/override`, {
+      method: 'POST', headers,
+      body: JSON.stringify({ override_to: decision, reason: reason || `${label} by reviewer` }),
+    });
+    if (resp.ok) {
+      showToast(`${decision === 'APPROVE' ? '✅' : decision === 'BLOCK' ? '🚫' : '⚠️'} ${label} — recorded`, 'success');
+    } else {
+      const d = await resp.json().catch(() => ({}));
+      if (resp.status === 403) {
+        showToast('Gate override requires Reviewer role — contact your admin.', 'error');
+      } else {
+        showToast(`Gate override failed: ${d.detail || resp.status}`, 'error');
+      }
+    }
+  } catch(e) { showToast(`Error: ${e.message}`, 'error'); }
 }
 
 // ── Post to PR ────────────────────────────────────────────────────────────────

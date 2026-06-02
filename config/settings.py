@@ -71,8 +71,14 @@ class Settings(BaseSettings):
     neo4j_pass:  str = Field(default="",          alias="NEO4J_PASSWORD")
 
     # ── API auth ──────────────────────────────────────────────────────────────
-    api_keys:       list[str] = Field(default_factory=list, alias="API_KEYS")
-    skip_auth:      bool      = Field(default=False, alias="SKIP_AUTH")
+    # api_keys accepts plain strings (default role: developer) OR rich objects:
+    #   {"key": "abc", "roles": ["reviewer"], "name": "Alice", "team": "Payments"}
+    # For many users prefer API_KEYS_FILE pointing to a JSON file — easier to
+    # manage, diff in git, and reload without restarting the server.
+    # Roles: admin | analyst | reviewer | developer | auditor | ci_system
+    api_keys:       list      = Field(default_factory=list, alias="API_KEYS")
+    api_keys_file:  str       = Field(default="",           alias="API_KEYS_FILE")
+    skip_auth:      bool      = Field(default=False,        alias="SKIP_AUTH")
 
     # ── Output integrations ────────────────────────────────────────────────────
     slack_webhook_url:   str = Field(default="", alias="SLACK_WEBHOOK_URL")
