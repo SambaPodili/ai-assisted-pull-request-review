@@ -1,0 +1,27 @@
+# /etc/systemd/system/ciaa.service
+# Runs the CIAA backend API under gunicorn. Install per DEPLOYMENT.md.
+[Unit]
+Description=CIAA Impact Analyzer API
+After=network.target
+
+[Service]
+Type=simple
+User=ciaa
+Group=ciaa
+WorkingDirectory=/opt/ciaa/app
+EnvironmentFile=/opt/ciaa/.env
+ExecStart=/opt/ciaa/venv/bin/gunicorn 'api.app:create_app' --factory -c /opt/ciaa/app/gunicorn_conf.py
+Restart=always
+RestartSec=3
+
+# ── Hardening ──────────────────────────────────────────────────────────────
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# Only the data/log dirs are writable; the code tree stays read-only.
+ReadWritePaths=/opt/ciaa/data /opt/ciaa/logs
+# Secrets readable only by the service user (chmod 600 on the VM).
+
+[Install]
+WantedBy=multi-user.target
