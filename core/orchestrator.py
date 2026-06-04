@@ -199,15 +199,35 @@ class ImpactAnalysisOrchestrator:
             phase_run=self.phase,
         )
 
-        # ── Phase 1: code_analysis + security (parallel) ──────────────────────
-        p1 = self._run_parallel({
-            AgentName.CODE_ANALYSIS: (self._code, ctx.get(AgentName.CODE_ANALYSIS, {})),
-            AgentName.SECURITY:      (self._sec,  ctx.get(AgentName.SECURITY, {})),
-        }, request, budget)
+        # ── Phase 1: code_analysis + security ─────────────────────────────────
+        from config.settings import get_settings as _gs
+        _cfg = _gs()
+        if getattr(request, "deep_scan", False) and len(request.hunks) >= getattr(_cfg, "deep_scan_min_files", 8):
+            # Full-coverage: run code + security over ALL files in batches.
+            from core.deep_scan import run_batched, merge_code, merge_security
+            mc = getattr(_cfg, "deep_scan_batch_chars", 12000)
+            mb = getattr(_cfg, "deep_scan_max_batches", 10)
+            log.info("[%s] Deep-scan enabled — %d changed files", request.request_id, len(request.hunks))
+            report.code_analysis = run_batched(self._code, request, ctx.get(AgentName.CODE_ANALYSIS, {}),
+                                               merge_code, self._budgets, mc, mb)
+            report.security = run_batched(self._sec, request, ctx.get(AgentName.SECURITY, {}),
+                                          merge_security, self._budgets, mc, mb)
+        else:
+            p1 = self._run_parallel({
+                AgentName.CODE_ANALYSIS: (self._code, ctx.get(AgentName.CODE_ANALYSIS, {})),
+                AgentName.SECURITY:      (self._sec,  ctx.get(AgentName.SECURITY, {})),
+            }, request, budget)
+            report.code_analysis = p1.get(AgentName.CODE_ANALYSIS)
+            report.security      = p1.get(AgentName.SECURITY)
+            self._record_usage(report, p1, AgentName.CODE_ANALYSIS, AgentName.SECURITY)
 
-        report.code_analysis = p1.get(AgentName.CODE_ANALYSIS)
-        report.security      = p1.get(AgentName.SECURITY)
-        self._record_usage(report, p1, AgentName.CODE_ANALYSIS, AgentName.SECURITY)
+        # ── Evidence guard: drop security findings citing files not in the diff
+        try:
+            from governance.evidence import filter_unsubstantiated
+            changed = {h.file_path for h in request.hunks}
+            filter_unsubstantiated(report, changed)
+        except Exception as exc:
+            log.debug("[%s] Evidence guard skipped: %s", request.request_id, exc)
 
         # ── Phase 1b: Advanced detection (parallel, always runs) ──────────────
         p1b = self._run_parallel_advanced(request, budget, ctx)
@@ -654,6 +674,15 @@ class ImpactAnalysisOrchestrator:
     def _finalize(self, report: AnalysisReport, budget: TokenBudgetManager) -> AnalysisReport:
         summary = budget.summary()
         report.token_budget = summary["total_allocated"]
+
+        # ── Auto-suppress known false positives (reviewer feedback loop) ─────
+        # Runs BEFORE the gate so a repeatedly-dismissed check can't block merges.
+        try:
+            from governance.feedback_store import get_feedback_store
+            from governance.suppression import apply_suppressions
+            apply_suppressions(report, report.repo_url, get_feedback_store())
+        except Exception as exc:
+            log.debug("[%s] Suppression skipped: %s", report.request_id, exc)
 
         # ── Deterministic gate enforcement (overrides the LLM proposal) ──────
         try:

@@ -44,9 +44,12 @@ def _is_critical(sev) -> bool:
 
 
 def _has_content(f) -> bool:
-    """A finding is 'real' only if it carries some content. Guards against
-    phantom findings (severity set but no description/CWE/file) that would
-    otherwise inflate counts and trigger a spurious BLOCK."""
+    """A finding counts toward the gate only if it carries real content AND is
+    not 'unverified' (cites a file not in the diff). Guards against phantom
+    findings (severity set, no content) and unsubstantiated/hallucinated ones —
+    both kept for display elsewhere, but neither may block a merge."""
+    if getattr(f, "unverified", False):
+        return False
     return bool(
         (getattr(f, "description", "") or "").strip()
         or (getattr(f, "cwe_id", "") or getattr(f, "cwe", "") or "").strip()
@@ -88,6 +91,33 @@ def evaluate_policy(report: AnalysisReport, settings=None) -> PolicyResult:
     se = report.secrets_entropy
     if se and any(_is_critical(getattr(f, "severity", "")) for f in (getattr(se, "findings", []) or [])):
         block_reasons.append("High-entropy secret detected by entropy scanner")
+
+    # Taint analysis: data-flow-proven injection / SSRF / path traversal
+    ta = report.taint_analysis
+    if ta:
+        taint_kinds = []
+        if getattr(ta, "has_injection", False):       taint_kinds.append("injection (SQLi/command/template)")
+        if getattr(ta, "has_ssrf", False):            taint_kinds.append("SSRF")
+        if getattr(ta, "has_path_traversal", False):  taint_kinds.append("path traversal")
+        if taint_kinds:
+            block_reasons.append(
+                f"Tainted data flow to a dangerous sink: {', '.join(taint_kinds)} "
+                f"({len(getattr(ta, 'taint_paths', []) or [])} path(s))"
+            )
+
+    # Infrastructure-as-Code misconfigurations (public buckets, wildcard IAM, etc.)
+    iac = report.iac_analysis
+    if iac:
+        iac_findings = getattr(iac, "findings", []) or []
+        crit_iac = [f for f in iac_findings if _is_critical(getattr(f, "severity", ""))]
+        high_iac = [f for f in iac_findings if _is_high_or_critical(getattr(f, "severity", ""))]
+        if crit_iac:
+            block_reasons.append(
+                f"{len(crit_iac)} critical infrastructure misconfiguration(s) "
+                f"(e.g. {getattr(crit_iac[0], 'kind', '') or 'insecure resource'})"
+            )
+        elif high_iac:
+            hold_reasons.append(f"{len(high_iac)} high-severity infrastructure misconfiguration(s)")
 
     # Schema: destructive + irreversible migration is a data-loss risk
     sc = report.schema_change

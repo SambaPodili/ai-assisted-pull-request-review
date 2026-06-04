@@ -92,6 +92,7 @@ class AnalyseRequest(BaseModel):
     metadata:     dict[str, Any] = {}
     llm_config:   dict[str, Any] = {}
     model_config_override: dict[str, Any] = {}
+    deep_scan:    bool = False     # analyse ALL changed files in batches (no sampling)
 
     @field_validator("diff_text")
     @classmethod
@@ -120,9 +121,19 @@ async def submit_analysis(
     """
     from api.app import get_orchestrator, get_report_store
     from config.settings import get_settings
+    from core.concurrency import get_admission
     orch    = get_orchestrator()
     store   = get_report_store()
     cfg     = get_settings()
+    adm     = get_admission()
+
+    # Admission control: shed load when the run-slots + queue are all full.
+    if not adm.can_admit():
+        raise HTTPException(
+            503,
+            detail=(f"Server busy — {adm.running} running, {adm.queued} queued (queue full). "
+                    "Please retry shortly."),
+        )
 
     request_id = getattr(request.state, "request_id", None) or str(uuid.uuid4())
     hunks      = parse_diff(payload.diff_text) if payload.diff_text else []
@@ -137,17 +148,22 @@ async def submit_analysis(
         hunks=hunks,
         metadata=payload.metadata,
         model_config_=llm_cfg,
+        deep_scan=bool(payload.deep_scan),
     )
 
-    _in_flight.set(request_id, "running")
+    # Mark queued up-front; flips to running once a slot is acquired.
+    _in_flight.set(request_id, "queued")
 
     async def _run():
-        timeout = getattr(cfg, "analysis_timeout_s", 300)
+        timeout = getattr(cfg, "analysis_timeout_s", 600)
         try:
-            report = await asyncio.wait_for(
-                orch.analyse_async(req),
-                timeout=timeout,
-            )
+            await adm.acquire(request_id)          # waits here if all slots busy
+        except asyncio.CancelledError:
+            _in_flight.set(request_id, "error: cancelled while queued")
+            return
+        _in_flight.set(request_id, "running")       # timeout starts only now
+        try:
+            report = await asyncio.wait_for(orch.analyse_async(req), timeout=timeout)
             store.save(report)
             _in_flight.set(request_id, "done")
             log.info("[%s] Analysis complete — gate=%s", request_id, report.gate_decision.value)
@@ -159,6 +175,8 @@ async def submit_analysis(
             log.error("[%s] Analysis failed: %s", request_id, exc, exc_info=True)
             _in_flight.set(request_id, f"error: {exc}")
             _save_error(store, req, str(exc))
+        finally:
+            adm.release()
 
     background.add_task(_run)
     return {"request_id": request_id, "status": "queued"}
@@ -188,7 +206,13 @@ def get_status(request_id: str):
         if get_report_store().get(request_id):
             return {"request_id": request_id, "status": "done"}
         return {"request_id": request_id, "status": "unknown"}
-    return {"request_id": request_id, "status": status}
+    resp = {"request_id": request_id, "status": status}
+    if status == "queued":
+        from core.concurrency import get_admission
+        adm = get_admission()
+        resp["queue_position"] = adm.position(request_id)
+        resp["queue_total"] = adm.queued
+    return resp
 
 
 @router.get("/report/{request_id}")
@@ -205,8 +229,8 @@ def get_report(request_id: str, fmt: str = "json"):
     store  = get_report_store()
 
     status = _in_flight.get(request_id)
-    if status == "running":
-        raise HTTPException(202, detail="Analysis still running — please poll again shortly.")
+    if status in ("running", "queued"):
+        raise HTTPException(202, detail=f"Analysis {status} — please poll again shortly.")
 
     report = store.get(request_id)
     if not report:
@@ -273,10 +297,40 @@ def feedback_stats(repo: str = ""):
     """
     from governance.feedback_store import get_feedback_store
     fs = get_feedback_store()
+    noisy = fs.noisy_checks(repo=repo)
+
+    # Detection-accuracy rollup from reviewer verdicts (overall + per agent).
+    tot_fp = sum(c.get("false_positives", 0) for c in noisy)
+    tot_valid = sum(c.get("valid", 0) for c in noisy)
+    tot_fixed = sum(c.get("fixed", 0) for c in noisy)
+    judged = tot_fp + tot_valid + tot_fixed       # verdicts that imply correct/incorrect
+    correct = tot_valid + tot_fixed
+    by_agent: dict[str, dict] = {}
+    for c in noisy:
+        a = by_agent.setdefault(c.get("agent", "?"), {"fp": 0, "valid": 0, "fixed": 0})
+        a["fp"] += c.get("false_positives", 0)
+        a["valid"] += c.get("valid", 0)
+        a["fixed"] += c.get("fixed", 0)
+    agent_accuracy = []
+    for a, v in by_agent.items():
+        j = v["fp"] + v["valid"] + v["fixed"]
+        agent_accuracy.append({
+            "agent": a, "judged": j, "false_positives": v["fp"],
+            "accuracy": round((v["valid"] + v["fixed"]) / j, 3) if j else None,
+        })
+    agent_accuracy.sort(key=lambda x: (x["accuracy"] if x["accuracy"] is not None else 1))
+
     return {
-        "noisy_checks": fs.noisy_checks(repo=repo),
+        "noisy_checks": noisy,
         "gate_stats":   fs.gate_stats(repo=repo),
-        "repo":         repo,
+        "accuracy": {
+            "judged_findings":  judged,
+            "confirmed_valid":  correct,
+            "false_positives":  tot_fp,
+            "overall_accuracy": round(correct / judged, 3) if judged else None,
+            "by_agent":         agent_accuracy,
+        },
+        "repo": repo,
     }
 
 

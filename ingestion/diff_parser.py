@@ -207,3 +207,44 @@ def summarise_diff(hunks: list[DiffHunk]) -> dict:
             for h in hunks
         ],
     }
+
+
+# ── Low-signal file filter (input guardrails) ──────────────────────────────────
+# Binaries, lockfiles, minified/generated assets and vendored code add noise and
+# burn tokens without yielding meaningful review findings. They are excluded from
+# the per-file LLM prompts (the dependency agent still reads manifests/locks via
+# its own ingestion, so CVE detection is unaffected).
+_BINARY_EXT = {
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".svg", ".pdf",
+    ".zip", ".gz", ".tar", ".tgz", ".jar", ".war", ".class", ".so", ".dll", ".dylib",
+    ".exe", ".bin", ".o", ".a", ".woff", ".woff2", ".ttf", ".eot", ".mp4", ".mp3",
+    ".mov", ".png", ".pyc", ".wasm", ".pdf", ".xlsx", ".docx", ".pptx",
+}
+_LOCKFILES = {
+    "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "pipfile.lock",
+    "go.sum", "cargo.lock", "gemfile.lock", "composer.lock", "packages.lock.json",
+}
+_GENERATED_MARKERS = (
+    ".min.js", ".min.css", ".map", ".pb.go", "_pb2.py", "_pb2_grpc.py", ".g.dart",
+    ".freezed.dart", ".generated.", "-lock.json",
+)
+_VENDOR_DIRS = ("node_modules/", "vendor/", "dist/", "build/", ".next/", "out/",
+                "site-packages/", "__pycache__/", "third_party/", "bower_components/")
+
+
+def is_low_signal_path(path: str) -> bool:
+    """True if a changed file is unlikely to yield useful review findings
+    (binary, lockfile, minified/generated, or vendored)."""
+    p = (path or "").lower().strip()
+    if not p:
+        return False
+    base = p.rsplit("/", 1)[-1]
+    if base in _LOCKFILES:
+        return True
+    if any(p.endswith(ext) for ext in _BINARY_EXT):
+        return True
+    if any(m in p for m in _GENERATED_MARKERS):
+        return True
+    if any(d in p for d in _VENDOR_DIRS):
+        return True
+    return False

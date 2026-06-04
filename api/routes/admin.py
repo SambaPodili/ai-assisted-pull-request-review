@@ -18,9 +18,24 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 # ── Report purge (admin only) ─────────────────────────────────────────────────
 
+import re as _re
+
+# Real analyses always use a UUID request_id; seed/demo rows (digest-t1, ins0,
+# dup2, purge-0, test-review-001 …) do not. Matching non-UUID ids cleanly
+# targets demo data without risking real runs.
+_UUID_RE = _re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", _re.IGNORECASE
+)
+
+
+def _is_demo_id(request_id: str) -> bool:
+    return not bool(_UUID_RE.match((request_id or "").strip()))
+
+
 class PurgeRequest(BaseModel):
     repo_contains: str = ""     # delete reports whose repo URL/slug contains this substring (case-insensitive)
     older_than_days: int = 0    # delete reports older than N days (0 = no age filter)
+    demo_only: bool = False     # delete only seed/demo rows (non-UUID request_ids) — safe one-click cleanup
     dry_run: bool = True        # preview only — does NOT delete unless explicitly false
 
 
@@ -36,8 +51,8 @@ def purge_reports(body: PurgeRequest,
     from datetime import datetime, timezone, timedelta
     from api.app import get_report_store
 
-    if not body.repo_contains and body.older_than_days <= 0:
-        raise HTTPException(400, detail="Provide repo_contains and/or older_than_days (refusing to match all reports).")
+    if not body.repo_contains and body.older_than_days <= 0 and not body.demo_only:
+        raise HTTPException(400, detail="Provide repo_contains, older_than_days, or demo_only (refusing to match all reports).")
 
     store   = get_report_store()
     needle  = body.repo_contains.strip().lower()
@@ -50,6 +65,8 @@ def purge_reports(body: PurgeRequest,
     matched: list[dict] = []
     for m in metas:
         repo = (m.get("repo") or "").lower()
+        if body.demo_only and not _is_demo_id(m.get("request_id", "")):
+            continue
         if needle and needle not in repo:
             continue
         if cutoff is not None:

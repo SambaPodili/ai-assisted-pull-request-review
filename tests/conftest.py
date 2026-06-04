@@ -4,6 +4,7 @@ tests/conftest.py
 Shared pytest fixtures available to all unit and integration tests.
 """
 from __future__ import annotations
+import os
 import uuid
 import pytest
 from unittest.mock import MagicMock, patch
@@ -15,6 +16,40 @@ from core.models import (
 )
 from core.token_manager import TokenBudgetManager
 from storage.report_store import InMemoryReportStore
+
+
+# ── Database isolation (autouse, session-wide) ─────────────────────────────────
+# Critical: without this, any test that calls create_app() / the report or
+# feedback stores writes into the REAL data/*.db files and pollutes the live
+# Insights dashboard with test artifacts. Redirect all on-disk stores to a
+# throwaway temp dir before any test runs.
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_databases(tmp_path_factory):
+    d = tmp_path_factory.mktemp("ciaa_test_dbs")
+
+    # Reports: default sqlite_path is "" so make_report_store falls back to this.
+    import storage.report_store as rs
+    rs._DEFAULT_SQLITE_PATH = str(d / "reports.db")
+
+    # Feedback: its default path is non-empty, so pre-seed the singleton at temp.
+    import governance.feedback_store as fb
+    from governance.feedback_store import SQLiteFeedbackStore
+    fb._store = SQLiteFeedbackStore(str(d / "feedback.db"))
+
+    # Temporal store.
+    import storage.temporal_store as ts
+    ts._store = None
+    ts.DEFAULT_DB_PATH = str(d / "temporal.db")
+
+    # Drop cached settings + app globals so the temp stores take effect.
+    from config.settings import get_settings
+    get_settings.cache_clear()
+    import api.app as app_mod
+    app_mod._report_store = None
+    app_mod._orchestrator = None
+    app_mod._audit_logger = None
+    os.environ.setdefault("SKIP_AUTH", "true")
+    yield
 
 
 # ── Synthetic diff fixtures ────────────────────────────────────────────────────

@@ -49,8 +49,16 @@ class EvaluateRequest(BaseModel):
 
 
 # ── In-memory evaluation result store ─────────────────────────────────────────
-
+# Bounded so a long-running server can't leak memory: we keep only the most
+# recent _MAX_EVAL_RESULTS jobs (insertion-ordered dict → drop the oldest).
 _eval_results: dict[str, Any] = {}
+_MAX_EVAL_RESULTS = 200
+
+
+def _store_eval(job_id: str, value: Any) -> None:
+    _eval_results[job_id] = value
+    while len(_eval_results) > _MAX_EVAL_RESULTS:
+        _eval_results.pop(next(iter(_eval_results)))   # evict oldest
 
 
 def _default_judges() -> list[dict]:
@@ -122,15 +130,15 @@ async def evaluate_report(
 
     if payload.async_mode:
         job_id = f"eval-{request_id}"
-        _eval_results[job_id] = {"status": "running"}
+        _store_eval(job_id, {"status": "running"})
 
         async def _run():
             try:
                 result = panel.evaluate_report(report, payload.diff_text, agent_names)
-                _eval_results[job_id] = {"status": "done", "result": result.model_dump()}
+                _store_eval(job_id, {"status": "done", "result": result.model_dump()})
             except Exception as exc:
                 log.error("[Eval %s] Failed: %s", job_id, exc, exc_info=True)
-                _eval_results[job_id] = {"status": "error", "detail": str(exc)}
+                _store_eval(job_id, {"status": "error", "detail": str(exc)})
 
         background.add_task(_run)
         return {"job_id": job_id, "status": "running"}

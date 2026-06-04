@@ -139,6 +139,26 @@ class SQLiteFeedbackStore:
             q += " AND repo=?"; args.append(repo)
         return self._conn.execute(q, tuple(args)).fetchone()[0]
 
+    def suppressed_categories(self, repo: str = "", min_fp: int = 3) -> set[tuple[str, str]]:
+        """(agent, category) pairs that reviewers have repeatedly marked as false
+        positives with NO 'valid' verdicts — safe to auto-suppress on new runs.
+
+        Conservative on purpose: requires ≥ min_fp false positives and zero
+        'valid' marks, so a check that is ever genuinely useful is never hidden.
+        """
+        q = """
+            SELECT agent, category,
+                   SUM(CASE WHEN verdict='false_positive' THEN 1 ELSE 0 END) AS fp,
+                   SUM(CASE WHEN verdict='valid'          THEN 1 ELSE 0 END) AS valid
+            FROM finding_feedback
+            {where}
+            GROUP BY agent, category
+            HAVING fp >= ? AND valid = 0 AND category != ''
+        """.format(where="WHERE repo = ?" if repo else "")
+        args = ([repo, min_fp] if repo else [min_fp])
+        rows = self._conn.execute(q, tuple(args)).fetchall()
+        return {(r["agent"], r["category"]) for r in rows}
+
     def gate_stats(self, repo: str = "") -> dict:
         where = "WHERE repo = ?" if repo else ""
         args = (repo,) if repo else ()
@@ -170,6 +190,7 @@ class _NullFeedbackStore:
     def record_finding(self, *a, **k): pass
     def noisy_checks(self, *a, **k): return []
     def fp_count(self, *a, **k): return 0
+    def suppressed_categories(self, *a, **k): return set()
     def gate_stats(self, *a, **k): return {"total_overrides": 0, "stricter": 0, "looser": 0, "same": 0}
     def recent_finding_feedback(self, *a, **k): return []
 

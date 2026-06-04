@@ -410,3 +410,26 @@ html.dark .fw-add-title { color:#8b949e; }
 .fw-add-sub { font-size:12.5px; color:#7a8494; max-width:240px; line-height:1.5; }
 html.dark .fw-add-sub { color:#6e7681; }
 .fw-add-sub code { font-size:11px; }
+
+/* ── Results: numbered "suggested review order" guidance ──────────────────── */
+.tab-step {
+  display:inline-flex; align-items:center; justify-content:center;
+  width:16px; height:16px; border-radius:50%;
+  background:#1a6cf6; color:#fff; font-size:10px; font-weight:700;
+  font-family:'JetBrains Mono', monospace; margin-right:6px; flex-shrink:0;
+  line-height:1;
+}
+.tab.active .tab-step { background:#fff; color:#1a6cf6; }
+html.dark .tab-step { background:#1f6feb; color:#fff; }
+html.dark .tab.active .tab-step { background:#fff; color:#1f6feb; }
+.btn .tab-step { margin-right:5px; }
+
+.flow-legend {
+  display:flex; align-items:center; flex-wrap:wrap; gap:5px;
+  font-size:11.5px; font-weight:600; color:#7a8494;
+  background:#f3f7ff; border:1px solid #dbe7ff; border-radius:8px;
+  padding:7px 12px; margin-bottom:12px;
+}
+.flow-legend i { color:#1a6cf6; font-size:14px; margin-right:2px; }
+.flow-legend .tab-step { width:15px; height:15px; font-size:9px; margin-right:2px; }
+html.dark .flow-legend { background:#10203a; border-color:#1f3a63; color:#8b949e; }

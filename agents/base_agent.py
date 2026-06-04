@@ -43,9 +43,16 @@ def format_hunks_for_prompt(
     Includes a summary line when files are omitted so the LLM knows the scope.
     """
     from ingestion.language_registry import lang_meta
+    from ingestion.diff_parser import is_low_signal_path
 
     if not hunks:
         return "(no diff hunks)"
+
+    # ── Input guardrails: drop binary/lockfile/generated/vendored noise ───────
+    signal = [h for h in hunks if not is_low_signal_path(h.file_path)]
+    skipped_noise = len(hunks) - len(signal)
+    if signal:                       # never end up empty (a binary-only PR keeps its hunks)
+        hunks = signal
 
     # ── Rank hunks for large PRs ──────────────────────────────────────────────
     def _hunk_score(h: DiffHunk) -> int:
@@ -85,9 +92,13 @@ def format_hunks_for_prompt(
     parts: list[str] = []
     if omitted > 0:
         parts.append(
-            f"[Large PR: showing {len(selected)} of {total_files} changed files, "
+            f"[Large PR: showing {len(selected)} of {total_files} reviewable files, "
             f"ranked by {'security sensitivity' if focus=='security' else 'change volume'}. "
             f"{omitted} lower-priority files omitted.]"
+        )
+    if skipped_noise > 0:
+        parts.append(
+            f"[{skipped_noise} binary/lockfile/generated file(s) excluded as low-signal.]"
         )
 
     for h in selected:

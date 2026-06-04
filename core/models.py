@@ -114,6 +114,7 @@ class AnalysisRequest(BaseModel):
     metadata:     dict[str, Any] = {}
     pr:           PRMetadata     = Field(default_factory=PRMetadata)
     model_config_: dict[str, Any] = {}   # per-request LLM provider override
+    deep_scan:    bool = False            # analyse ALL changed files in batches (no sampling)
     created_at:   datetime = Field(default_factory=datetime.utcnow)
 
     @property
@@ -168,6 +169,9 @@ class SecurityFinding(BaseModel):
     mas_trm_ref: str = ""
     description: str
     remediation: str
+    # Set when the cited file isn't in the diff — kept & shown to the reviewer,
+    # but excluded from the gate (can't block a merge on an unverifiable basis).
+    unverified:  bool = False
 
 
 class SecurityResult(AgentResultBase):
@@ -610,6 +614,11 @@ class AnalysisReport(BaseModel):
 
     # Downstream call-sites that breaking changes will affect (with failure mode)
     consumer_impacts:        list[ConsumerImpact] = []
+
+    # Findings auto-suppressed because reviewers repeatedly marked this
+    # (agent, category) a false positive for this repo (transparency, not hiding).
+    suppressed_count:        int = 0
+    suppressed_notes:        list[str] = []
 
     # Stored gate/risk — set by orchestrator at finalization so the values
     # are stable in the stored report and don't require re-deriving at read time.

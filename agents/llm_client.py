@@ -256,6 +256,7 @@ class UnifiedLLMClient:
                 resp = client.messages.create(
                     model=self._cfg.model,
                     max_tokens=max_tokens,
+                    temperature=float(getattr(cfg, "llm_temperature", 0.0)),
                     system=[{
                         "type":          "text",
                         "text":          system,
@@ -338,6 +339,7 @@ class UnifiedLLMClient:
                 resp = client.chat.completions.create(
                     model=self._cfg.model,
                     max_tokens=max_tokens,
+                    temperature=float(getattr(cfg, "llm_temperature", 0.0)),
                     messages=messages,
                 )
 

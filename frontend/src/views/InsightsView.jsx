@@ -98,13 +98,16 @@ export default function InsightsView({ active, showView, showToast }) {
         <button className="btn" style={{fontSize:12,padding:'6px 12px'}} onClick={exportInsight} title="Download current tab as CSV"><i className="ti ti-download"/> CSV</button>
       </div>
 
+      {/* Manager rollup banner */}
+      <ManagerBanner insightFetch={insightFetch} filterQS={filterQS} days={filter.days} repo={filter.repo}/>
+
       <div style={{marginBottom:18,display:'flex',gap:4,flexWrap:'wrap'}}>
         {TABS.map(t=>(
           <button key={t.id} className={`tab ${activeTab===t.id?'active':''}`} onClick={()=>setActiveTab(t.id)}>{t.label}</button>
         ))}
       </div>
 
-      {activeTab==='queue' && <QueueTab state={state} insightFetch={insightFetch} filterQS={filterQS} setRepos={setRepos} repos={repos} showView={showView} update={update}/>}
+      {activeTab==='queue' && <QueueTab state={state} insightFetch={insightFetch} filterQS={filterQS} setRepos={setRepos} repos={repos} showView={showView} update={update} showToast={showToast}/>}
       {activeTab==='trend' && <TrendTab state={state} insightFetch={insightFetch} filterQS={filterQS}/>}
       {activeTab==='heatmap' && <HeatmapTab state={state} insightFetch={insightFetch} filter={filter}/>}
       {activeTab==='cost' && <CostTab state={state} insightFetch={insightFetch} filterQS={filterQS}/>}
@@ -113,7 +116,71 @@ export default function InsightsView({ active, showView, showToast }) {
   )
 }
 
-function QueueTab({ state, insightFetch, filterQS, setRepos, repos, showView, update }) {
+// High-level rollup for managers — one glance at "how are we doing this period".
+function ManagerBanner({ insightFetch, filterQS, days, repo }) {
+  const [d, setD] = useState(null)
+  const qs = filterQS('days')
+  useEffect(() => {
+    let on = true
+    insightFetch('/api/v1/insights/queue'+qs).then(r=>{ if(on) setD(r) }).catch(()=>{ if(on) setD(null) })
+    return () => { on = false }
+  }, [qs])
+
+  if (!d?.queue) return null
+  const q = d.queue
+  const total = q.length
+  const by = g => q.filter(x => (x.gate||'').toUpperCase()===g).length
+  const blocked = by('BLOCK'), hold = by('HOLD'), approved = by('APPROVE')
+  const attention = blocked + hold
+  const pct = total ? Math.round(attention/total*100) : 0
+
+  // Top risk area = repo with the highest peak risk score
+  const repoRisk = {}
+  q.forEach(x => { const k = x.repo || '(unknown)'; repoRisk[k] = Math.max(repoRisk[k]||0, x.risk_score||0) })
+  const topRepo = Object.entries(repoRisk).sort((a,b)=>b[1]-a[1])[0]
+
+  const period = days>0 ? `last ${days} days` : 'all time'
+  const scope = repo ? ` · ${repo}` : ''
+  const tone = blocked>0 ? ['#fff1f2','#991b1b','#fecaca'] : attention>0 ? ['#fffbeb','#92400e','#fde68a'] : ['#f0fdf4','#166534','#bbf7d0']
+
+  const Stat = ({n,label,color}) => (
+    <div style={{textAlign:'center',minWidth:64}}>
+      <div style={{fontSize:22,fontWeight:800,fontFamily:'JetBrains Mono,monospace',color:color||'#0d1117',lineHeight:1.1}}>{n}</div>
+      <div style={{fontSize:10.5,color:'#7a8494',fontWeight:600,textTransform:'uppercase',letterSpacing:'.03em'}}>{label}</div>
+    </div>
+  )
+
+  return (
+    <div style={{
+      display:'flex',alignItems:'center',gap:20,flexWrap:'wrap',
+      background:`linear-gradient(135deg, ${tone[0]}, #ffffff 70%)`,
+      border:`1px solid ${tone[2]}`,borderRadius:12,padding:'14px 20px',marginBottom:16,
+    }}>
+      <div style={{flex:1,minWidth:220}}>
+        <div style={{fontSize:11,fontWeight:700,letterSpacing:'.05em',textTransform:'uppercase',color:tone[1],marginBottom:3}}>
+          <i className="ti ti-chart-pie" style={{marginRight:5}}/> Executive summary · {period}{scope}
+        </div>
+        <div style={{fontSize:14.5,fontWeight:600,color:'#1a2332',lineHeight:1.45}}>
+          {total===0
+            ? 'No analyses in this period yet.'
+            : <>{total} analysis{total!==1?'es':''} — <strong style={{color:tone[1]}}>{attention}</strong> need attention ({pct}%).
+               {blocked>0 && <> <strong style={{color:'#991b1b'}}>{blocked} blocked.</strong></>}
+               {topRepo && topRepo[1]>=4 && <> Top risk area: <strong>{topRepo[0]}</strong>.</>}</>}
+        </div>
+      </div>
+      {total>0 && (
+        <div style={{display:'flex',gap:18,alignItems:'center'}}>
+          <Stat n={total} label="Analyses"/>
+          <Stat n={blocked} label="Blocked" color={blocked?'#991b1b':'#9fadbf'}/>
+          <Stat n={hold} label="Changes" color={hold?'#92400e':'#9fadbf'}/>
+          <Stat n={approved} label="Approved" color={approved?'#166534':'#9fadbf'}/>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function QueueTab({ state, insightFetch, filterQS, setRepos, repos, showView, update, showToast }) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
@@ -142,10 +209,20 @@ function QueueTab({ state, insightFetch, filterQS, setRepos, repos, showView, up
     try {
       const h={}; if(state.backendKey)h['X-API-Key']=state.backendKey
       const r=await fetch(`${state.backendUrl}/api/v1/report/${rid}?fmt=full`,{headers:h})
+      if(!r.ok){
+        throw new Error(r.status===404 ? 'Report not found (it may have been purged).'
+                        : r.status===202 ? 'Report is still being generated — try again shortly.'
+                        : `HTTP ${r.status}`)
+      }
       const d=await r.json()
-      update({report:normalizeReport(d),lastRequestId:rid})
+      // Clear any leftover run flag + stale diff so the Results screen renders
+      // this stored report cleanly (not the RunningView or a previous diff).
+      update({report:normalizeReport(d),lastRequestId:rid,analysisRequested:false,diffText:''})
       showView('results')
-    } catch(e){alert('Could not load report: '+e.message)}
+      const empty = !d.code_analysis && !(d.security&&d.security.findings&&d.security.findings.length) && !d.risk
+      if(d.errors&&d.errors.length) showToast?.('This analysis failed: '+d.errors[0],'warn')
+      else if(empty) showToast?.('This report has no detailed agent data (likely seed/test data).','warn')
+    } catch(e){ showToast?.('Could not load report: '+e.message,'error') }
   }
 
   return (
@@ -165,13 +242,17 @@ function QueueTab({ state, insightFetch, filterQS, setRepos, repos, showView, up
             <div style={{flex:1,minWidth:0}}>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:3,flexWrap:'wrap'}}>
                 {gateBadge(item.gate)}
-                <span style={{fontWeight:600,fontSize:13,color:'#0d1117'}}>{item.pr_title||item.source_ref||'(no title)'}</span>
-                {item.pr_number&&<span style={{fontSize:11,color:'#7a8494'}}>#{item.pr_number}</span>}
+                <span style={{fontWeight:600,fontSize:13,color:'#0d1117'}}>
+                  {item.pr_title
+                    || (item.source_ref ? `${item.source_ref} → ${item.target_ref||'main'}` : 'Branch / commit analysis')}
+                </span>
+                {item.pr_number>0 && <span style={{fontSize:11,color:'#7a8494'}}>#{item.pr_number}</span>}
               </div>
               <div style={{fontSize:11,color:'#7a8494',marginBottom:6}}>
-                <i className="ti ti-git-branch" style={{fontSize:11}}/> {item.repo}
+                <i className="ti ti-git-branch" style={{fontSize:11}}/> {item.repo||'(repo unknown)'}
                 {item.author&&` · ${item.author}`}
-                {` · ${item.elapsed} · ${(item.total_tokens||0).toLocaleString()} tokens`}
+                {` · ${item.elapsed}`}
+                {item.total_tokens>0 && ` · ${item.total_tokens.toLocaleString()} tokens`}
               </div>
               {item.top_findings?.length>0&&<div style={{display:'flex',flexDirection:'column',gap:2}}>{item.top_findings.map((f,j)=><div key={j} style={{fontSize:11,color:'#5a6a7e'}}><span className={`sev sev-${f.severity}`} style={{fontSize:9,padding:'0 5px'}}>{f.severity}</span> {f.title}</div>)}</div>}
             </div>
@@ -407,9 +488,41 @@ function FeedbackTab({ state, insightFetch, filter }) {
   const noisy = data.noisy_checks || []
   const gs = data.gate_stats || {}
   const total = gs.total_overrides || 0
+  const acc = data.accuracy || {}
+  const accPct = acc.overall_accuracy != null ? Math.round(acc.overall_accuracy*100) : null
+  const accColor = accPct==null ? '#7a8494' : accPct>=85 ? '#166534' : accPct>=65 ? '#92400e' : '#b91c1c'
 
   return (
     <div>
+      {/* Detection accuracy rollup (from reviewer verdicts) */}
+      <div className="card">
+        <div className="section-heading"><i className="ti ti-target-arrow"/>Detection accuracy</div>
+        {acc.judged_findings ? (
+          <div>
+            <div style={{display:'flex',gap:24,flexWrap:'wrap',alignItems:'center',marginBottom:10}}>
+              <div><div style={{fontSize:26,fontWeight:800,fontFamily:'JetBrains Mono,monospace',color:accColor}}>{accPct}%</div><div style={{fontSize:11,color:'#7a8494'}}>accuracy</div></div>
+              <Stat n={acc.judged_findings} label="findings reviewed"/>
+              <Stat n={acc.confirmed_valid} label="confirmed valid" color="#166534"/>
+              <Stat n={acc.false_positives} label="false positives" color={acc.false_positives?'#b91c1c':'#7a8494'}/>
+            </div>
+            {(acc.by_agent||[]).filter(a=>a.accuracy!=null).length>0 && (
+              <div style={{borderTop:'1px solid #f0f2f5',paddingTop:8}}>
+                <div style={{fontSize:11,color:'#9fadbf',marginBottom:6}}>Least accurate agents (most reviewer-rejected):</div>
+                <div style={{display:'flex',flexDirection:'column',gap:4}}>
+                  {(acc.by_agent||[]).filter(a=>a.accuracy!=null).slice(0,5).map(a=>(
+                    <div key={a.agent} style={{display:'flex',alignItems:'center',gap:8,fontSize:12}}>
+                      <span style={{minWidth:140,color:'#1a2332'}}>{a.agent.replace(/_/g,' ')}</span>
+                      <span style={{fontWeight:700,fontFamily:'JetBrains Mono,monospace',color:a.accuracy>=0.85?'#166534':a.accuracy>=0.65?'#92400e':'#b91c1c'}}>{Math.round(a.accuracy*100)}%</span>
+                      <span style={{fontSize:11,color:'#9fadbf'}}>{a.false_positives} FP / {a.judged} reviewed</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        ) : <div style={{fontSize:13,color:'#7a8494'}}>No reviewer verdicts yet. As reviewers mark findings valid or false-positive (⚐ / ✓ on each finding), detection accuracy trends appear here per agent.</div>}
+      </div>
+
       <div className="card">
         <div className="section-heading"><i className="ti ti-gavel"/>Gate override behaviour</div>
         {total === 0

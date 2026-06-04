@@ -35,6 +35,7 @@ export function normalizeReport(r) {
       description: f.description || '',
       file: f.file_path || f.file || '',
       line_range: f.line_range || '',
+      unverified: f.unverified || false,
     })).filter(f => f.description.trim() || f.cwe.trim() || f.file.trim()),  // drop phantom/empty findings
   } : null;
 
@@ -227,5 +228,7 @@ export function normalizeReport(r) {
     ai_proposed_gate:          r.ai_proposed_gate || '',
     capabilities_affected:     r.capabilities_affected || [],
     consumer_impacts:          r.consumer_impacts || [],
+    suppressed_count:          r.suppressed_count || 0,
+    suppressed_notes:          r.suppressed_notes || [],
   };
 }

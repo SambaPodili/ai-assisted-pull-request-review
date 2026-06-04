@@ -148,9 +148,12 @@ def pr_priority_queue(limit: int = 200, days: int = 0, repo: str = ""):
             except Exception:
                 pass
 
-        # De-dupe to the latest analysis per (repo, PR) — or per (repo, branch pair)
+        # De-dupe to the latest analysis per (repo, PR) — or per (repo, branch pair).
+        # Use the NORMALISED repo name so the same PR re-run with a differently
+        # formatted repo_url (https vs slug vs .git) still collapses to one entry.
+        repo_key = _short_repo(r.repo_url)
         pr_no = r.pr.pr_number if r.pr else 0
-        dedup_key = (r.repo_url, pr_no) if pr_no else (r.repo_url, r.source_ref, r.target_ref)
+        dedup_key = (repo_key, pr_no) if pr_no else (repo_key, r.source_ref, r.target_ref)
         if dedup_key in seen_prs:
             continue
         seen_prs.add(dedup_key)

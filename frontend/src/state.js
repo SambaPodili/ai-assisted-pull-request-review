@@ -113,6 +113,7 @@ export function createInitialState() {
     modelBaseUrl: localStorage.getItem('modelBaseUrl') || '',
     modelApiVer: localStorage.getItem('modelApiVer') || '2024-08-01-preview',
     judges: JSON.parse(localStorage.getItem('judges') || 'null') || defaultJudges(),
+    deepScan: false,
     repos: [],
     primaryRepo: null,
     connectedRepos: [],

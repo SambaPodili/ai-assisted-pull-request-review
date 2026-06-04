@@ -118,6 +118,7 @@ function RunningView({ state, update, showToast }) {
           repo_url: state.provider==='github'?`https://github.com/${repoName(state.primaryRepo)}`:repoName(state.primaryRepo),
           source_ref: tgt.source, target_ref: tgt.target, change_type: tgt.changeType,
           diff_text: diffText,
+          deep_scan: !!state.deepScan,
           llm_config: { provider:state.modelProvider, model:state.modelName, api_key:state.modelApiKey, base_url:state.modelBaseUrl, api_version:state.modelApiVer },
           metadata: { provider:state.provider, connected_repos:state.connectedRepos.map(repoName), diff_lines:diffLines, ...tgt.meta }
         }
@@ -149,34 +150,44 @@ function RunningView({ state, update, showToast }) {
 
         let report = null
         let netFails = 0
-        for (let attempt=0; attempt<300; attempt++) {  // up to ~10 min (matches backend cap)
+        let runningSince = null          // ms when the backend actually started running
+        const QUEUE_MAX_MS = 15*60*1000  // tolerate up to 15 min waiting in the queue
+        const RUN_MAX_MS   = 12*60*1000  // up to 12 min of actual processing
+        const queueStart   = Date.now()
+        while (!aborted.current) {
           await new Promise(r=>setTimeout(r,2000))
           if (aborted.current) break
           try {
+            // Check admission status first so a QUEUED wait isn't mistaken for a hang.
+            const st = await fetch(state.backendUrl+'/api/v1/status/'+rid, {headers})
+              .then(r=>r.ok?r.json():null).catch(()=>null)
+            const s = (st && st.status) || ''
+            if (s === 'queued') {
+              const pos = st.queue_position || 0
+              setAgentStatus(pos ? `Queued — position ${pos}…` : 'Queued — waiting for a free slot…')
+              setProgressLabel(pos ? `Waiting in queue (position ${pos} of ${st.queue_total||pos})` : 'Waiting for a free analysis slot…')
+              if (Date.now()-queueStart > QUEUE_MAX_MS) throw new Error('Still queued after 15 min — the server is very busy. Please try again later.')
+              continue   // do NOT count queue time against the processing timeout
+            }
+            if (s.startsWith('error')) throw new Error('Backend: '+s.replace(/^error:\s*/,''))
+            if (runningSince === null) runningSince = Date.now()
+
             const poll = await fetch(state.backendUrl+'/api/v1/report/'+rid+'?fmt=full', {headers})
             netFails = 0
             if (poll.status===200) {
               const json = await poll.json()
-              // An error report (analysis failed server-side) carries errors[] and
-              // no real findings — surface the real reason instead of "timing out".
               if (Array.isArray(json.errors) && json.errors.length && !json.risk && !json.security) {
                 throw new Error('Backend analysis failed — '+json.errors[0])
               }
               report = json; break
             }
-            if (poll.status===404) {
-              // Not running and nothing saved → ask /status for the real reason.
-              const st = await fetch(state.backendUrl+'/api/v1/status/'+rid, {headers})
-                .then(r=>r.ok?r.json():null).catch(()=>null)
-              const s = (st && st.status) || ''
-              if (s.startsWith('error')) throw new Error('Backend: '+s.replace(/^error:\s*/,''))
-              // else: brief race before the report is saved — keep polling.
+            // 202 = running, 404 = brief save race → keep polling until the run budget elapses.
+            if (runningSince && Date.now()-runningSince > RUN_MAX_MS) {
+              throw new Error('Timed out while the backend was processing. Check the model API key (Configure → AI Model) and that the backend isn’t rate-limited.')
             }
-            // 202 = still running → keep polling.
           } catch(e) {
-            // Propagate real backend errors immediately; only the network/poll
-            // failures are retried (up to 5 consecutive) before giving up.
-            if (e.message && (e.message.startsWith('Backend') || e.message.includes('analysis failed'))) throw e
+            if (e.message && (e.message.startsWith('Backend') || e.message.includes('analysis failed')
+                || e.message.includes('queued') || e.message.includes('Timed out'))) throw e
             if (++netFails >= 5) throw new Error('Backend became unreachable while waiting for the report')
           }
         }
@@ -406,14 +417,57 @@ function SummaryTab({r, snipCache}) {
         </div>
         <span style={{fontSize:11,color:'#9fadbf'}}>{effectivePersona==='developer'?'What to fix before requesting review':'Decision view — what to scrutinise and approve'}</span>
       </div>
+      {r.suppressed_count>0 && (
+        <div style={{display:'flex',alignItems:'flex-start',gap:8,background:'#f3f7ff',border:'1px solid #dbe7ff',borderRadius:8,padding:'9px 12px',marginBottom:14,fontSize:12.5,color:'#334155'}}
+          title={(r.suppressed_notes||[]).join('\n')}>
+          <i className="ti ti-filter-off" style={{color:'#1a6cf6',marginTop:1}}/>
+          <span><strong>{r.suppressed_count} finding(s) auto-suppressed</strong> — repeatedly marked false positive by reviewers for this repo. Hover for details.</span>
+        </div>
+      )}
       {effectivePersona==='developer' ? <DeveloperView r={r} findings={findings} blockers={blockers} fixes={fixes} scenarios={scenarios} covDelta={covDelta}/> : <ReviewerView r={r} findings={findings}/>}
     </div>
   )
 }
 
+// One-line "bottom line" shown at the top of each persona view.
+function Headline({ tone, icon, text }) {
+  const c = {
+    bad:  ['#fff1f2', '#991b1b', '#fecaca'],
+    warn: ['#fffbeb', '#92400e', '#fde68a'],
+    good: ['#f0fdf4', '#166534', '#bbf7d0'],
+  }[tone] || ['#f3f7ff', '#1e40af', '#dbe7ff']
+  return (
+    <div style={{
+      display:'flex', alignItems:'center', gap:10, marginBottom:14,
+      background:c[0], color:c[1], border:`1px solid ${c[2]}`, borderRadius:10,
+      padding:'12px 16px', fontSize:14, fontWeight:600, lineHeight:1.4,
+    }}>
+      <i className={`ti ${icon}`} style={{ fontSize:20, flexShrink:0 }}/>
+      <span>{text}</span>
+    </div>
+  )
+}
+
+function topFinding(findings) {
+  const f = findings.find(x=>x.severity==='critical') || findings.find(x=>x.severity==='high') || findings[0]
+  if (!f) return ''
+  const loc = f.file ? ` in ${f.file}${f.line?':'+f.line:''}` : ''
+  return `${f.severity} ${f.category||'issue'}${loc}`
+}
+
 function DeveloperView({r, findings, blockers, fixes, scenarios, covDelta}) {
+  // Headline: how many blockers + the top one, or all-clear.
+  const dh = blockers.length
+    ? { tone:'bad', icon:'ti-alert-triangle',
+        text:`${blockers.length} issue${blockers.length>1?'s':''} to fix before requesting review — top: ${topFinding(blockers)}.` }
+    : findings.length
+      ? { tone:'warn', icon:'ti-info-circle',
+          text:`No critical/high blockers — ${findings.length} lower-severity item${findings.length>1?'s':''} to review in the domain tabs.` }
+      : { tone:'good', icon:'ti-circle-check',
+          text:'No issues found — looks good to submit for review.' }
   return (
     <div>
+      <Headline {...dh}/>
       <GateHero r={r}/>
       <div className="card">
         <div className="section-heading"><i className="ti ti-code"/>What you changed</div>
@@ -466,8 +520,26 @@ function ReviewerView({r, findings}) {
   const affected=r.dependency?.affected_services||[]
   const blast=r.dependency?.blast_radius_score||0
   const refs=r.reference_impact?.total_references||0
+
+  // Headline: gate decision + why + what to scrutinise (capabilities / breaking changes).
+  const gate=(r.gate_decision||'HOLD').toUpperCase()
+  const breaking=(r.interface?.breaking_changes||[]).length
+  const critCaps=(r.capabilities_affected||[]).filter(c=>['critical','high'].includes(c.criticality)).map(c=>c.name)
+  const failDomains=domainStatus.filter(([,st])=>st==='fail').map(([d])=>d)
+  const reasons=[]
+  if(crit+high) reasons.push(`${crit+high} critical/high finding${crit+high>1?'s':''}`)
+  if(breaking) reasons.push(`${breaking} breaking API change${breaking>1?'s':''}`)
+  if(failDomains.length) reasons.push(failDomains.join(', ').toLowerCase()+' risk')
+  const why = reasons.length?` — ${reasons.slice(0,3).join('; ')}`:''
+  const capNote = critCaps.length?` Affects ${critCaps.slice(0,2).join(', ')}.`:''
+  const rh = {
+    APPROVE:{tone:'good',icon:'ti-circle-check',text:`Gate: APPROVE — no blocking issues found.${capNote}`},
+    HOLD:{tone:'warn',icon:'ti-alert-triangle',text:`Gate: HOLD${why}. Resolve before merge.${capNote}`},
+    BLOCK:{tone:'bad',icon:'ti-ban',text:`Gate: BLOCK${why}. Must be fixed before merge.${capNote}`},
+  }[gate]||{tone:'warn',icon:'ti-alert-triangle',text:`Gate: ${gate}${why}.${capNote}`}
   return (
     <div>
+      <Headline {...rh}/>
       <GateHero r={r}/>
       <div className="card">
         <div className="section-heading"><i className="ti ti-layout-grid"/>Domain status at a glance</div>
@@ -541,10 +613,13 @@ function SecurityTab({r, snipCache, search=''}) {
       {r.security?.secrets_detected&&<div className="err-msg" style={{marginBottom:12}}><i className="ti ti-key"/><strong>Secrets detected</strong> — immediate rotation required</div>}
       {!findings.length ? <div className="empty-state"><i className="ti ti-shield-check"/>{q ? 'No matching findings' : 'No security findings'}</div>
         : findings.map((f,i)=>(
-          <div key={i} className="finding">
+          <div key={i} className="finding" style={f.unverified?{opacity:.72}:undefined}>
             <span className={`sev sev-${f.severity}`}>{f.severity}</span>
             <div className="finding-body">
-              <div className="finding-desc"><code>{f.cwe||''}</code> {f.description}</div>
+              <div className="finding-desc">
+                <code>{f.cwe||''}</code> {f.description}
+                {f.unverified && <span title="The cited file isn't in this diff — shown for awareness but excluded from the gate decision." style={{marginLeft:6,fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:10,background:'#fff7ed',color:'#9a3412',border:'1px solid #fed7aa',whiteSpace:'nowrap'}}><i className="ti ti-map-pin-off" style={{fontSize:11,marginRight:3}}/>location unverified</span>}
+              </div>
               <div className="finding-file">{f.file||''}{f.line_range?` · line ${f.line_range}`:''}</div>
               {getCodeSnippetJSX(f.file,f.line_range,snipCache)}
               <div style={{marginTop:6}}><FindingFeedback r={r} agent="security" category={f.cwe||''} file={f.file||''}/></div>
@@ -2111,6 +2186,17 @@ const RESULT_TABS = [
 ]
 const ALL_TABS = RESULT_TABS.flatMap(g=>g.tabs.map(t=>t.id))
 
+// Suggested review order shown as ①②③④ badges on key tabs (+ ⑤ on Post to PR).
+// Guides users start → finish without cluttering every tab.
+const STEP_FOR_TAB = { summary: 1, security: 2, dependency: 3, checklist: 4 }
+const STEP_TITLE = {
+  1: 'Step 1 — start here: gate decision & overview',
+  2: 'Step 2 — review security findings',
+  3: 'Step 3 — review impact (dependencies & interfaces)',
+  4: 'Step 4 — work through the reviewer checklist',
+  5: 'Step 5 — finish: post findings to the PR',
+}
+
 export default function ResultsView({ active, showView, showToast }) {
   const { state, update } = useApp()
   const [activeTab, setActiveTab] = useState('summary')
@@ -2265,15 +2351,39 @@ export default function ResultsView({ active, showView, showToast }) {
         ))}
       </div>
 
+      {/* Notice when a loaded report has no detailed agent data (seed/test data or failed run) */}
+      {!hasAgentData && (
+        <div className="info-msg" style={{marginBottom:12,display:'flex',alignItems:'center',gap:8}}>
+          <i className="ti ti-info-circle"/>
+          <span>This report has no detailed analysis data — it’s likely seed/test data or a run that didn’t complete. Run a fresh analysis, or remove demo data via <strong>Settings → Purge stored reports</strong>.</span>
+        </div>
+      )}
+
+      {/* Suggested review order legend */}
+      <div className="flow-legend">
+        <i className="ti ti-route"/> Suggested review order:
+        <span className="tab-step">1</span> Summary →
+        <span className="tab-step">2</span> Security →
+        <span className="tab-step">3</span> Impact →
+        <span className="tab-step">4</span> Checklist →
+        <span className="tab-step">5</span> Post to PR
+      </div>
+
       {/* Result tabs */}
       <div className="tabs">
         {RESULT_TABS.map(g=>(
           <div key={g.group} className="tab-group">
             <span className="tab-group-label">{g.group}</span>
             <div className="tab-group-tabs">
-              {g.tabs.map(t=>(
-                <button key={t.id} className={`tab ${activeTab===t.id?'active':''}`} onClick={()=>switchTab(t.id)}>{t.label}</button>
-              ))}
+              {g.tabs.map(t=>{
+                const step = STEP_FOR_TAB[t.id]
+                return (
+                  <button key={t.id} className={`tab ${activeTab===t.id?'active':''}`} onClick={()=>switchTab(t.id)}
+                    title={step?STEP_TITLE[step]:undefined}>
+                    {step && <span className="tab-step">{step}</span>}{t.label}
+                  </button>
+                )
+              })}
             </div>
           </div>
         ))}
@@ -2305,12 +2415,12 @@ export default function ResultsView({ active, showView, showToast }) {
             <i className="ti ti-list-check"/>Checklist
           </button>
           {canPostToGit(state) ? (
-            <button className="btn" onClick={postPRComments} style={{background:'#f0fdf4',borderColor:'#86efac',color:'#166634'}} title="Post findings as PR comments (Reviewer only)">
-              <i className="ti ti-message-2-code"/>Post to PR
+            <button className="btn" onClick={postPRComments} style={{background:'#f0fdf4',borderColor:'#86efac',color:'#166634'}} title={STEP_TITLE[5]}>
+              <span className="tab-step">5</span><i className="ti ti-message-2-code"/>Post to PR
             </button>
           ) : (
             <button className="btn" style={{opacity:.45,cursor:'not-allowed'}} onClick={()=>showToast('Post to PR requires Reviewer role. Ask your tech lead to assign reviewer access.','error')} title="Posting PR comments requires Reviewer role">
-              <i className="ti ti-lock"/>Post to PR
+              <span className="tab-step">5</span><i className="ti ti-lock"/>Post to PR
             </button>
           )}
         </div>

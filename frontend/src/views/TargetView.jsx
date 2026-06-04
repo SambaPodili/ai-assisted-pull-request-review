@@ -67,6 +67,23 @@ export default function TargetView({ active, showToast }) {
         <TargetBody t={state.targetType} loadState={loadState[state.targetType]} state={state} update={update}
           onRetry={()=>{setLoadState(prev=>({...prev,[state.targetType]:null}));loadTargetData(state.targetType)}}/>
       </div>
+
+      {/* Scan depth */}
+      <div className="card">
+        <label style={{display:'flex',alignItems:'flex-start',gap:10,cursor:'pointer'}}>
+          <input type="checkbox" checked={!!state.deepScan} onChange={e=>update({deepScan:e.target.checked})}
+            style={{marginTop:3,cursor:'pointer',width:16,height:16,flexShrink:0}}/>
+          <div>
+            <div style={{fontSize:13,fontWeight:700,color:'#0d1117',display:'flex',alignItems:'center',gap:6}}>
+              <i className="ti ti-microscope" style={{color:'#1a6cf6'}}/> Deep scan — analyse every changed file
+            </div>
+            <div style={{fontSize:12,color:'#7a8494',marginTop:3,lineHeight:1.5}}>
+              For large or critical PRs (50–100+ files). Runs security & code analysis over <strong>all</strong> files in
+              batches so nothing is sampled out — slower and uses more tokens. Leave off for fast, prioritised review.
+            </div>
+          </div>
+        </label>
+      </div>
       {state.connectedRepos.length > 0 && (
         <div className="card">
           <div className="card-title"><i className="ti ti-topology-star-3"/>Connected repos in scope</div>

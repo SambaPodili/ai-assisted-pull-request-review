@@ -144,6 +144,22 @@ class Settings(BaseSettings):
     # sequentially, which is much slower — opt in only if you need its tracing.
     use_langgraph: bool = Field(default=False, alias="USE_LANGGRAPH")
 
+    # ── Admission control (concurrency cap + bounded queue) ───────────────────
+    # Caps how many analyses run at once and how many may wait. Protects the
+    # backend + LLM provider when many users submit together. Defaults are high
+    # so single-user / light load behaves exactly as before. Only affects
+    # SCHEDULING — never how an individual analysis runs (results are identical).
+    max_concurrent_analyses: int = Field(default=8,  alias="MAX_CONCURRENT_ANALYSES")
+    max_queued_analyses:     int = Field(default=50, alias="MAX_QUEUED_ANALYSES")
+
+    # ── Deep scan (full coverage for large PRs) ───────────────────────────────
+    # When a request opts into deep_scan, the per-file agents (security, code)
+    # run over ALL changed files in batches instead of a prioritised sample, so
+    # nothing is omitted. Costs more tokens/time — opt-in per analysis.
+    deep_scan_batch_chars: int = Field(default=12000, alias="DEEP_SCAN_BATCH_CHARS")
+    deep_scan_max_batches: int = Field(default=10,    alias="DEEP_SCAN_MAX_BATCHES")
+    deep_scan_min_files:   int = Field(default=8,     alias="DEEP_SCAN_MIN_FILES")
+
     # ── LLM retry (tenacity) ──────────────────────────────────────────────────
     llm_retry_attempts:    int = Field(default=5,  alias="LLM_RETRY_ATTEMPTS")
     llm_retry_max_wait_s:  int = Field(default=90, alias="LLM_RETRY_MAX_WAIT_S")
@@ -152,6 +168,10 @@ class Settings(BaseSettings):
     # Kept well under analysis_timeout_s so the worst-case across the agent DAG
     # (a few sequential layers) still fits inside the overall budget.
     llm_request_timeout_s: int = Field(default=45, alias="LLM_REQUEST_TIMEOUT_S")
+    # Sampling temperature. 0.0 = deterministic — the same diff yields the same
+    # findings and gate on every run, essential for reviewer trust and
+    # reproducible audits. Raise only if you deliberately want varied output.
+    llm_temperature: float = Field(default=0.0, alias="LLM_TEMPERATURE")
 
     # ── Webhook deduplication ─────────────────────────────────────────────────
     webhook_dedup_ttl_s: int = Field(default=300, alias="WEBHOOK_DEDUP_TTL_S")

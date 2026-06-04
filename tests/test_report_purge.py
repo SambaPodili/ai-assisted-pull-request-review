@@ -57,3 +57,29 @@ def test_purge_deletes_matching(client):
 def test_refuses_to_match_everything(client):
     r = client.post("/admin/reports/purge", json={"dry_run": True})  # no filters
     assert r.status_code == 400
+
+
+def test_demo_only_targets_non_uuid_ids(client):
+    """demo_only deletes seed rows (non-UUID ids) but keeps real UUID reports."""
+    import uuid
+    from api.app import get_report_store
+    st = get_report_store()
+    # Add one "real" report with a UUID id
+    real_id = str(uuid.uuid4())
+    rep = AnalysisReport(request_id=real_id, change_type=ChangeType.PR,
+                         repo_url="https://github.com/acme/real", source_ref="a", target_ref="main",
+                         risk=RiskResult(overall_risk=RiskLevel.LOW, risk_score=5,
+                                         gate_decision=GateDecision.APPROVE))
+    rep.freeze_gate()
+    st.save(rep)
+
+    # demo_only is a valid filter on its own (no 400)
+    prev = client.post("/admin/reports/purge", json={"demo_only": True, "dry_run": True})
+    assert prev.status_code == 200
+    ids = {s["request_id"] for s in prev.json()["sample"]}
+    assert "purge-0" in ids and real_id not in ids
+
+    deleted = client.post("/admin/reports/purge", json={"demo_only": True, "dry_run": False})
+    assert deleted.status_code == 200
+    assert st.get("purge-0") is None        # seed row removed
+    assert st.get(real_id) is not None      # real UUID report kept

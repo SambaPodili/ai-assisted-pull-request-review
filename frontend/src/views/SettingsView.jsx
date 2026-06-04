@@ -97,16 +97,24 @@ export default function SettingsView({ showToast }) {
     } catch(e) { setDMsg('✗ ' + e.message) }
   }
 
-  async function purge(dryRun) {
+  async function purge(dryRun, opts = {}) {
     if (!state.backendUrl) { setPMsg('Configure backend URL first'); return }
-    if (!purgeRepo.trim() && !purgeDays) { setPMsg('Enter a repo substring or age (days)'); return }
-    if (!dryRun && !window.confirm('Permanently delete the matching reports? This cannot be undone.')) return
+    const demoOnly = !!opts.demo_only
+    if (!demoOnly && !purgeRepo.trim() && !purgeDays) { setPMsg('Enter a repo substring or age (days)'); return }
+    if (!dryRun && !window.confirm(demoOnly
+        ? 'Delete all demo/test reports (non-UUID ids)? Your real analyses are kept. This cannot be undone.'
+        : 'Permanently delete the matching reports? This cannot be undone.')) return
     setPMsg(dryRun ? 'Previewing…' : 'Deleting…')
     try {
       const h = { 'Content-Type': 'application/json' }; if (state.backendKey) h['X-API-Key'] = state.backendKey
       const r = await fetch(`${state.backendUrl}/admin/reports/purge`, {
         method: 'POST', headers: h,
-        body: JSON.stringify({ repo_contains: purgeRepo.trim(), older_than_days: Number(purgeDays) || 0, dry_run: dryRun }),
+        body: JSON.stringify({
+          repo_contains: demoOnly ? '' : purgeRepo.trim(),
+          older_than_days: demoOnly ? 0 : (Number(purgeDays) || 0),
+          demo_only: demoOnly,
+          dry_run: dryRun,
+        }),
       })
       const d = await r.json().catch(() => ({}))
       if (r.status === 403) { setPMsg('Admin key required'); return }
@@ -214,6 +222,18 @@ export default function SettingsView({ showToast }) {
           Remove demo/test analyses so Insights reflects only real data. Filter by a repo
           substring and/or age. <strong>Preview</strong> first — delete is permanent. Admin key required.
         </div>
+
+        {/* One-click demo/test cleanup */}
+        <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap', marginBottom:12,
+            padding:'10px 12px', background:'#f3f7ff', border:'1px solid #dbe7ff', borderRadius:8 }}>
+          <i className="ti ti-sparkles" style={{ color:'#1a6cf6' }} />
+          <span style={{ fontSize:12.5, color:'#334155', flex:1, minWidth:160 }}>
+            <strong>Remove demo / test rows</strong> — clears seed entries (non-UUID ids like <code>test-*</code>, <code>ins0</code>, <code>purge-*</code>); your real analyses are kept.
+          </span>
+          <button className="btn btn-sm" onClick={()=>purge(true, { demo_only:true })}><i className="ti ti-eye" />Preview</button>
+          <button className="btn btn-sm" onClick={()=>purge(false, { demo_only:true })} style={{ borderColor:'#fca5a5', color:'#b91c1c' }}><i className="ti ti-trash" />Clean demo data</button>
+        </div>
+
         <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap', marginBottom:10 }}>
           <input type="text" value={purgeRepo} onChange={e=>setPurgeRepo(e.target.value)}
             placeholder="repo contains… (e.g. test/demo)"

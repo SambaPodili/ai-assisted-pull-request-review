@@ -80,6 +80,31 @@ def test_cve_forces_block():
     assert evaluate_policy(r).gate == GateDecision.BLOCK
 
 
+def test_taint_injection_forces_block():
+    """Data-flow-proven injection/SSRF/path-traversal must reach the gate."""
+    from core.models import TaintAnalysisResult
+    r = _report(risk=_risk(GateDecision.APPROVE),
+                taint_analysis=TaintAnalysisResult(has_injection=True, taint_paths=[]))
+    res = evaluate_policy(r)
+    assert res.gate == GateDecision.BLOCK
+    assert any("injection" in reason.lower() for reason in res.reasons)
+
+
+def test_critical_iac_forces_block_high_holds():
+    from core.models import IaCAnalysisResult, IaCFinding
+    crit = _report(risk=_risk(GateDecision.APPROVE),
+                   iac_analysis=IaCAnalysisResult(findings=[
+                       IaCFinding(file_path="main.tf", line=1, resource="aws_s3_bucket.x",
+                                  kind="public_bucket", severity=RiskLevel.CRITICAL, description="public")]))
+    assert evaluate_policy(crit).gate == GateDecision.BLOCK
+
+    high = _report(risk=_risk(GateDecision.APPROVE),
+                   iac_analysis=IaCAnalysisResult(findings=[
+                       IaCFinding(file_path="main.tf", line=2, resource="aws_iam", kind="wildcard_iam",
+                                  severity=RiskLevel.HIGH, description="wildcard")]))
+    assert evaluate_policy(high).gate == GateDecision.HOLD
+
+
 def test_policy_never_weakens_ai_gate():
     # AI says BLOCK, policy finds nothing → final stays BLOCK (most restrictive)
     r = _report(risk=_risk(GateDecision.BLOCK))
