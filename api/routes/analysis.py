@@ -230,6 +230,56 @@ def list_reports(limit: int = 20, offset: int = 0):
     return get_report_store().list_recent(limit=limit, offset=offset)
 
 
+# ── Reviewer feedback loop ────────────────────────────────────────────────────
+
+class FindingFeedback(BaseModel):
+    agent:     str                      # security | performance_impact | ...
+    category:  str = ""                 # cwe / kind / category
+    file_path: str = ""
+    verdict:   str                      # false_positive | valid | fixed | wont_fix
+    note:      str = ""
+
+
+@router.post("/report/{request_id}/feedback")
+def submit_finding_feedback(
+    request_id: str,
+    body: FindingFeedback,
+    subject: Subject = Depends(get_current_subject),
+):
+    """
+    Record a reviewer's verdict on a finding (false positive, valid, fixed).
+    Aggregated over time this surfaces which checks are noisy on a given repo.
+    """
+    from api.app import get_report_store
+    from governance.feedback_store import get_feedback_store
+    report = get_report_store().get(request_id)
+    repo = report.repo_url if report else ""
+    try:
+        get_feedback_store().record_finding(
+            request_id=request_id, repo=repo, agent=body.agent, category=body.category,
+            file_path=body.file_path, verdict=body.verdict, note=body.note,
+            reviewer=subject.name or subject.key_id,
+        )
+    except ValueError as e:
+        raise HTTPException(400, detail=str(e))
+    return {"ok": True, "recorded": body.verdict}
+
+
+@router.get("/feedback/stats")
+def feedback_stats(repo: str = ""):
+    """
+    Aggregated feedback: noisy checks (false-positive rate per agent/category)
+    and gate override stats (how often humans go stricter/looser than the system).
+    """
+    from governance.feedback_store import get_feedback_store
+    fs = get_feedback_store()
+    return {
+        "noisy_checks": fs.noisy_checks(repo=repo),
+        "gate_stats":   fs.gate_stats(repo=repo),
+        "repo":         repo,
+    }
+
+
 @router.get("/me")
 def get_me(subject: Subject = Depends(get_current_subject)):
     """

@@ -84,8 +84,27 @@ def _week_label(dt: datetime) -> str:
 
 
 def _short_repo(url: str) -> str:
-    parts = url.rstrip("/").split("/")
-    return "/".join(parts[-2:]) if len(parts) >= 2 else url
+    """
+    Normalise any repo URL to a clean 'owner/repo' label.
+    Handles https, ssh (git@host:owner/repo), .git suffix, bare slugs,
+    and never returns host fragments like '/github.com' or empty strings.
+    """
+    import re
+    if not url or not url.strip():
+        return "(unknown)"
+    u = url.strip().rstrip("/")
+    if u.endswith(".git"):
+        u = u[:-4]
+    # strip ssh prefix:  git@host:owner/repo  →  owner/repo
+    u = re.sub(r"^[\w.+-]+@[^:]+:", "", u)
+    # strip http(s)://host/  →  path
+    u = re.sub(r"^https?://[^/]+/?", "", u)
+    parts = [p for p in u.split("/") if p and p not in ("scm",)]  # BB Server has /scm/
+    if len(parts) >= 2:
+        return "/".join(parts[-2:])
+    if parts:
+        return parts[-1]
+    return "(unknown)"
 
 
 def _sev(value) -> str:
@@ -114,6 +133,11 @@ def pr_priority_queue(limit: int = 200, days: int = 0, repo: str = ""):
     cutoff  = datetime.utcnow() - timedelta(days=days) if days > 0 else None
     items   = []
 
+    # Keep only the LATEST analysis per PR — a re-analyzed PR shouldn't flood the
+    # queue with every historical run. Reports arrive newest-first, so the first
+    # occurrence of each key wins.
+    seen_prs: set = set()
+
     for r in reports:
         # Date filter
         if cutoff is not None:
@@ -123,6 +147,14 @@ def pr_priority_queue(limit: int = 200, days: int = 0, repo: str = ""):
                     continue
             except Exception:
                 pass
+
+        # De-dupe to the latest analysis per (repo, PR) — or per (repo, branch pair)
+        pr_no = r.pr.pr_number if r.pr else 0
+        dedup_key = (r.repo_url, pr_no) if pr_no else (r.repo_url, r.source_ref, r.target_ref)
+        if dedup_key in seen_prs:
+            continue
+        seen_prs.add(dedup_key)
+
         # Repo filter
         short = _short_repo(r.repo_url)
         if repo and short != repo and r.repo_url != repo:

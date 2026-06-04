@@ -67,6 +67,25 @@ def _default_judges() -> list[dict]:
     ]
 
 
+def _fill_judge_keys(cfgs: list[dict]) -> None:
+    """For any judge missing an api_key, inject the backend env key for its
+    provider so the judge panel works without per-judge keys (the UI only sends
+    a key when the judge's provider matches the chosen analysis model)."""
+    from config.settings import get_settings
+    cfg = get_settings()
+    anth = cfg.anthropic_api_key or ""
+    oai  = getattr(cfg, "openai_api_key", "") or ""
+    for j in cfgs:
+        if j.get("api_key"):
+            continue
+        p = (j.get("provider") or "anthropic").lower()
+        if p == "anthropic":
+            j["api_key"] = anth
+        elif p in ("openai", "azure_openai"):
+            j["api_key"] = oai
+        # ollama / custom: leave blank (no key required)
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.post("/evaluate/{request_id}")
@@ -92,6 +111,9 @@ async def evaluate_report(
         if payload.judges else
         _default_judges()
     )
+    # A blank judge api_key falls back to the backend env key for that provider
+    # (UI-supplied keys stay authoritative; env is only the fallback).
+    _fill_judge_keys(judge_cfgs)
 
     from evaluation.panel import JudgePanel
     panel = JudgePanel(judges=judge_cfgs)

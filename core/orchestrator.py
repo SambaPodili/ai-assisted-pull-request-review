@@ -137,7 +137,15 @@ class ImpactAnalysisOrchestrator:
             cache = None
 
         start = time.monotonic()
-        if HAS_LANGGRAPH:
+        # Default to the parallel threaded pipeline (fast). LangGraph runs fan-out
+        # nodes sequentially — opt in explicitly via USE_LANGGRAPH=true.
+        use_lg = HAS_LANGGRAPH
+        try:
+            from config.settings import get_settings
+            use_lg = HAS_LANGGRAPH and getattr(get_settings(), "use_langgraph", False)
+        except Exception:
+            use_lg = False
+        if use_lg:
             report = self._langgraph_pipeline(request)
         else:
             report = self._threaded_pipeline(request)
@@ -646,6 +654,39 @@ class ImpactAnalysisOrchestrator:
     def _finalize(self, report: AnalysisReport, budget: TokenBudgetManager) -> AnalysisReport:
         summary = budget.summary()
         report.token_budget = summary["total_allocated"]
+
+        # ── Deterministic gate enforcement (overrides the LLM proposal) ──────
+        try:
+            from governance.gate_policy import evaluate_policy
+            policy = evaluate_policy(report)
+            report.ai_proposed_gate          = policy.llm_gate.value
+            report.gate_policy_reasons       = policy.reasons
+            report.gate_overridden_by_policy = policy.overrode_llm
+            # Force the final gate to the policy-enforced value
+            from core.models import GateDecision
+            object.__setattr__(report, "_gate_decision", policy.gate)
+            if policy.overrode_llm:
+                log.warning("[%s] Gate policy raised %s → %s: %s",
+                            report.request_id, policy.llm_gate.value, policy.gate.value,
+                            "; ".join(policy.reasons[:2]))
+        except Exception as exc:
+            log.error("[%s] Gate policy evaluation failed (using AI gate): %s",
+                      report.request_id, exc)
+
+        # ── Business-capability mapping ──────────────────────────────────────
+        try:
+            from governance.capability_map import capabilities_for_report
+            report.capabilities_affected = capabilities_for_report(report)
+        except Exception as exc:
+            log.debug("[%s] Capability mapping skipped: %s", report.request_id, exc)
+
+        # ── Downstream consumer-impact tracing ───────────────────────────────
+        try:
+            from governance.consumer_impact import trace_consumer_impacts
+            report.consumer_impacts = trace_consumer_impacts(report)
+        except Exception as exc:
+            log.debug("[%s] Consumer-impact tracing skipped: %s", report.request_id, exc)
+
         report.freeze_gate()   # snapshot computed gate/risk so storage never re-derives
         self._audit.log_analysis_completed(
             report.request_id,

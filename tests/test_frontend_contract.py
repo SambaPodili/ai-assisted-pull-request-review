@@ -80,7 +80,29 @@ CONTRACT: dict[str, list[str]] = {
                               "token_usage", "errors"],
 }
 
-_INDEX_HTML = Path(__file__).resolve().parent.parent / "frontend" / "index.html"
+_FRONTEND = Path(__file__).resolve().parent.parent / "frontend"
+
+
+def _frontend_source() -> str:
+    """
+    Concatenate all frontend source the UI is built from. Supports both layouts:
+      • Vite/React app  → frontend/src/**/*.{js,jsx,ts,tsx}
+      • legacy monolith → frontend/index.html (or index_1.html backup)
+    """
+    chunks: list[str] = []
+    src_dir = _FRONTEND / "src"
+    if src_dir.is_dir():
+        for ext in ("*.js", "*.jsx", "*.ts", "*.tsx"):
+            for f in src_dir.rglob(ext):
+                chunks.append(f.read_text(errors="ignore"))
+    for fallback in ("index.html", "index_1.html"):
+        fp = _FRONTEND / fallback
+        if fp.exists():
+            chunks.append(fp.read_text(errors="ignore"))
+    return "\n".join(chunks)
+
+
+_INDEX_HTML = _FRONTEND / "index.html"   # retained for the presence check
 
 
 @pytest.mark.parametrize("model_name,fields", CONTRACT.items())
@@ -110,7 +132,7 @@ def test_contract_fields_referenced_in_frontend(model_name: str, fields: list[st
     index.html, so the contract can't silently drift away from what the UI uses.
     (A loose check — just that the identifier appears as a property access.)
     """
-    html = _INDEX_HTML.read_text()
+    html = _frontend_source()
     # Fields that are intentionally read via fallback aliases or only in
     # backend-shaped payloads; skip the few that the UI accesses indirectly.
     SKIP = {("AnalysisReport", "errors")}  # errors handled via normalizeReport default

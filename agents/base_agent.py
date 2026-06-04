@@ -244,11 +244,29 @@ class BaseAgent(ABC, Generic[T]):
         raise ValueError(f"Could not parse {self.agent_name} response after all recovery attempts")
 
     def _resolve_model_config(self, context: dict[str, Any], agent_key: str) -> ModelConfig:
+        """Resolve which provider/model/key this agent should use.
+
+        Precedence, highest first:
+          1. UI-supplied per-request override (context["model_config"])
+          2. Backend settings / .env
+        A blank api_key in the UI override means "use the configured env key"
+        (env is only a *fallback*, never an override of a UI-supplied key).
+        """
         override = context.get("model_config")
         if override:
             cfg = ModelConfig.from_dict(override)
-            if not cfg.api_key and cfg.provider == "anthropic" and self._default_api_key:
+            ui_named_model = bool((override.get("model") or "").strip())
+
+            # The UI key is authoritative for every provider; only fall back to
+            # the env key when the UI left it blank.
+            if not cfg.api_key and self._default_api_key:
                 cfg.api_key = self._default_api_key
+
+            # Honour per-agent fast/strong selection ONLY when the UI did not
+            # explicitly pick a model (otherwise the user's choice wins).
+            if cfg.provider == "anthropic" and not ui_named_model:
+                from core.token_manager import MODEL_FAST, MODEL_STRONG, _STRONG_AGENTS
+                cfg.model = MODEL_STRONG if agent_key in _STRONG_AGENTS else MODEL_FAST
             return cfg
 
         cfg = ModelConfig.from_settings()

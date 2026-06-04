@@ -1,64 +1,16 @@
-# AI Impact Analyzer — Frontend UI
+# React + Vite
 
-A single-file web app that connects to both your Git provider and the backend API.
+This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
-## How to open
+Currently, two official plugins are available:
 
-Just double-click `frontend/index.html` or open it in any browser.
-No build step. No npm. No install.
+- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
+- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
 
-## What it does
+## React Compiler
 
-**Step 1 — Configure provider**
-- Choose GitHub or Bitbucket
-- GitHub: personal access token OR username/password
-- Bitbucket: username + app password (with workspace auto-detection)
-- Verifies credentials against the real API and shows your username
+The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
 
-**Step 2 — Repositories**
-- Fetches all your real repositories (up to 200, paginated)
-- Search by name
-- Click to set the **primary repo** (green)
-- Click-to-toggle **connected apps** (blue) — these are included in
-  blast radius and interface analysis
+## Expanding the ESLint configuration
 
-**Step 3 — Analysis target**
-Three tabs:
-- **Pull request** — lists all open PRs (real data from GitHub/Bitbucket)
-- **Branch diff** — two dropdowns from your real branches
-- **Commit** — recent commits listed, or type a SHA directly
-
-**Step 4 — Results**
-- Submits the analysis to your backend if configured in Settings
-- Falls back to AI simulation if the backend is offline
-- Six result tabs: Summary, Security, Dependency, Interface, Schema, Remediation
-- Gate banner (APPROVE / HOLD / BLOCK) with risk score
-- History persisted in localStorage
-
-## Backend setup (Settings tab in the UI)
-
-1. Start the backend:
-   ```bash
-   cd impact-analyzer
-   cp .env.example .env      # set ANTHROPIC_API_KEY, SKIP_AUTH=true
-   pip install -r requirements.txt
-   python main.py
-   ```
-
-2. Open the UI → click **Settings** → set Backend URL to `http://localhost:8080`
-
-3. Click **Test connection** — should show `✓ Connected — Phase 2`
-
-## GitHub token scopes needed
-
-- `repo` (read access to private repos)
-- `read:org` (to list org repos)
-
-Create at: https://github.com/settings/tokens/new
-
-## Bitbucket app password permissions needed
-
-- Repositories: Read
-- Pull requests: Read
-
-Create at: https://bitbucket.org/account/settings/app-passwords/new
+If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.

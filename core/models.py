@@ -236,11 +236,36 @@ class RiskResult(AgentResultBase):
     rationale:             str = ""
 
 
+class CodeFix(BaseModel):
+    """A concrete, copy-pasteable suggested fix for a finding."""
+    title:       str  = ""
+    file_path:   str  = ""
+    category:    str  = ""        # security | performance | quality | privacy | ...
+    severity:    str  = "medium"
+    before:      str  = ""        # the offending line(s)
+    after:       str  = ""        # the suggested replacement
+    diff:        str  = ""        # unified-diff representation
+    explanation: str  = ""
+    confidence:  str  = "medium"  # high (deterministic) | medium | low (LLM-suggested)
+
+
 class RemediationResult(AgentResultBase):
     fix_suggestions:      list[str] = []
+    code_fixes:           list[CodeFix] = []    # concrete before/after patches
     validation_checklist: list[str] = []
     deployment_strategy:  DeploymentStrategy = DeploymentStrategy.STANDARD
     executive_summary:    str = ""
+
+
+class ConsumerImpact(BaseModel):
+    """A downstream call-site that a breaking change will affect, with failure mode."""
+    change:        str  = ""      # what changed (endpoint/field/symbol)
+    change_type:   str  = ""      # removed | renamed | type_change | signature_change
+    file_path:     str  = ""      # the downstream file that will break
+    line:          int  = 0
+    symbol:        str  = ""      # the calling symbol/site
+    failure_mode:  str  = ""      # e.g. "HTTP 404", "AttributeError", "type mismatch"
+    severity:      str  = "high"
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -572,6 +597,19 @@ class AnalysisReport(BaseModel):
     token_budget:  int = 0
     token_usage:   list[AgentTokenUsage] = []
     errors:        list[str] = []
+
+    # Deterministic gate policy — set at finalization. gate_policy_reasons lists
+    # the hard rules that fired; gate_overridden_by_policy is True when policy
+    # made the gate stricter than the AI proposal.
+    gate_policy_reasons:     list[str] = []
+    gate_overridden_by_policy: bool    = False
+    ai_proposed_gate:        str       = ""   # the LLM's advisory gate, for transparency
+
+    # Business capabilities affected by this change (path → feature/team mapping)
+    capabilities_affected:   list[dict] = []
+
+    # Downstream call-sites that breaking changes will affect (with failure mode)
+    consumer_impacts:        list[ConsumerImpact] = []
 
     # Stored gate/risk — set by orchestrator at finalization so the values
     # are stable in the stored report and don't require re-deriving at read time.

@@ -63,14 +63,28 @@ class ModelConfig:
 
     @classmethod
     def from_dict(cls, d: dict) -> "ModelConfig":
+        """Build from a UI-supplied override dict.
+
+        Blank/whitespace-only fields are treated as 'not provided' and fall
+        back to defaults — a half-filled override (e.g. provider chosen but
+        model left empty) must never clobber a usable value with "" and break
+        the downstream API call.
+        """
         if not d:
             return cls()
+
+        def _s(key: str, default: str) -> str:
+            v = d.get(key)
+            v = v.strip() if isinstance(v, str) else v
+            return v if v else default
+
         return cls(
-            provider=d.get("provider",    "anthropic"),
-            model=d.get("model",          "claude-sonnet-4-6"),
-            api_key=d.get("api_key",      ""),
-            base_url=d.get("base_url",    ""),
-            api_version=d.get("api_version", "2024-08-01-preview"),
+            provider=_s("provider",    "anthropic"),
+            model=_s("model",          "claude-sonnet-4-6"),
+            # api_key intentionally NOT defaulted — blank means "fall back to env"
+            api_key=(d.get("api_key") or "").strip(),
+            base_url=(d.get("base_url") or "").strip(),
+            api_version=_s("api_version", "2024-08-01-preview"),
         )
 
     @classmethod
@@ -135,6 +149,18 @@ class UnifiedLLMClient:
     def create(self, system: str, user: str, max_tokens: int = 1000) -> LLMResponse:
         """Dispatch to the right provider and return a normalised LLMResponse."""
         p = self._cfg.provider
+
+        # Fail fast with an actionable message when no credential is available
+        # from EITHER the UI Model settings OR the backend env. Without this the
+        # SDK raises an opaque auth error that the UI swallows into "simulation",
+        # making it look like the app ignores the UI and demands an env var.
+        if p in ("anthropic", "openai", "azure_openai") and not self._cfg.api_key:
+            raise ValueError(
+                f"No API key for provider '{p}'. Enter it in the UI under "
+                f"Configure → AI Model, or set the corresponding environment "
+                f"variable (e.g. ANTHROPIC_API_KEY / OPENAI_API_KEY)."
+            )
+
         try:
             if p == "anthropic":
                 return self._call_anthropic(system, user, max_tokens)
@@ -179,8 +205,15 @@ class UnifiedLLMClient:
 
             def _stop(retry_state):
                 exc = retry_state.outcome.exception()
-                # 529 gives up sooner to keep agents from blocking each other
-                limit = 3 if isinstance(exc, _OverloadedError) else cfg.llm_retry_attempts
+                # Connection/timeout errors almost always mean a misconfigured or
+                # unreachable endpoint (wrong base_url, no network egress) — retrying
+                # 5× just burns the whole analysis budget. Fail fast (2 attempts).
+                if isinstance(exc, (anthropic.APIConnectionError, anthropic.APITimeoutError)):
+                    limit = 2
+                elif isinstance(exc, _OverloadedError):
+                    limit = 3   # 529 gives up sooner to keep agents from blocking each other
+                else:
+                    limit = cfg.llm_retry_attempts
                 return retry_state.attempt_number >= limit
 
             from tenacity.stop import stop_base
@@ -208,7 +241,15 @@ class UnifiedLLMClient:
 
             retrying = _NoopRetrying()
 
-        client = anthropic.Anthropic(api_key=self._cfg.api_key or None)
+        # Explicit per-call timeout + no SDK-internal retries: we handle retries
+        # via tenacity above, and a stuck call must fail fast rather than hang for
+        # the SDK default (which can be minutes) and blow the analysis timeout.
+        req_timeout = float(getattr(cfg, "llm_request_timeout_s", 120) or 120)
+        client = anthropic.Anthropic(
+            api_key=self._cfg.api_key or None,
+            timeout=req_timeout,
+            max_retries=0,
+        )
         resp = None
         for attempt in retrying:
             with attempt:
@@ -252,11 +293,18 @@ class UnifiedLLMClient:
 
         p = self._cfg.provider
 
+        # Explicit per-call timeout + no SDK-internal retries (tenacity handles
+        # retries) so a stuck/unreachable endpoint fails fast instead of hanging.
+        from config.settings import get_settings
+        req_timeout = float(getattr(get_settings(), "llm_request_timeout_s", 120) or 120)
+
         if p == "azure_openai":
             client = AzureOpenAI(
                 api_key=self._cfg.api_key or None,
                 azure_endpoint=self._cfg.base_url,
                 api_version=self._cfg.api_version or "2024-08-01-preview",
+                timeout=req_timeout,
+                max_retries=0,
             )
         else:
             # For Ollama, custom org endpoints (Llama Maverick, etc.) — just set base_url
@@ -266,7 +314,7 @@ class UnifiedLLMClient:
             if p == "ollama" and not base_url:
                 base_url = "http://localhost:11434/v1"
 
-            client = OpenAI(api_key=api_key, base_url=base_url)
+            client = OpenAI(api_key=api_key, base_url=base_url, timeout=req_timeout, max_retries=0)
 
         # Standard OpenAI messages format — works with ALL compatible endpoints
         messages = [

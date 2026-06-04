@@ -155,14 +155,18 @@ class SecretsEntropyAgent(BaseAgent[SecretsEntropyResult]):
         known_prefix_count = 0
         high_entropy_count = 0
 
+        from ingestion.diff_parser import source_line_map
         combined = "\n".join(h.content for h in request.hunks)
         lines    = combined.splitlines()
+        src_map  = source_line_map(combined)
 
         for line_no, line in enumerate(lines, 1):
             # Only examine added lines (not context or removed lines)
             if not line.startswith("+") or line.startswith("+++"):
                 continue
             content = line[1:]
+            # Real source line number (line_no stays the array index for _guess_file)
+            src_line = src_map[line_no - 1] if line_no - 1 < len(src_map) else line_no
 
             # ── Layer 1: Known key prefixes ───────────────────────────────────
             for pattern, description, severity in _KNOWN_PREFIXES:
@@ -173,7 +177,7 @@ class SecretsEntropyAgent(BaseAgent[SecretsEntropyResult]):
                     e = shannon_entropy(matched)
                     findings.append(EntropyFinding(
                         file_path=_guess_file(lines, line_no),
-                        line=line_no,
+                        line=src_line,
                         value=matched[:6] + "...",
                         entropy=round(e, 2),
                         kind="known_prefix",
@@ -202,7 +206,7 @@ class SecretsEntropyAgent(BaseAgent[SecretsEntropyResult]):
                 )
                 findings.append(EntropyFinding(
                     file_path=_guess_file(lines, line_no),
-                    line=line_no,
+                    line=src_line,
                     value=s[:6] + "...",
                     entropy=round(e, 2),
                     kind="high_entropy",
@@ -225,11 +229,11 @@ class SecretsEntropyAgent(BaseAgent[SecretsEntropyResult]):
                         except Exception:
                             continue
                     # Skip if already caught by known prefix layer
-                    if any(f.line == line_no and f.kind == "known_prefix" for f in findings):
+                    if any(f.line == src_line and f.kind == "known_prefix" for f in findings):
                         continue
                     findings.append(EntropyFinding(
                         file_path=_guess_file(lines, line_no),
-                        line=line_no,
+                        line=src_line,
                         value=s[:6] + "...",
                         entropy=round(e, 2),
                         kind=kind,

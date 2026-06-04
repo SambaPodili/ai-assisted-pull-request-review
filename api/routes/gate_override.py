@@ -72,6 +72,21 @@ def override_gate(request_id: str, body: OverrideRequest, request: Request):
     )
     get_gate_override_store().record(override)
 
+    # Record into the feedback loop (AI vs policy vs human) for tuning over time
+    try:
+        from governance.feedback_store import get_feedback_store
+        get_feedback_store().record_gate(
+            request_id=request_id,
+            repo=report.repo_url,
+            ai_gate=getattr(report, "ai_proposed_gate", "") or original_gate,
+            policy_gate=original_gate,
+            human_gate=new_gate.value,
+            reason=body.reason,
+            reviewer=subject.name or subject.key_id,
+        )
+    except Exception as exc:
+        import logging; logging.getLogger(__name__).debug("gate feedback record failed: %s", exc)
+
     # Write immutable audit record
     audit = get_audit_logger()
     audit.log(AuditEvent.GATE_OVERRIDE, {

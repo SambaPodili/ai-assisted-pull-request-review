@@ -26,7 +26,12 @@ _START_TIME = time.time()
 @router.get("/live", include_in_schema=True)
 def liveness():
     """Liveness probe — always returns 200 while the process is running."""
-    return {"status": "ok", "uptime_s": round(time.time() - _START_TIME, 1)}
+    from core.version import BUILD_VERSION
+    return {
+        "status":   "ok",
+        "uptime_s": round(time.time() - _START_TIME, 1),
+        "version":  BUILD_VERSION,
+    }
 
 
 @router.get("/ready", include_in_schema=True)
@@ -48,9 +53,11 @@ def readiness():
 @router.get("/health", include_in_schema=True)
 def health():
     """Full health check — checks all optional dependencies (Redis, Neo4j)."""
+    from core.version import version_info
     checks: dict[str, Any] = {
         "uptime_s":    round(time.time() - _START_TIME, 1),
         "status":      "ok",
+        "build":       version_info(),
         "components":  {},
     }
 

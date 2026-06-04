@@ -70,8 +70,11 @@ def _guess_file(lines: list[str], up_to: int) -> str:
 def _run_static(request: AnalysisRequest) -> list[MaintainabilityIssue]:
     issues: list[MaintainabilityIssue] = []
 
+    from ingestion.diff_parser import source_line_map
     combined = "\n".join(h.content for h in request.hunks)
     lines    = combined.splitlines()
+    src_map  = source_line_map(combined)   # array-index → real source line
+    def _ln(i): return src_map[i] if i < len(src_map) else i + 1
 
     # State for multi-line checks
     in_func_def     = False
@@ -104,7 +107,7 @@ def _run_static(request: AnalysisRequest) -> list[MaintainabilityIssue]:
                     suggestion="Break into smaller, single-responsibility functions.",
                 ))
             in_func_def     = True
-            func_start_line = idx + 1
+            func_start_line = _ln(idx)
             func_line_count = 0
             func_file       = file_path
         elif in_func_def:
@@ -133,7 +136,7 @@ def _run_static(request: AnalysisRequest) -> list[MaintainabilityIssue]:
                     severity="medium",
                     description=f"Nesting depth ~{depth} detected ({spaces} spaces); deeply nested code is hard to reason about.",
                     file_path=file_path,
-                    line=idx + 1,
+                    line=_ln(idx),
                     suggestion="Extract nested logic into helper functions or use early returns.",
                 ))
 
@@ -146,7 +149,7 @@ def _run_static(request: AnalysisRequest) -> list[MaintainabilityIssue]:
                     severity="high",
                     description="Bare `except:` catches all exceptions including KeyboardInterrupt and SystemExit.",
                     file_path=file_path,
-                    line=idx + 1,
+                    line=_ln(idx),
                     suggestion="Use `except Exception as e:` and log or re-raise the error.",
                 ))
             elif _EXCEPT_EXC.match(line):
@@ -160,7 +163,7 @@ def _run_static(request: AnalysisRequest) -> list[MaintainabilityIssue]:
                                 severity="high",
                                 description="`except Exception: pass` silently swallows all exceptions.",
                                 file_path=file_path,
-                                line=idx + 1,
+                                line=_ln(idx),
                                 suggestion="Log the exception before passing, or re-raise it.",
                             ))
                         break
@@ -169,7 +172,7 @@ def _run_static(request: AnalysisRequest) -> list[MaintainabilityIssue]:
         if is_added and _EXCEPT_START.match(line):
             in_except        = True
             except_has_action = False
-            except_start     = idx + 1
+            except_start     = _ln(idx)
             except_file      = file_path
         elif in_except:
             if is_added:
@@ -213,7 +216,7 @@ def _run_static(request: AnalysisRequest) -> list[MaintainabilityIssue]:
                         severity="low",
                         description=f"Magic number `{val}` in added code; intent is unclear.",
                         file_path=file_path,
-                        line=idx + 1,
+                        line=_ln(idx),
                         suggestion=f"Replace {val} with a named constant (e.g. MAX_RETRIES = {val}).",
                     ))
 
@@ -225,7 +228,7 @@ def _run_static(request: AnalysisRequest) -> list[MaintainabilityIssue]:
                     severity="medium",
                     description="Code appears immediately after a return/raise/break statement.",
                     file_path=file_path,
-                    line=idx + 1,
+                    line=_ln(idx),
                     suggestion="Remove unreachable code.",
                 ))
             prev_was_control = bool(_CONTROL_FLOW.match(line))
@@ -242,7 +245,7 @@ def _run_static(request: AnalysisRequest) -> list[MaintainabilityIssue]:
                     severity="low",
                     description="New function definition lacks a return type annotation (`->`).",
                     file_path=file_path,
-                    line=idx + 1,
+                    line=_ln(idx),
                     suggestion="Add `-> ReturnType` to the function signature.",
                 ))
 
@@ -254,7 +257,7 @@ def _run_static(request: AnalysisRequest) -> list[MaintainabilityIssue]:
                 severity="low",
                 description=f"`{keyword}` comment left in added code.",
                 file_path=file_path,
-                line=idx + 1,
+                line=_ln(idx),
                 suggestion="Resolve or track the issue in your ticketing system before merging.",
             ))
 

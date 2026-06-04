@@ -158,25 +158,28 @@ class ASTAnalysisAgent(BaseAgent[ASTAnalysisResult]):
         for hunk in request.hunks:
             if not hunk.file_path.endswith(".py"):
                 continue
-            # Extract added lines to reconstruct the changed function body
-            added = "\n".join(
-                l[1:] for l in hunk.content.splitlines()
-                if l.startswith("+") and not l.startswith("+++")
-            )
+            # Extract added lines + a parallel map of added-text line → real source line
+            from ingestion.diff_parser import iter_added_lines
+            added_pairs = list(iter_added_lines(hunk.content))   # [(src_line, content), ...]
+            added       = "\n".join(c for _, c in added_pairs)
+            line_map    = [s for s, _ in added_pairs]            # 1-based index → source line
             if not added.strip():
                 continue
 
             try:
                 tree = ast.parse(added)
-                visitor = _PythonASTVisitor(hunk.file_path)
+                visitor = _PythonASTVisitor(hunk.file_path, line_map=line_map)
                 visitor.visit(tree)
                 findings.extend(visitor.findings)
             except SyntaxError:
-                # Partial diff may not parse — try per-function extraction
+                # Partial diff may not parse — try per-function extraction.
+                # base_line is the function's offset within `added`, so the
+                # line_map still resolves the final position to a source line.
                 for func_code, func_name, start_line in _extract_python_functions(added):
                     try:
                         tree = ast.parse(func_code)
-                        visitor = _PythonASTVisitor(hunk.file_path, base_line=start_line, func_name=func_name)
+                        visitor = _PythonASTVisitor(hunk.file_path, base_line=start_line - 1,
+                                                    func_name=func_name, line_map=line_map)
                         visitor.visit(tree)
                         findings.extend(visitor.findings)
                     except SyntaxError:
@@ -207,15 +210,22 @@ class ASTAnalysisAgent(BaseAgent[ASTAnalysisResult]):
 class _PythonASTVisitor(ast.NodeVisitor):
     """Walks Python AST nodes and emits findings."""
 
-    def __init__(self, file_path: str, base_line: int = 0, func_name: str = "") -> None:
+    def __init__(self, file_path: str, base_line: int = 0, func_name: str = "",
+                 line_map: list[int] | None = None) -> None:
         self.file_path = file_path
         self.base_line = base_line
         self.func_name = func_name
+        self.line_map  = line_map      # added-text line (1-based) → real source line
         self.findings:  list[ASTFinding] = []
         self._returns:  set[int] = set()   # line numbers of return/raise
 
     def _ln(self, node) -> int:
-        return self.base_line + getattr(node, "lineno", 0)
+        # Position within the reconstructed "added" text (1-based)
+        pos = self.base_line + getattr(node, "lineno", 0)
+        # Translate to the real source line when a map is available
+        if self.line_map and 1 <= pos <= len(self.line_map):
+            return self.line_map[pos - 1]
+        return pos
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         name = node.name

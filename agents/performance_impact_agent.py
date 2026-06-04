@@ -209,11 +209,9 @@ class PerformanceImpactAgent(BaseAgent[PerformanceImpactResult]):
         if not hunk or not hunk.content:
             return findings
 
-        lines = hunk.content.splitlines()
-        added_lines: list[tuple[int, str]] = []  # (1-based index in hunk, raw content)
-        for idx, raw in enumerate(lines, 1):
-            if raw.startswith("+") and not raw.startswith("+++"):
-                added_lines.append((idx, raw[1:]))  # strip the leading "+"
+        # Use real source line numbers (parses @@ headers) instead of diff offsets
+        from ingestion.diff_parser import iter_added_lines
+        added_lines: list[tuple[int, str]] = list(iter_added_lines(hunk.content))
 
         if not added_lines:
             return findings

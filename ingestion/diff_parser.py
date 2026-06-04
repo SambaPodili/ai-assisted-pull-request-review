@@ -6,8 +6,116 @@ Used by both the webhook handlers and the direct analysis endpoint.
 """
 from __future__ import annotations
 import re
+from typing import Iterator
 from core.models import DiffHunk
 from ingestion.language_registry import detect_language as _detect_language
+
+_HUNK_HEADER = re.compile(r"^@@\s*-\d+(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s*@@")
+
+
+def iter_added_lines(content: str) -> Iterator[tuple[int, str]]:
+    """
+    Yield (source_line_number, text) for every ADDED ('+') line in a unified
+    diff hunk, using the ``@@ -a,b +c,d @@`` headers to compute the TRUE
+    new-file line number.
+
+    Why this exists: naively numbering lines with enumerate() over the raw diff
+    text counts the @@ headers and +/- prefixes, producing diff-relative
+    positions instead of real source lines — which is why findings showed wrong
+    line numbers. Context lines advance the counter; removed lines and headers
+    do not appear in the new file and are skipped.
+    """
+    new_line = 0
+    for raw in content.splitlines():
+        m = _HUNK_HEADER.match(raw)
+        if m:
+            new_line = int(m.group(1)) - 1   # next line will be the first in this hunk
+            continue
+        if raw.startswith(("+++", "---", "diff ", "index ", "Binary files")):
+            continue
+        if raw.startswith("-"):
+            continue                          # removed — not in the new file
+        # added or context line both advance the new-file counter
+        new_line += 1
+        if raw.startswith("+"):
+            yield new_line, raw[1:]
+
+
+def iter_numbered_lines(content: str) -> Iterator[tuple[int, str]]:
+    """
+    Yield (source_line_number, raw_line_with_prefix) for every diff line that a
+    scanner might inspect — added, context, AND removed — with an accurate
+    new-file line number. Drop-in replacement for `enumerate(content.splitlines(), 1)`
+    in static scanners that branch on the +/- prefix themselves.
+
+    Added & context lines advance the new-file counter. Removed lines report the
+    position they were removed from (counter not advanced) so a finding about a
+    deleted line still anchors near the change. @@ headers and file markers are
+    skipped.
+    """
+    new_line = 0
+    for raw in content.splitlines():
+        m = _HUNK_HEADER.match(raw)
+        if m:
+            new_line = int(m.group(1)) - 1
+            continue
+        if raw.startswith(("+++", "---", "diff ", "index ", "Binary files")):
+            continue
+        if raw.startswith("-"):
+            yield new_line + 1, raw       # removed: anchor to current new-file position
+            continue
+        new_line += 1
+        yield new_line, raw
+
+
+def source_line_map(content: str) -> list[int]:
+    """
+    Return a list aligned 1:1 with ``content.splitlines()`` giving the new-file
+    source line number for each array index. For scanners that need both the
+    array index (e.g. to walk backwards for the filename) AND the true source
+    line: read ``source_line_map(content)[idx]`` instead of ``idx + 1``.
+    Headers and removed lines map to the nearest new-file position.
+    """
+    out: list[int] = []
+    new_line = 0
+    for raw in content.splitlines():
+        m = _HUNK_HEADER.match(raw)
+        if m:
+            new_line = int(m.group(1)) - 1
+            out.append(new_line)
+            continue
+        if raw.startswith(("+++", "---", "diff ", "index ", "Binary files")):
+            out.append(new_line)
+            continue
+        if raw.startswith("-"):
+            out.append(new_line + 1)   # removed — anchor to current position
+            continue
+        new_line += 1
+        out.append(new_line)
+    return out
+
+
+def iter_source_lines(content: str) -> Iterator[tuple[int, str, str]]:
+    """
+    Yield (source_line_number, kind, text) for every line that exists in the
+    NEW file, where kind is 'add' or 'context'. Headers and removed lines are
+    consumed for accurate numbering but not yielded.
+    """
+    new_line = 0
+    for raw in content.splitlines():
+        m = _HUNK_HEADER.match(raw)
+        if m:
+            new_line = int(m.group(1)) - 1
+            continue
+        if raw.startswith(("+++", "---", "diff ", "index ", "Binary files")):
+            continue
+        if raw.startswith("-"):
+            continue
+        new_line += 1
+        if raw.startswith("+"):
+            yield new_line, "add", raw[1:]
+        else:
+            yield new_line, "context", raw[1:] if raw.startswith(" ") else raw
 
 
 def parse_diff(diff_text: str) -> list[DiffHunk]:

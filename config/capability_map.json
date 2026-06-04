@@ -1,0 +1,68 @@
+{
+  "_comment": "Maps changed file paths to business capabilities so reviewers and functional teams see WHICH feature a change affects, who owns it, and how critical it is. Edit to match your repo layout. First matching capability per file wins for the primary tag; a file can surface under multiple capabilities.",
+  "capabilities": [
+    {
+      "name": "Payments / Refunds",
+      "team": "Payments Engineering",
+      "owners": ["@payments-lead"],
+      "criticality": "critical",
+      "paths": ["**/payment*", "**/refund*", "services/payment/**", "**/billing/**", "**/*invoice*"]
+    },
+    {
+      "name": "Authentication & Access",
+      "team": "Security",
+      "owners": ["@security-team"],
+      "criticality": "critical",
+      "paths": ["**/auth/**", "**/*login*", "**/*oauth*", "**/*jwt*", "**/session*", "**/rbac/**", "**/permission*"]
+    },
+    {
+      "name": "KYC / Onboarding",
+      "team": "Onboarding",
+      "owners": ["@onboarding-lead"],
+      "criticality": "high",
+      "paths": ["**/kyc/**", "**/onboard*", "**/*identity*", "**/*verification*"]
+    },
+    {
+      "name": "Customer Data / Privacy",
+      "team": "Data Governance",
+      "owners": ["@data-privacy"],
+      "criticality": "high",
+      "paths": ["**/models/user*", "**/customer*", "**/*pii*", "**/profile*"]
+    },
+    {
+      "name": "Core Ledger / Accounts",
+      "team": "Core Banking",
+      "owners": ["@core-banking"],
+      "criticality": "critical",
+      "paths": ["**/ledger/**", "**/account*", "**/*transaction*", "**/balance*"]
+    },
+    {
+      "name": "Public API / Contracts",
+      "team": "Platform",
+      "owners": ["@platform-api"],
+      "criticality": "high",
+      "paths": ["**/api/**", "**/*.proto", "**/openapi*", "**/swagger*", "**/routes/**", "**/controllers/**"]
+    },
+    {
+      "name": "Database & Migrations",
+      "team": "Platform",
+      "owners": ["@platform-data"],
+      "criticality": "high",
+      "paths": ["**/migrations/**", "**/*migration*", "**/schema/**", "**/*.sql"]
+    },
+    {
+      "name": "Infrastructure / Deploy",
+      "team": "SRE",
+      "owners": ["@sre"],
+      "criticality": "medium",
+      "paths": ["**/*.tf", "**/k8s/**", "**/kubernetes/**", "**/Dockerfile*", "**/.github/**", "**/helm/**"]
+    },
+    {
+      "name": "Notifications",
+      "team": "Engagement",
+      "owners": ["@engagement"],
+      "criticality": "low",
+      "paths": ["**/notif*", "**/email*", "**/*sms*", "**/templates/**"]
+    }
+  ]
+}

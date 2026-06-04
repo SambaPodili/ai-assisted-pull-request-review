@@ -106,8 +106,11 @@ def _window(lines: list[str], center: int, radius: int) -> str:
 def _run_static(request: AnalysisRequest) -> list[ObservabilityFinding]:
     findings: list[ObservabilityFinding] = []
 
+    from ingestion.diff_parser import source_line_map
     combined = "\n".join(h.content for h in request.hunks)
     lines    = combined.splitlines()
+    src_map  = source_line_map(combined)
+    def _ln(i): return src_map[i] if i < len(src_map) else i + 1
 
     for idx, line in enumerate(lines):
         is_added   = line.startswith("+") and not line.startswith("+++")
@@ -121,7 +124,7 @@ def _run_static(request: AnalysisRequest) -> list[ObservabilityFinding]:
                 severity="high",
                 description=f"Log statement removed: `{line[1:].strip()}`",
                 file_path=file_path,
-                line=idx + 1,
+                line=_ln(idx),
                 suggestion=(
                     "Ensure this log statement is not needed for audit, "
                     "debugging, or regulatory compliance before removing it."
@@ -135,7 +138,7 @@ def _run_static(request: AnalysisRequest) -> list[ObservabilityFinding]:
                 severity="high",
                 description=f"Metric recording removed: `{line[1:].strip()}`",
                 file_path=file_path,
-                line=idx + 1,
+                line=_ln(idx),
                 suggestion=(
                     "Removing metrics can break dashboards and alerting. "
                     "Verify no alert depends on this metric before removing."
@@ -154,7 +157,7 @@ def _run_static(request: AnalysisRequest) -> list[ObservabilityFinding]:
                         "has no logging within 8 lines."
                     ),
                     file_path=file_path,
-                    line=idx + 1,
+                    line=_ln(idx),
                     suggestion=(
                         "Add a log statement (at DEBUG or INFO level) inside "
                         "this branch so its execution is observable."
@@ -175,7 +178,7 @@ def _run_static(request: AnalysisRequest) -> list[ObservabilityFinding]:
                         "with no surrounding log or metric emission."
                     ),
                     file_path=file_path,
-                    line=idx + 1,
+                    line=_ln(idx),
                     suggestion=(
                         "Log the error before raising it and increment an error "
                         "counter so on-call engineers can detect and triage."
@@ -194,7 +197,7 @@ def _run_static(request: AnalysisRequest) -> list[ObservabilityFinding]:
                         "has no logging or tracing middleware detected nearby."
                     ),
                     file_path=file_path,
-                    line=idx + 1,
+                    line=_ln(idx),
                     suggestion=(
                         "Apply request-logging and distributed-tracing middleware "
                         "(e.g. OpenTelemetry) to all new endpoints."
@@ -213,7 +216,7 @@ def _run_static(request: AnalysisRequest) -> list[ObservabilityFinding]:
                         "without apparent context/trace/correlation-ID propagation."
                     ),
                     file_path=file_path,
-                    line=idx + 1,
+                    line=_ln(idx),
                     suggestion=(
                         "Inject trace context (e.g. W3C traceparent or "
                         "X-Correlation-ID header) into outbound calls so distributed "

@@ -116,6 +116,13 @@ class Settings(BaseSettings):
         alias="COMPLIANCE_FRAMEWORKS",
     )
 
+    # ── Deterministic gate policy thresholds ───────────────────────────────────
+    gate_coverage_hold_pct:  float = Field(default=-5.0,  alias="GATE_COVERAGE_HOLD_PCT")   # ≤ this → HOLD
+    gate_coverage_block_pct: float = Field(default=-15.0, alias="GATE_COVERAGE_BLOCK_PCT")  # ≤ this → BLOCK
+    gate_blast_radius_block: int   = Field(default=70,    alias="GATE_BLAST_RADIUS_BLOCK")  # > this → HOLD
+    capability_map_path:     str   = Field(default="config/capability_map.json", alias="CAPABILITY_MAP_PATH")
+    feedback_db_path:        str   = Field(default="data/feedback.db", alias="FEEDBACK_DB_PATH")
+
     # ── Logging ───────────────────────────────────────────────────────────────
     log_level:        str  = Field(default="INFO",  alias="LOG_LEVEL")
     log_format:       str  = Field(default="text",  alias="LOG_FORMAT")   # "text" | "json"
@@ -132,10 +139,19 @@ class Settings(BaseSettings):
 
     # ── Analysis reliability ──────────────────────────────────────────────────
     analysis_timeout_s: int = Field(default=600, alias="ANALYSIS_TIMEOUT_S")   # 10 min hard cap (20 agents, potential 529 retries)
+    # Pipeline engine. The threaded pipeline runs the ~20 agents in parallel
+    # (ThreadPoolExecutor) and is the fast default. LangGraph runs fan-out nodes
+    # sequentially, which is much slower — opt in only if you need its tracing.
+    use_langgraph: bool = Field(default=False, alias="USE_LANGGRAPH")
 
     # ── LLM retry (tenacity) ──────────────────────────────────────────────────
     llm_retry_attempts:    int = Field(default=5,  alias="LLM_RETRY_ATTEMPTS")
     llm_retry_max_wait_s:  int = Field(default=90, alias="LLM_RETRY_MAX_WAIT_S")
+    # Per-call request timeout (seconds). A stuck/unreachable model endpoint
+    # fails fast instead of hanging and blowing the overall analysis timeout.
+    # Kept well under analysis_timeout_s so the worst-case across the agent DAG
+    # (a few sequential layers) still fits inside the overall budget.
+    llm_request_timeout_s: int = Field(default=45, alias="LLM_REQUEST_TIMEOUT_S")
 
     # ── Webhook deduplication ─────────────────────────────────────────────────
     webhook_dedup_ttl_s: int = Field(default=300, alias="WEBHOOK_DEDUP_TTL_S")

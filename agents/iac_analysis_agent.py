@@ -60,6 +60,7 @@ from core.models import (
 )
 from core.token_manager import trim_diff_for_budget
 from agents.base_agent import BaseAgent
+from ingestion.diff_parser import iter_numbered_lines
 
 
 # ── File type detection ───────────────────────────────────────────────────────
@@ -100,7 +101,7 @@ def _scan_terraform(hunk) -> list[IaCFinding]:
     lines = hunk.content.splitlines()
     current_resource = ""
 
-    for i, raw_line in enumerate(lines, 1):
+    for i, raw_line in iter_numbered_lines(hunk.content):
         # Track resource context
         m = _TF_RESOURCE_NAME.search(raw_line)
         if m:
@@ -210,7 +211,7 @@ def _scan_kubernetes(hunk) -> list[IaCFinding]:
     resource_name = _extract_k8s_name(added_content)
     resource_kind = _extract_k8s_kind(added_content)
 
-    for i, raw_line in enumerate(lines, 1):
+    for i, raw_line in iter_numbered_lines(hunk.content):
         if not (raw_line.startswith("+") and not raw_line.startswith("+++")):
             continue
         line = raw_line[1:].strip()
@@ -325,7 +326,7 @@ def _scan_dockerfile(hunk) -> list[IaCFinding]:
         if l.startswith("+") and not l.startswith("+++")
     )
 
-    for i, raw_line in enumerate(lines, 1):
+    for i, raw_line in iter_numbered_lines(hunk.content):
         if not (raw_line.startswith("+") and not raw_line.startswith("+++")):
             continue
         line = raw_line[1:].strip()

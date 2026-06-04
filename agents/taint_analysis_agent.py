@@ -167,12 +167,11 @@ class TaintAnalysisAgent(BaseAgent[TaintAnalysisResult]):
         """
         Three-pass taint analysis across all diff hunks.
         """
-        all_lines: list[tuple[str, str, int]] = []   # (line_content, file_path, line_no)
+        from ingestion.diff_parser import iter_added_lines
+        all_lines: list[tuple[str, str, int]] = []   # (line_content, file_path, source_line)
         for hunk in request.hunks:
-            lines = hunk.content.splitlines()
-            for i, line in enumerate(lines, 1):
-                if line.startswith("+") and not line.startswith("+++"):
-                    all_lines.append((line[1:], hunk.file_path, i))
+            for src_line, content in iter_added_lines(hunk.content):
+                all_lines.append((content, hunk.file_path, src_line))
 
         # ── Pass 1: find sources ──────────────────────────────────────────
         tainted: dict[str, TaintSource] = {}   # variable → TaintSource

@@ -9,9 +9,76 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request
 from datetime import datetime
 
+from pydantic import BaseModel
+
 from governance.rbac import Permission, Subject, Role, ROLE_META, require_permission
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+# ── Report purge (admin only) ─────────────────────────────────────────────────
+
+class PurgeRequest(BaseModel):
+    repo_contains: str = ""     # delete reports whose repo URL/slug contains this substring (case-insensitive)
+    older_than_days: int = 0    # delete reports older than N days (0 = no age filter)
+    dry_run: bool = True        # preview only — does NOT delete unless explicitly false
+
+
+@router.post("/reports/purge")
+def purge_reports(body: PurgeRequest,
+                  subject: Subject = require_permission(Permission.ADMIN_CONFIG)):
+    """
+    Delete stored analysis reports matching a repo substring and/or age.
+    Defaults to dry_run=true so you can preview what would be removed.
+    At least one filter (repo_contains or older_than_days) is required to avoid
+    accidentally wiping everything. Admin only.
+    """
+    from datetime import datetime, timezone, timedelta
+    from api.app import get_report_store
+
+    if not body.repo_contains and body.older_than_days <= 0:
+        raise HTTPException(400, detail="Provide repo_contains and/or older_than_days (refusing to match all reports).")
+
+    store   = get_report_store()
+    needle  = body.repo_contains.strip().lower()
+    cutoff  = None
+    if body.older_than_days > 0:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=body.older_than_days)
+
+    # Scan recent reports (cap high so we cover the store)
+    metas = store.list_recent(limit=1000)
+    matched: list[dict] = []
+    for m in metas:
+        repo = (m.get("repo") or "").lower()
+        if needle and needle not in repo:
+            continue
+        if cutoff is not None:
+            ts_raw = m.get("completed_at", "")
+            try:
+                ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                if ts >= cutoff:
+                    continue
+            except Exception:
+                continue
+        matched.append({"request_id": m["request_id"], "repo": m.get("repo", ""),
+                        "completed_at": m.get("completed_at", "")})
+
+    if body.dry_run:
+        return {
+            "dry_run": True,
+            "would_delete": len(matched),
+            "sample": matched[:25],
+            "message": f"{len(matched)} report(s) match. Re-run with dry_run=false to delete.",
+        }
+
+    deleted = sum(1 for m in matched if store.delete(m["request_id"]))
+    return {
+        "dry_run": False,
+        "deleted": deleted,
+        "message": f"Deleted {deleted} report(s).",
+    }
 
 
 # ── Email digest ──────────────────────────────────────────────────────────────

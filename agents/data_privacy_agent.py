@@ -254,11 +254,9 @@ class DataPrivacyAgent(BaseAgent[DataPrivacyResult]):
         if not hunk or not hunk.content:
             return pii_findings, log_violations
 
-        lines = hunk.content.splitlines()
-        added_lines: list[tuple[int, str]] = []
-        for idx, raw in enumerate(lines, 1):
-            if raw.startswith("+") and not raw.startswith("+++"):
-                added_lines.append((idx, raw[1:]))
+        # Real source line numbers via @@ headers (not diff offsets)
+        from ingestion.diff_parser import iter_added_lines
+        added_lines: list[tuple[int, str]] = list(iter_added_lines(hunk.content))
 
         if not added_lines:
             return pii_findings, log_violations

@@ -36,6 +36,16 @@ class RemediationAgent(BaseAgent[RemediationResult]):
         "Output ONLY compact JSON. No prose."
     )
 
+    def run(self, request: AnalysisRequest, budget, context: dict[str, Any] | None = None) -> RemediationResult:
+        result = super().run(request, budget, context)
+        # Attach concrete, high-confidence before/after fixes (deterministic).
+        try:
+            from agents.fix_generator import generate_fixes
+            result.code_fixes = generate_fixes(request)
+        except Exception:
+            pass
+        return result
+
     def build_user_prompt(self, request: AnalysisRequest, context: dict[str, Any]) -> str:
         report = context.get("full_report", {})
 
