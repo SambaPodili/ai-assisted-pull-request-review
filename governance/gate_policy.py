@@ -162,6 +162,24 @@ def evaluate_policy(report: AnalysisReport, settings=None) -> PolicyResult:
         elif delta <= cov_hold_threshold:
             hold_reasons.append(f"Test coverage dropped {delta:.1f}%")
 
+        # A security-relevant method changed with NO test at all is a real gap.
+        mc = getattr(tc, "method_coverage", None) or []
+        untested_sec = [m for m in mc
+                        if not getattr(m, "has_test", False)
+                        and any("security" in s for s in getattr(m, "required_scenarios", []))]
+        if untested_sec:
+            names = ", ".join(m.method for m in untested_sec[:3])
+            hold_reasons.append(
+                f"{len(untested_sec)} security-relevant method(s) changed with no unit test ({names})"
+            )
+
+        # Tests added with no assertions give false confidence.
+        hollow = getattr(tc, "hollow_tests", None) or []
+        if hollow:
+            hold_reasons.append(
+                f"{len(hollow)} test(s) added with no assertions ({', '.join(hollow[:2])})"
+            )
+
     if sc and getattr(sc, "changes", None) and not (sc.has_destructive and sc.has_irreversible):
         hold_reasons.append("Database schema migration present — verify rollback plan")
 

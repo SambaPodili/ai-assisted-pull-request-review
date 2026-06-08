@@ -206,11 +206,25 @@ class TestGap(BaseModel):
     suggested_test:  str
 
 
+class MethodTestCoverage(BaseModel):
+    """Per-changed-method unit-test scenario coverage."""
+    method:             str
+    file_path:          str
+    is_new:             bool          = False
+    has_test:           bool          = False
+    required_scenarios: list[str]     = []   # categories that apply to this method
+    covered_scenarios:  list[str]     = []   # categories evidenced in the PR's tests
+    missing_scenarios:  list[str]     = []   # required − covered
+
+
 class TestCoverageResult(AgentResultBase):
     coverage_delta:   float = 0.0
     uncovered_paths:  list[TestGap] = []
     regression_risk:  RiskLevel = RiskLevel.LOW
     generated_stubs:  list[str] = []
+    method_coverage:  list[MethodTestCoverage] = []
+    scenario_summary: str = ""             # e.g. "6 methods · 14 scenarios required · 5 missing"
+    hollow_tests:     list[str] = []       # test methods added with NO assertions
 
 
 class ContractBreak(BaseModel):
@@ -423,6 +437,9 @@ class QAScenario(BaseModel):
     expected_result:  str                       = ""
     affected_files:   list[str]                 = []
     automation_hint:  str                       = ""
+    preconditions:       list[str]              = []   # what must be true before the test
+    acceptance_criteria: list[str]              = []   # the pass/fail conditions
+    test_skeleton:       str                    = ""   # ready-to-run test stub for the file's language
 
 
 class QAScenariosResult(AgentResultBase):

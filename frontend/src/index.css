@@ -433,3 +433,7 @@ html.dark .tab.active .tab-step { background:#fff; color:#1f6feb; }
 .flow-legend i { color:#1a6cf6; font-size:14px; margin-right:2px; }
 .flow-legend .tab-step { width:15px; height:15px; font-size:9px; margin-right:2px; }
 html.dark .flow-legend { background:#10203a; border-color:#1f3a63; color:#8b949e; }
+
+/* QA scenario section labels */
+.qa-sec-label { font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; color:#9fadbf; margin-bottom:6px; }
+html.dark .qa-sec-label { color:#6e7681; }

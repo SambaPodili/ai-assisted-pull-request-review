@@ -134,7 +134,7 @@ class ReferenceImpactAgent(BaseAgent[ReferenceImpactResult]):
 
     agent_name       = AgentName.REFERENCE_IMPACT
     output_model     = ReferenceImpactResult
-    output_token_cap = 2000
+    output_token_cap = 4000   # reference lists are verbose; 2000 truncated JSON mid-response
 
     system_prompt = (
         "You are a senior engineer analysing how changed code affects the rest of a codebase.\n"

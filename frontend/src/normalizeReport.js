@@ -69,6 +69,17 @@ export function normalizeReport(r) {
       file: u.file_path || u.file || '',
       description: u.suggested_test || u.description || u.uncovered_path || '',
     })),
+    scenario_summary: tc.scenario_summary || '',
+    hollow_tests: tc.hollow_tests || [],
+    method_coverage: (tc.method_coverage || []).map(m => ({
+      method: m.method || '',
+      file: m.file_path || '',
+      is_new: m.is_new || false,
+      has_test: m.has_test || false,
+      required: m.required_scenarios || [],
+      covered: m.covered_scenarios || [],
+      missing: m.missing_scenarios || [],
+    })),
   } : null;
 
   const iface = r.interface || null;
@@ -199,7 +210,7 @@ export function normalizeReport(r) {
 
   const qar = r.qa_scenarios || null;
   const qaNorm = qar ? {
-    scenarios: (qar.scenarios||[]).map(s=>({ id:s.id||'', title:s.title||'', type:s.type||'functional', priority:s.priority||'medium', description:s.description||'', steps:s.steps||[], expected_result:s.expected_result||'', affected_files:s.affected_files||[], automation_hint:s.automation_hint||'' })),
+    scenarios: (qar.scenarios||[]).map(s=>({ id:s.id||'', title:s.title||'', type:s.type||'functional', priority:s.priority||'medium', description:s.description||'', steps:s.steps||[], expected_result:s.expected_result||'', affected_files:s.affected_files||[], automation_hint:s.automation_hint||'', preconditions:s.preconditions||[], acceptance_criteria:s.acceptance_criteria||[], test_skeleton:s.test_skeleton||'' })),
     total_scenarios: qar.total_scenarios || (qar.scenarios||[]).length,
     summary: qar.summary || '',
   } : null;

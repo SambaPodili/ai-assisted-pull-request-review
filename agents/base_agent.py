@@ -231,28 +231,36 @@ class BaseAgent(ABC, Generic[T]):
         except (ValidationError, ValueError):
             pass
 
-        # Attempt 2: extract the outermost {...} block (handles preamble/suffix)
-        m = re.search(r"\{.*\}", raw, re.DOTALL)
-        if m:
-            candidate = m.group()
+        # Attempt 2: extract the first balanced {...} object (robust to preamble,
+        # trailing prose, and code fences the model added anyway).
+        candidate = _extract_balanced_json(raw) or _greedy_brace(raw)
+        if candidate:
             try:
                 return self.output_model.model_validate_json(candidate)
             except (ValidationError, ValueError):
                 raw = candidate   # carry forward for repair attempt
 
-        # Attempt 3: repair truncated JSON (LLM hit max_tokens mid-string)
+        # Attempt 3: repair truncated JSON (LLM hit max_tokens mid-response)
         repaired = _repair_truncated_json(raw)
         if repaired != raw:
-            log.warning(
-                "JSON from %s was truncated — repaired and retrying parse",
-                self.agent_name,
-            )
+            log.warning("JSON from %s was truncated — repaired and retrying parse", self.agent_name)
             try:
                 return self.output_model.model_validate_json(repaired)
             except (ValidationError, ValueError) as exc:
                 log.warning("Repaired JSON still invalid for %s: %s", self.agent_name, exc)
 
-        raise ValueError(f"Could not parse {self.agent_name} response after all recovery attempts")
+        # All recovery failed — log WHAT came back so the cause is diagnosable
+        # (truncated JSON vs. prose vs. an HTML proxy/error page vs. wrong model).
+        diag = _diagnose_raw(raw)
+        log.error(
+            "[%s] Unparseable LLM response (%d chars) — %s\n  head: %s\n  tail: %s",
+            self.agent_name, len(raw or ""), diag,
+            (raw or "")[:300].replace("\n", "\\n"),
+            (raw or "")[-200:].replace("\n", "\\n"),
+        )
+        raise ValueError(
+            f"Could not parse {self.agent_name} response after all recovery attempts ({diag})"
+        )
 
     def _resolve_model_config(self, context: dict[str, Any], agent_key: str) -> ModelConfig:
         """Resolve which provider/model/key this agent should use.
@@ -287,6 +295,54 @@ class BaseAgent(ABC, Generic[T]):
             from core.token_manager import MODEL_FAST, MODEL_STRONG, _STRONG_AGENTS
             cfg.model = MODEL_STRONG if agent_key in _STRONG_AGENTS else MODEL_FAST
         return cfg
+
+
+# ── JSON extraction / diagnostics ─────────────────────────────────────────────
+
+def _greedy_brace(raw: str) -> str:
+    """First '{' to last '}' (fast path for prose-wrapped JSON)."""
+    m = re.search(r"\{.*\}", raw or "", re.DOTALL)
+    return m.group() if m else ""
+
+
+def _extract_balanced_json(raw: str) -> str:
+    """Return the first COMPLETE top-level {...} object, respecting strings and
+    escapes. More reliable than a greedy regex when the model appends trailing
+    prose after valid JSON."""
+    if not raw:
+        return ""
+    start = raw.find("{")
+    if start == -1:
+        return ""
+    depth, in_str, esc = 0, False, False
+    for i in range(start, len(raw)):
+        c = raw[i]
+        if in_str:
+            if esc:            esc = False
+            elif c == "\\":    esc = True
+            elif c == '"':     in_str = False
+        else:
+            if c == '"':       in_str = True
+            elif c == "{":     depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    return raw[start:i + 1]
+    return ""   # never closed → truncated; let the repair step handle it
+
+
+def _diagnose_raw(raw: str) -> str:
+    """Heuristic label for an unparseable response — points at the real cause."""
+    s = (raw or "").lstrip().lower()
+    if not s:
+        return "empty response (model returned nothing — check the API key/endpoint)"
+    if s.startswith("<!doctype") or s.startswith("<html") or "<body" in s[:200]:
+        return "looks like an HTML page (corporate proxy / captive portal / blocked endpoint)"
+    if s.startswith(("i ", "sure", "here", "the ", "as ", "based ")):
+        return "model returned prose, not JSON (model not following the JSON instruction)"
+    if "{" in s and s.count("{") > s.count("}"):
+        return "JSON truncated mid-response (raise the agent's output budget/cap)"
+    return "malformed JSON"
 
 
 # ── JSON repair ───────────────────────────────────────────────────────────────

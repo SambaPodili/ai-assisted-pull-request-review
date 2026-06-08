@@ -39,20 +39,41 @@ function parseDiffToSnippets(diffText) {
   return result
 }
 
+function snippetNote(text) {
+  return <div style={{fontSize:11,color:'#9fadbf',fontStyle:'italic',margin:'4px 0 2px',display:'flex',alignItems:'center',gap:5}}>
+    <i className="ti ti-code-off" style={{fontSize:12}}/>{text}</div>
+}
+
 function getCodeSnippetJSX(file, lineRef, snipCache, ctx=3) {
-  if (!file||!lineRef||!snipCache) return null
+  if (!file || !lineRef) return null
+  // No diff available (e.g. a stored report opened from Insights/History).
+  if (!snipCache || !Object.keys(snipCache).length)
+    return snippetNote('Inline code shows on a fresh run (the diff isn’t stored with the report).')
   let lines = snipCache[file]
   if (!lines) {
-    const key = Object.keys(snipCache).find(k=>k===file||k.endsWith('/'+file)||file.endsWith('/'+k.split('/').pop()))
+    const norm = String(file).replace(/\\/g,'/')
+    const base = norm.split('/').pop()
+    const key = Object.keys(snipCache).find(k=>{
+      const kn=k.replace(/\\/g,'/'); return kn===norm||kn.endsWith('/'+norm)||norm.endsWith('/'+kn)||kn.split('/').pop()===base
+    })
     lines = key ? snipCache[key] : null
   }
-  if (!lines||!lines.length) return null
+  if (!lines||!lines.length) return snippetNote(`No diff lines for ${String(file).split(/[\\/]/).pop()} in this change.`)
   const m=String(lineRef).match(/^(\d+)(?:[,-](\d+))?$/)
   if (!m) return null
   const s=parseInt(m[1]), e=m[2]?parseInt(m[2]):s
-  const relevant=lines.filter(l=>{const ln=l.newLine??l.oldLine; return ln!=null&&ln>=s-ctx&&ln<=e+ctx})
-  if (!relevant.length) return null
-  return (
+  let relevant=lines.filter(l=>{const ln=l.newLine??l.oldLine; return ln!=null&&ln>=s-ctx&&ln<=e+ctx})
+  // Line is outside the changed window → show the nearest changed lines instead
+  // of nothing, with a note, so the reviewer still gets context.
+  let note=null
+  if (!relevant.length) {
+    relevant = lines.filter(l=>l.type==='add').slice(0,6)
+    if (!relevant.length) relevant = lines.slice(0,6)
+    if (!relevant.length) return snippetNote(`Line ${lineRef} not in the changed hunks.`)
+    note = snippetNote(`Line ${lineRef} is outside the changed lines — showing nearby changes:`)
+  }
+  return (<>
+    {note}
     <div className="code-snippet">
       {relevant.map((l,i)=>(
         <div key={i} className={`code-snippet-line ${l.type}`}>
@@ -61,7 +82,7 @@ function getCodeSnippetJSX(file, lineRef, snipCache, ctx=3) {
         </div>
       ))}
     </div>
-  )
+  </>)
 }
 
 function saveHistory(report, target, state) {
@@ -642,7 +663,15 @@ function AdvancedTab({r, snipCache}) {
   return (
     <div className="card">
       {agentSection('ti-key','#ec4899','Entropy / Secrets', !se?emptyRow('Agent did not run'):(se.findings||[]).length===0?emptyRow('No secrets found'):
-        <div>{(se.findings||[]).map((f,i)=><div key={i} className="finding"><span className={`sev sev-${f.severity}`}>{f.severity}</span><div className="finding-body"><div className="finding-desc"><code>{f.variable||f.kind||''}</code> — {f.kind||''} (entropy: {(f.entropy||0).toFixed(2)})</div><div className="finding-file">value: <code>{f.value||''}</code> · line {f.line||'?'}</div>{getCodeSnippetJSX(f.file,f.line,snipCache,2)}</div></div>)}</div>
+        <div>
+          <div style={{fontSize:11.5,color:'#7a8494',background:'#fdf2f8',border:'1px solid #fbcfe8',borderRadius:7,padding:'8px 11px',marginBottom:10,lineHeight:1.5}}>
+            <i className="ti ti-info-circle" style={{color:'#ec4899',marginRight:4}}/>
+            <strong>What this checks:</strong> hardcoded secrets accidentally committed — API keys, tokens, passwords, private keys.
+            "Entropy" measures randomness; real secrets look random (≈4.5+), normal code ≈4.0.
+            <strong> How to act:</strong> open the line, confirm whether it's a real credential. If yes → remove it, move it to a secret store, and <strong>rotate the key</strong>. If it's just config/code, mark it <code>⚐ false positive</code> so it stops flagging.
+          </div>
+          {(se.findings||[]).map((f,i)=><div key={i} className="finding"><span className={`sev sev-${f.severity}`}>{f.severity}</span><div className="finding-body"><div className="finding-desc"><code>{f.variable||f.kind||''}</code> — {f.kind||''} (entropy: {(f.entropy||0).toFixed(2)})</div><div className="finding-file" title="Value is redacted — see the highlighted line below for full context">value: <code>{f.value||''}</code> {f.file?`· ${f.file.split(/[\\/]/).pop()}`:''} · line {f.line||'?'}</div>{getCodeSnippetJSX(f.file,f.line,snipCache,2)}<div style={{marginTop:6}}><FindingFeedback r={r} agent="secrets_entropy" category={f.kind||''} file={f.file||''}/></div></div></div>)}
+        </div>
       )}
       {agentSection('ti-binary-tree','#8b5cf6','AST Analysis', !ast?emptyRow('Agent did not run'):(ast.findings||[]).length===0?emptyRow(`No AST issues — max complexity: ${ast.max_complexity||0}`):
         <div>{(ast.findings||[]).map((f,i)=><div key={i} className="finding"><span className={`sev sev-${f.severity}`}>{f.severity}</span><div className="finding-body"><div className="finding-desc"><code>{f.kind||''}</code> in <code>{f.function||''}</code></div><div className="finding-file">{f.description||''}{f.suggestion?` — ${f.suggestion}`:''}{f.line?` · line ${f.line}`:''}</div>{getCodeSnippetJSX(f.file,f.line,snipCache,3)}</div></div>)}</div>
@@ -803,10 +832,123 @@ function RemediationTab({r}) {
   )
 }
 
+const SCENARIO_HINT = {
+  'happy path': m => `Call \`${m}()\` with typical valid inputs and assert the exact expected return value / output.`,
+  'invalid input': m => `Call \`${m}()\` with malformed, out-of-range, or wrong-type arguments; assert it is rejected with a clear validation error (not a generic crash).`,
+  'null / empty': m => `Pass \`null\`/empty/blank for each argument of \`${m}()\`; assert safe handling — no NullPointer/KeyError, sensible default or explicit error.`,
+  'boundary / edge': m => `Exercise \`${m}()\` at min, max, zero, empty collection, single element, and off-by-one boundaries.`,
+  'error / exception': m => `Force \`${m}()\` down its failure path; assert the exact exception type AND message/error code, and that state is left consistent.`,
+  'state / side-effects': m => `After \`${m}()\`, verify the persisted/mutated state is correct, and that calling it twice is idempotent (no double-charge / duplicate write).`,
+  'security (authz / injection)': m => `Assert \`${m}()\` denies unauthorized/forbidden callers (401/403) and is safe against injection (SQL/command/XSS) and malicious input.`,
+  'concurrency / thread-safety': m => `Invoke \`${m}()\` from several threads concurrently (latch/executor); assert no race condition, lost update, or corrupted shared state.`,
+  'data integrity / serialization': m => `Round-trip serialize → deserialize through \`${m}()\`; assert no data loss/precision change, and verify migration rollback works.`,
+  'backward compatibility': m => `Call \`${m}()\` with the PREVIOUS request/contract shape; assert existing consumers (v1 clients) still get a valid response.`,
+  'regression (the fix)': m => `Add a test that reproduces the ORIGINAL bug this change fixes; confirm it failed before and passes now (guards against re-introduction).`,
+}
+
+function UnitTestCoverage({ tc }) {
+  const methods = tc?.method_coverage || []
+  const hollow = tc?.hollow_tests || []
+  if (!methods.length && !hollow.length) return null
+  const totalMissing = methods.reduce((n,m)=>n+(m.missing?.length||0),0)
+  return (
+    <div className="card" style={{marginBottom:12}}>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:8,marginBottom:8}}>
+        <div className="card-title" style={{marginBottom:0}}><i className="ti ti-list-check"/>Unit test coverage — changed methods</div>
+        <span style={{fontSize:12,fontWeight:700,color:totalMissing?'#b45309':'#166534'}}>
+          {totalMissing? `${totalMissing} scenario(s) not covered` : 'all recommended scenarios covered'}
+        </span>
+      </div>
+      <div style={{fontSize:11.5,color:'#7a8494',marginBottom:12}}>{tc.scenario_summary} · ✓ = evidenced in this PR’s tests, ✗ = recommended but not found.</div>
+      {methods.map((m,i)=>(
+        <div key={i} style={{padding:'10px 0',borderTop:i?'1px solid #f0f2f5':'none'}}>
+          <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:6}}>
+            <code style={{fontSize:12.5,fontWeight:700,color:'#0d1117'}}>{m.method}()</code>
+            {m.is_new && <span className="badge badge-blue" style={{fontSize:10}}>new</span>}
+            {!m.has_test && <span className="badge badge-red" style={{fontSize:10}}><i className="ti ti-alert-triangle" style={{fontSize:10,marginRight:2}}/>no test found</span>}
+            <span style={{fontSize:11,color:'#9fadbf',fontFamily:'JetBrains Mono,monospace'}}>{(m.file||'').split(/[\\/]/).pop()}</span>
+          </div>
+          <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+            {m.required.map(s=>{
+              const ok = m.covered.includes(s)
+              return <span key={s} style={{fontSize:11,fontWeight:600,padding:'2px 9px',borderRadius:12,
+                background:ok?'#f0fdf4':'#fff7ed', color:ok?'#166534':'#9a3412', border:`1px solid ${ok?'#bbf7d0':'#fed7aa'}`}}>
+                {ok?'✓':'✗'} {s}</span>
+            })}
+          </div>
+          {m.missing.length>0 && (
+            <details style={{marginTop:7}}>
+              <summary style={{fontSize:11.5,fontWeight:600,color:'#9a3412',cursor:'pointer',userSelect:'none'}}>
+                ▸ How to cover the {m.missing.length} missing test{m.missing.length>1?'s':''}
+              </summary>
+              <ul style={{margin:'6px 0 2px',paddingLeft:18,fontSize:12,color:'#4b5563',lineHeight:1.6}}>
+                {m.missing.map(s=>(
+                  <li key={s} style={{marginBottom:4}}>
+                    <strong style={{color:'#9a3412'}}>{s}:</strong>{' '}
+                    {(SCENARIO_HINT[s] ? SCENARIO_HINT[s](m.method) : `Add a ${s} test for ${m.method}().`)
+                      .split('`').map((part,k)=> k%2 ? <code key={k}>{part}</code> : part)}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </div>
+      ))}
+      {hollow.length>0 && (
+        <div style={{marginTop:12,background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:8,padding:'9px 12px'}}>
+          <div style={{fontSize:12.5,fontWeight:700,color:'#9a3412',marginBottom:4}}>
+            <i className="ti ti-alert-triangle" style={{marginRight:5}}/>{hollow.length} test(s) added with no assertions
+          </div>
+          <div style={{fontSize:11.5,color:'#9a3412',lineHeight:1.5}}>
+            These pass trivially and give false confidence — add real assertions: <code>{hollow.slice(0,6).join(', ')}</code>{hollow.length>6?` +${hollow.length-6} more`:''}
+          </div>
+        </div>
+      )}
+      <div style={{fontSize:11,color:'#9fadbf',marginTop:10,display:'flex',alignItems:'flex-start',gap:5}}>
+        <i className="ti ti-info-circle" style={{marginTop:1}}/>
+        <span>Heuristic scan of the tests in this PR. Add the missing scenarios (or mark not-applicable in review). Detailed step-by-step cases are in the scenarios below.</span>
+      </div>
+    </div>
+  )
+}
+
+const QA_TESTDATA = {
+  functional: "Representative valid values + a few invalid ones; cover the main branches.",
+  security:   "Unauthorized/expired token, forged identity, injection payloads (' OR 1=1 --, <script>), oversized & malformed input.",
+  regression: "The exact input that triggered the original defect (and a near-miss variant).",
+  edge_case:  "null, empty, 0, negative, max int, very long strings, unicode, off-by-one.",
+  integration:"Mock the dependency for: success, timeout, 5xx error, and malformed response.",
+  performance:"Large/high-volume inputs (1k / 10k / 100k); measure latency & memory vs baseline.",
+  api:        "Valid + invalid bodies, missing required fields, wrong content-type, and the previous (v1) contract shape.",
+  data:       "Round-trip records, nulls, precision-boundary values, and schema-mismatch rows.",
+}
+
+function scenarioToGherkin(s) {
+  const steps = (s.steps||[])
+  const when = steps.length ? steps : ['the change under test is exercised']
+  const pre = (s.preconditions||[])
+  const acc = (s.acceptance_criteria||[]).length ? s.acceptance_criteria
+              : [s.expected_result || 'the expected outcome occurs and no error is raised']
+  const lines = [
+    `Scenario: ${s.title||s.id}`,
+    `  # priority: ${(s.priority||'medium').toUpperCase()} · type: ${(s.type||'functional')}`,
+    `  Given ${pre[0] || 'the system is in a valid, known state'}`,
+    ...pre.slice(1).map(p=>`  And ${p}`),
+    `  When ${when[0]}`,
+    ...when.slice(1).map(st=>`  And ${st}`),
+    `  Then ${acc[0]}`,
+    ...acc.slice(1).map(a=>`  And ${a}`),
+  ]
+  return lines.join('\n')
+}
+
 function QAScenariosTab({r}) {
   const [filter, setFilter] = useState('all')
+  const [copied, setCopied] = useState('')
   const qa = r.qa_scenarios
-  if (!qa?.scenarios?.length) return <div className="card"><div className="empty-state"><i className="ti ti-checklist"/>No QA scenarios generated yet.</div></div>
+  const hasUnits = (r.test_coverage?.method_coverage || []).length > 0
+  if (!qa?.scenarios?.length && !hasUnits) return <div className="card"><div className="empty-state"><i className="ti ti-checklist"/>No QA scenarios generated yet.</div></div>
+  if (!qa?.scenarios?.length) return <div><UnitTestCoverage tc={r.test_coverage}/></div>
   const priColor=p=>({critical:'#b81c1c',high:'#8a5200',medium:'#1a6cf6',low:'#6b7280'})[p?.toLowerCase()]||'#6b7280'
   const typeIcon=t=>({functional:'ti-click',security:'ti-shield-lock',regression:'ti-arrows-right-left',edge_case:'ti-test-pipe',integration:'ti-puzzle',performance:'ti-gauge',api:'ti-api',data:'ti-database'})[t]||'ti-checklist'
   const priorities=['all','critical','high','medium','low']
@@ -816,6 +958,7 @@ function QAScenariosTab({r}) {
   const highN=qa.scenarios.filter(s=>s.priority?.toLowerCase()==='high').length
   return (
     <div>
+      <UnitTestCoverage tc={r.test_coverage}/>
       <div className="card" style={{marginBottom:12}}>
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:10,marginBottom:14}}>
           <div><div className="card-title" style={{marginBottom:4}}><i className="ti ti-checklist"/>QA Test Scenarios</div><div style={{fontSize:12,color:'#7a8494'}}>{qa.summary||''}</div></div>
@@ -839,10 +982,36 @@ function QAScenariosTab({r}) {
               <span style={{display:'inline-flex',alignItems:'center',gap:3,padding:'2px 8px',background:`${priColor(s.priority)}18`,color:priColor(s.priority),borderRadius:10,fontSize:11,fontWeight:700}}>{(s.priority||'').toUpperCase()}</span>
               <span style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',background:'#f0f2f5',color:'#4b5563',borderRadius:10,fontSize:11}}><i className={`ti ${typeIcon(s.type)}`} style={{fontSize:12}}/>{(s.type||'').replace(/_/g,' ')}</span>
               <div style={{flex:1,minWidth:200,fontSize:14,fontWeight:600,color:'#0d1117'}}>{s.title}</div>
+              <button className="btn btn-sm" title="Copy this scenario as a Gherkin (Given/When/Then) template"
+                onClick={()=>{ navigator.clipboard?.writeText(scenarioToGherkin(s)); setCopied(s.id); setTimeout(()=>setCopied(''),1500) }}>
+                <i className="ti ti-copy"/> {copied===s.id?'Copied':'Gherkin'}
+              </button>
             </div>
             <p style={{fontSize:13,color:'#4b5563',marginBottom:12,lineHeight:1.6}}>{s.description}</p>
-            {s.steps?.length>0&&<div style={{marginBottom:10}}><div style={{fontSize:11,fontWeight:600,textTransform:'uppercase',letterSpacing:.06,color:'#9fadbf',marginBottom:6}}>Test steps</div><ol style={{margin:0,paddingLeft:20,fontSize:13,color:'#374151',lineHeight:1.8}}>{s.steps.map((st,j)=><li key={j}>{st}</li>)}</ol></div>}
-            {s.expected_result&&<div style={{background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:6,padding:'8px 12px',marginBottom:8,fontSize:12,color:'#166534'}}><strong>Expected:</strong> {s.expected_result}</div>}
+
+            <div style={{display:'grid',gridTemplateColumns:'1fr',gap:10}}>
+              {(s.preconditions||[]).length>0&&<div><div className="qa-sec-label">Preconditions</div><ul style={{margin:0,paddingLeft:20,fontSize:12.5,color:'#374151',lineHeight:1.7}}>{s.preconditions.map((p,j)=><li key={j}>{p}</li>)}</ul></div>}
+
+              {s.steps?.length>0&&<div><div className="qa-sec-label">Test steps</div><ol style={{margin:0,paddingLeft:20,fontSize:13,color:'#374151',lineHeight:1.8}}>{s.steps.map((st,j)=><li key={j}>{st}</li>)}</ol></div>}
+
+              <div><div className="qa-sec-label">Test data &amp; inputs to cover</div>
+                <div style={{fontSize:12.5,color:'#4b5563',lineHeight:1.55}}>{QA_TESTDATA[s.type]||QA_TESTDATA.functional}</div>
+              </div>
+
+              {(s.acceptance_criteria||[]).length>0&&<div><div className="qa-sec-label">Acceptance criteria (pass/fail)</div><ul style={{margin:0,paddingLeft:20,fontSize:12.5,color:'#166534',lineHeight:1.7}}>{s.acceptance_criteria.map((a,j)=><li key={j}>{a}</li>)}</ul></div>}
+
+              {s.expected_result&&!(s.acceptance_criteria||[]).length&&<div style={{background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:6,padding:'8px 12px',fontSize:12.5,color:'#166534'}}><strong>Expected result:</strong> {s.expected_result}</div>}
+
+              {s.test_skeleton&&<details><summary style={{fontSize:11.5,fontWeight:600,color:'#1a6cf6',cursor:'pointer',userSelect:'none'}}>▸ Ready-to-run test skeleton</summary>
+                <pre style={{margin:'6px 0 0',background:'#0d1117',color:'#e6edf3',borderRadius:6,padding:'10px 12px',fontSize:12,fontFamily:'JetBrains Mono,monospace',overflowX:'auto',lineHeight:1.5}}>{s.test_skeleton}</pre>
+                <button className="btn btn-sm" style={{marginTop:6}} onClick={()=>{navigator.clipboard?.writeText(s.test_skeleton);setCopied(s.id+'-sk');setTimeout(()=>setCopied(''),1500)}}><i className="ti ti-copy"/> {copied===s.id+'-sk'?'Copied':'Copy skeleton'}</button>
+              </details>}
+
+              <div style={{display:'flex',flexWrap:'wrap',gap:14,fontSize:11.5,color:'#7a8494',alignItems:'center'}}>
+                {s.automation_hint && <span><i className="ti ti-robot" style={{marginRight:4,color:'#8b5cf6'}}/><strong>Automate with:</strong> {s.automation_hint}</span>}
+                {(s.affected_files||[]).length>0 && <span><i className="ti ti-file-code" style={{marginRight:4}}/><strong>Covers:</strong> {(s.affected_files||[]).slice(0,3).map(f=>f.split(/[\\/]/).pop()).join(', ')}{s.affected_files.length>3?` +${s.affected_files.length-3}`:''}</span>}
+              </div>
+            </div>
           </div>
         ))}
     </div>
@@ -1040,9 +1209,9 @@ function ReferenceGraph({ ref: refData }) {
     if (simRef.current) { simRef.current.stop(); simRef.current = null }
 
     const W = el.clientWidth || 860
-    const H = 420
-    const symbols    = (ref.changed_symbols  || []).slice(0, 25)
-    const sharedLibs = (ref.shared_lib_breaks|| []).slice(0, 8)
+    const H = 540
+    const symbols    = (ref.changed_symbols  || []).slice(0, 12)
+    const sharedLibs = (ref.shared_lib_breaks|| []).slice(0, 6)
 
     const depthColor = d => (['#3b82f6','#0d9488','#7c3aed','#6b7280'])[Math.min(d,4)-1] || '#6b7280'
     const depthBg    = d => (['#eff6ff','#f0fdfa','#f5f3ff','#f9fafb'])[Math.min(d,4)-1] || '#f9fafb'
@@ -1060,8 +1229,10 @@ function ReferenceGraph({ ref: refData }) {
         fileMeta[r.from_file] = { count:0, depth:(r.depth||2)-1, symbols:new Set() }
     })
 
+    const totalFiles = Object.keys(fileMeta).length
+    const MAX_FILE_NODES = 24
     const topFiles = Object.entries(fileMeta)
-      .sort(([,a],[,b]) => b.count - a.count).slice(0, 50)
+      .sort(([,a],[,b]) => b.count - a.count).slice(0, MAX_FILE_NODES)
       .map(([fp, meta]) => {
         const parts = fp.replace(/\\/g,'/').split('/')
         return { id:'file:'+fp, label:parts.slice(-2).join('/'), fullPath:fp,
@@ -1115,11 +1286,20 @@ function ReferenceGraph({ ref: refData }) {
     svg.call(d3.zoom().scaleExtent([0.3, 3])
       .on('zoom', e => zoomLayer.attr('transform', e.transform)))
 
+    // Concentric rings by call distance: changed symbols in the centre, direct
+    // callers on the first ring, callers-of-callers further out, shared libs
+    // outermost. Reads as "what calls the changed code, and how far away".
+    const maxR = Math.min(W, H) / 2 - 40
+    const ringR = d => {
+      if (d.type === 'symbol')     return 0
+      if (d.type === 'shared_lib') return maxR
+      return Math.min([0.34, 0.60, 0.82, 0.95][Math.min(d.depth, 4) - 1] || 0.95, 1) * maxR
+    }
     const sim = d3.forceSimulation(nodes)
-      .force('link',      d3.forceLink(links).id(d=>d.id).distance(d=>d.shared?100:80).strength(0.5))
-      .force('charge',    d3.forceManyBody().strength(d=>d.type==='symbol'?-400:-180))
-      .force('center',    d3.forceCenter(W/2, H/2))
-      .force('collision', d3.forceCollide().radius(d=>d.r+6))
+      .force('link',      d3.forceLink(links).id(d=>d.id).distance(d=>d.shared?120:70).strength(0.12))
+      .force('charge',    d3.forceManyBody().strength(d=>d.type==='symbol'?-700:-260))
+      .force('radial',    d3.forceRadial(ringR, W/2, H/2).strength(d=>d.type==='symbol'?1:0.55))
+      .force('collision', d3.forceCollide().radius(d=>d.r+12).strength(0.9))
     simRef.current = sim
 
     const linkEl = zoomLayer.append('g').selectAll('line').data(links).join('line')
@@ -1155,13 +1335,18 @@ function ReferenceGraph({ ref: refData }) {
       .attr('text-anchor','middle').attr('dominant-baseline','central')
       .attr('font-size','9px').attr('fill','#d97706').text('⚠')
 
-    nodeEl.append('text')
+    // Label only the changed symbols + the handful of heaviest files. Every
+    // other node reveals its name on hover — this is what kills the hairball.
+    const labelCount = Math.max(...topFiles.map(f=>f.count||0), 1)
+    const showLabel = d => d.type === 'symbol' || (d.type === 'file' && (d.count >= 3 || d.count >= labelCount))
+    nodeEl.filter(showLabel).append('text')
       .attr('dy',d=>d.r+12).attr('text-anchor','middle')
-      .attr('font-size',d=>d.type==='symbol'?'11px':'10px')
-      .attr('font-weight',d=>d.type==='symbol'?'600':'400')
+      .attr('font-size',d=>d.type==='symbol'?'11px':'9.5px')
+      .attr('font-weight',d=>d.type==='symbol'?'700':'500')
       .attr('fill',d=>nodeColor(d))
       .attr('font-family',"'JetBrains Mono', monospace")
-      .text(d=>d.label)
+      .style('paint-order','stroke').attr('stroke','#f7f8fa').attr('stroke-width','3px')
+      .text(d=>d.type==='symbol' ? d.label : (d.fullPath.replace(/\\/g,'/').split('/').pop()))
 
     nodeEl.filter(d=>d.type==='file'&&d.count>1).append('text')
       .attr('dy',d=>-d.r-3).attr('text-anchor','middle')
@@ -1196,6 +1381,14 @@ function ReferenceGraph({ ref: refData }) {
       nodeEl.attr('transform',d=>`translate(${d.x},${d.y})`)
     })
 
+    // "+N more" note when files were capped (full list is in High-impact files below)
+    if (totalFiles > topFiles.length) {
+      svg.append('text').attr('x',12).attr('y',H-14)
+        .attr('font-size','11px').attr('fill','#9fadbf')
+        .attr('font-family',"'JetBrains Mono', monospace")
+        .text(`+${totalFiles - topFiles.length} more files — see High-impact files below`)
+    }
+
     // Reset zoom button
     svg.append('g').attr('transform',`translate(${W-58},${H-36})`).append('foreignObject')
       .attr('width',52).attr('height',26)
@@ -1208,9 +1401,14 @@ function ReferenceGraph({ ref: refData }) {
   }
 
   return (
-    <div ref={containerRef} style={{ position:'relative', width:'100%', height:420, borderRadius:8, overflow:'hidden', border:'1px solid #e8eaed', background:'#f7f8fa' }}>
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100%', color:'#9fadbf', fontSize:12 }}>
-        <span className="spinner" style={{width:16,height:16,marginRight:8}}/> Rendering graph…
+    <div>
+      <div style={{fontSize:11,color:'#9fadbf',marginBottom:6,display:'flex',alignItems:'center',gap:6}}>
+        <i className="ti ti-info-circle"/> Rings = call distance from the change (centre = changed symbols). Hover any node for its name · scroll to zoom · drag to rearrange.
+      </div>
+      <div ref={containerRef} style={{ position:'relative', width:'100%', height:540, borderRadius:8, overflow:'hidden', border:'1px solid #e8eaed', background:'#f7f8fa' }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100%', color:'#9fadbf', fontSize:12 }}>
+          <span className="spinner" style={{width:16,height:16,marginRight:8}}/> Rendering graph…
+        </div>
       </div>
     </div>
   )

@@ -103,6 +103,32 @@ _SAFE_PATTERNS = re.compile(
     r'00000000|ffffffff|deadbeef|cafebabe|12345678)'
 )
 
+# Code identifiers / dotted paths / config keys — e.g. "a.b.c",
+# "cpfisAccountDetailsResponseProcessor", "sslconfig.keystoremanager".
+# These are normal source code, NOT secrets, even though mixed-case dotted strings
+# score ~3.8-4.0 entropy. Excluding them removes the bulk of false positives.
+_CODEISH = re.compile(r'^[A-Za-z_$][A-Za-z0-9_$.]*$')
+# Split into word segments on separators + camelCase boundaries.
+_SEGMENTS = re.compile(r'[A-Z]+(?=[A-Z][a-z])|[A-Z][a-z]+|[a-z]+|[A-Z]+|[0-9]+')
+
+
+def _looks_like_identifier(s: str) -> bool:
+    """True for camelCase / snake_case / dotted.code.paths made of WORDS — these
+    are normal code, not secrets. The key tell: real secrets/keys interleave
+    digits with letters (e.g. AKIAxKj8mN2p), whereas code identifiers are
+    word-segments with no digit runs mixed in."""
+    s = s.strip()
+    # Space-separated words (a sentence / SQL / message) — not a secret.
+    if " " in s and not re.search(r'[+/=]{2,}', s):
+        return True
+    if not _CODEISH.match(s):
+        return False                       # has -, /, =, etc. → treat as possible secret
+    segs = _SEGMENTS.findall(re.sub(r'[._$]', " ", s))
+    if any(t.isdigit() for t in segs):
+        return False                       # digits mixed in → looks like a key/token
+    words = [t for t in segs if t.isalpha()]
+    return bool(words) and all(len(t) >= 2 for t in words)
+
 ENTROPY_THRESHOLD     = 3.7   # bits/char — above this = high entropy
 MIN_SECRET_LENGTH     = 20    # minimum string length to flag
 HIGH_SEVERITY_ENTROPY = 4.5   # above this = CRITICAL
@@ -196,9 +222,15 @@ class SecretsEntropyAgent(BaseAgent[SecretsEntropyResult]):
                 e = shannon_entropy(s)
                 if e < ENTROPY_THRESHOLD:
                     continue
-
-                # Is this a secret variable? Boost severity
+                # Skip normal code identifiers / dotted config keys (false positives)
+                # unless the surrounding variable name screams "secret".
                 is_secret_var = bool(_SECRET_VARIABLE_NAMES.search(content))
+                # Skip normal code identifiers — but only at low/medium entropy.
+                # A genuinely random secret (entropy >= 4.3) is flagged even if it
+                # happens to be a single alphanumeric token. Known-prefix secrets
+                # (AKIA…, ghp_…) are still caught by Layer 1 above regardless.
+                if _looks_like_identifier(s) and e < 4.3 and not is_secret_var:
+                    continue
                 severity = (
                     RiskLevel.CRITICAL if e >= HIGH_SEVERITY_ENTROPY or is_secret_var
                     else RiskLevel.HIGH if e >= 4.0

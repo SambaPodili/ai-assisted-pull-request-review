@@ -93,6 +93,83 @@ def _categorise_hunk(file_path: str, content: str) -> set[QAScenarioType]:
 
 # ── Template library ──────────────────────────────────────────────────────────
 
+# ── Production-grade scenario detail (preconditions / acceptance / skeleton) ────
+
+def _lang_for(files: list[str]) -> str:
+    f = (files[0] if files else "").lower()
+    if f.endswith((".java", ".kt")): return "java"
+    if f.endswith(".py"):            return "python"
+    if f.endswith((".ts", ".tsx", ".js", ".jsx")): return "js"
+    if f.endswith(".go"):            return "go"
+    return ""
+
+
+_PRECONDITIONS = {
+    QAScenarioType.SECURITY:    ["A user/principal WITHOUT the required role/permission exists",
+                                 "Auth is enforced (not disabled in the test profile)"],
+    QAScenarioType.API:         ["The service is deployed with the new contract",
+                                 "A client using the PREVIOUS contract version is available"],
+    QAScenarioType.DATA:        ["A representative dataset (and one schema-mismatch record) is seeded",
+                                 "A rollback/teardown path is available"],
+    QAScenarioType.INTEGRATION: ["The external dependency is mocked/stubbed",
+                                 "Failure modes (timeout, 5xx, malformed) can be simulated"],
+    QAScenarioType.PERFORMANCE: ["A baseline latency/throughput measurement exists",
+                                 "Load inputs at 1k / 10k / 100k are prepared"],
+    QAScenarioType.REGRESSION:  ["The exact input that triggered the original defect is known"],
+}
+_DEFAULT_PRE = ["The unit under test is instantiated with valid dependencies (mocks where external)"]
+
+
+def _acceptance(stype: QAScenarioType, expected: str) -> list[str]:
+    base = [expected] if expected else ["The documented expected result is produced"]
+    extra = {
+        QAScenarioType.SECURITY:    ["Unauthorized access is rejected (401/403) and logged",
+                                     "No injection payload alters behaviour or reaches a sink"],
+        QAScenarioType.EDGE_CASE:   ["No unhandled exception on null/empty/boundary inputs"],
+        QAScenarioType.API:         ["Previous-version clients still receive a valid response",
+                                     "Required-field validation returns a clear 4xx error"],
+        QAScenarioType.DATA:        ["Round-trip causes no data loss or precision change",
+                                     "Rollback restores the prior state"],
+        QAScenarioType.REGRESSION:  ["The test fails on the pre-fix code and passes on the fix"],
+        QAScenarioType.PERFORMANCE: ["Latency/memory stays within the agreed budget vs baseline"],
+    }.get(stype, [])
+    return base + extra
+
+
+def _skeleton(title: str, stype: QAScenarioType, files: list[str]) -> str:
+    lang = _lang_for(files)
+    safe = re.sub(r'[^a-zA-Z0-9]+', '_', title).strip('_').lower()[:60] or "scenario"
+    if lang == "java":
+        return ("@Test\n"
+                f"void {safe}() {{\n"
+                "    // Arrange — set up inputs, mocks, and preconditions\n"
+                "    // Act — invoke the changed method\n"
+                "    // Assert — verify the acceptance criteria\n"
+                "    // assertThrows(...) for the error/security path\n"
+                "}")
+    if lang == "python":
+        return (f"def test_{safe}():\n"
+                "    # Arrange\n    ...\n"
+                "    # Act\n    ...\n"
+                "    # Assert — acceptance criteria\n    assert ...\n"
+                "    # with pytest.raises(...):  # error/security path\n")
+    if lang == "js":
+        return (f"it('{title[:60]}', () => {{\n"
+                "  // Arrange\n  // Act\n  // Assert\n"
+                "  expect(result).toEqual(expected);\n"
+                "  // expect(() => fn()).toThrow();  // error path\n"
+                "});")
+    if lang == "go":
+        cap = "".join(w.capitalize() for w in safe.split("_"))[:60] or "Scenario"
+        return (f"func Test{cap}(t *testing.T) {{\n"
+                "    // Arrange / Act\n"
+                "    // Assert\n"
+                "    if got != want {\n        t.Fatalf(\"got %v want %v\", got, want)\n    }\n}")
+    return ("// Arrange the unit under test and inputs\n"
+            "// Act: invoke the change\n"
+            "// Assert: verify each acceptance criterion (incl. the error path)")
+
+
 def _make_scenario(idx: int, title: str, stype: QAScenarioType, priority: RiskLevel,
                    description: str, steps: list[str], expected: str,
                    files: list[str], hint: str = "") -> QAScenario:
@@ -106,6 +183,9 @@ def _make_scenario(idx: int, title: str, stype: QAScenarioType, priority: RiskLe
         expected_result=expected,
         affected_files=files,
         automation_hint=hint,
+        preconditions=_PRECONDITIONS.get(stype, _DEFAULT_PRE),
+        acceptance_criteria=_acceptance(stype, expected),
+        test_skeleton=_skeleton(title, stype, files),
     )
 
 

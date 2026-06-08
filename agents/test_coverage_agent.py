@@ -70,10 +70,21 @@ class TestCoverageAgent(BaseAgent[TestCoverageResult]):
         new_methods = _extract_new_methods(request)
         stubs = [_stub_for_method(m) for m in new_methods[:3]]
 
+        # Method-level unit-test scenario validation (deterministic).
+        method_cov, scenario_summary, hollow = [], "", []
+        try:
+            from ingestion.unit_test_validation import validate as _validate_units, hollow_tests as _hollow
+            method_cov, scenario_summary = _validate_units(request)
+            hollow = _hollow(request)
+        except Exception:   # pragma: no cover - never let it break coverage analysis
+            pass
+
+        # Risk also rises when many recommended scenarios are uncovered.
+        missing_total = sum(len(m.missing_scenarios) for m in method_cov)
         risk = (
             RiskLevel.CRITICAL if len(gaps) > 5 else
-            RiskLevel.HIGH     if len(gaps) > 2 else
-            RiskLevel.MEDIUM   if gaps          else
+            RiskLevel.HIGH     if len(gaps) > 2 or missing_total > 8 else
+            RiskLevel.MEDIUM   if gaps or missing_total > 0 else
             RiskLevel.LOW
         )
 
@@ -82,6 +93,9 @@ class TestCoverageAgent(BaseAgent[TestCoverageResult]):
             uncovered_paths=gaps,
             regression_risk=risk,
             generated_stubs=stubs,
+            method_coverage=method_cov,
+            scenario_summary=scenario_summary,
+            hollow_tests=hollow,
         )
 
 
