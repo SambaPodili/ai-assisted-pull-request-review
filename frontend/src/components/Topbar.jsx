@@ -9,6 +9,7 @@ const TITLES = {
   settings:  'Backend settings',
   quality:   'Quality metrics',
   insights:  'Team insights',
+  agents:    'Analysis agents',
 }
 const SUBS = {
   configure: 'Connect GitHub or Bitbucket',
@@ -19,6 +20,7 @@ const SUBS = {
   settings:  'Configure backend API connection',
   quality:   'Recall, precision & F1 across all detection agents',
   insights:  'Review queue, risk trends, change heatmap & API cost',
+  agents:    'What each of the 20 analysis agents does',
 }
 
 export default function Topbar({ view, state, showView, dark, setDark }) {
@@ -33,15 +35,23 @@ export default function Topbar({ view, state, showView, dark, setDark }) {
         {/* Build version badge (turns amber on FE/BE version mismatch) */}
         <BuildBadge state={state} />
 
-        {/* Role badge */}
+        {/* Logged-in user + role */}
         {state.ciaaPerms && (
-          <span style={{
-            background: `${state.ciaaPerms.role_color||'#1a56db'}1a`,
-            color:       state.ciaaPerms.role_color || '#1a56db',
-            border:      `1px solid ${state.ciaaPerms.role_color||'#1a56db'}44`,
-            borderRadius: 5, padding:'2px 8px', fontSize:11, fontWeight:700,
-          }} title={state.ciaaPerms.description||''}>
-            {state.ciaaPerms.role_label || state.ciaaRole || 'Developer'}
+          <span style={{ display:'flex', alignItems:'center', gap:7 }}
+            title={`${state.ciaaPerms.name||''}${state.ciaaPerms.team?' · '+state.ciaaPerms.team:''} — ${state.ciaaPerms.description||''}`}>
+            {state.ciaaPerms.name && (
+              <span style={{ fontSize:12, color:'#4b5563', fontWeight:600, maxWidth:160, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                <i className="ti ti-user" style={{ fontSize:12, marginRight:4, color:'#9fadbf' }}/>{state.ciaaPerms.name}
+              </span>
+            )}
+            <span style={{
+              background: `${state.ciaaPerms.role_color||'#1a56db'}1a`,
+              color:       state.ciaaPerms.role_color || '#1a56db',
+              border:      `1px solid ${state.ciaaPerms.role_color||'#1a56db'}44`,
+              borderRadius: 5, padding:'2px 8px', fontSize:11, fontWeight:700, whiteSpace:'nowrap',
+            }}>
+              {state.ciaaPerms.role_label || state.ciaaRole || 'Developer'}
+            </span>
           </span>
         )}
 

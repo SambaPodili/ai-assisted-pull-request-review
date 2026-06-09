@@ -1,26 +1,26 @@
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 export const AGENT_META = {
-  code_analysis:   { label:'Code Analysis',       icon:'ti-code',              phase:'Phase 1',  color:'#1a6cf6' },
-  security:        { label:'Security Review',      icon:'ti-shield-lock',       phase:'Phase 1',  color:'#ef4444' },
-  ast_analysis:    { label:'AST Analysis',         icon:'ti-binary-tree',       phase:'Phase 1b', color:'#8b5cf6' },
-  secrets_entropy: { label:'Entropy / Secrets',    icon:'ti-key',               phase:'Phase 1b', color:'#ec4899' },
-  taint_analysis:  { label:'Taint Analysis',       icon:'ti-arrows-diff',       phase:'Phase 1b', color:'#f97316' },
-  iac_analysis:    { label:'IaC Scan',             icon:'ti-server',            phase:'Phase 1b', color:'#14b8a6' },
-  temporal_risk:   { label:'Temporal Risk',        icon:'ti-clock-record',      phase:'Phase 1b', color:'#a855f7' },
-  schema_change:      { label:'Schema Changes',       icon:'ti-database',          phase:'Phase 1b', color:'#06b6d4' },
-  qa_scenarios:       { label:'QA Scenarios',          icon:'ti-checklist',         phase:'Phase 1b', color:'#d97706' },
-  reference_impact:   { label:'Reference Impact',      icon:'ti-git-branch',        phase:'Phase 1b', color:'#7c3aed' },
-  performance_impact: { label:'Performance Impact',    icon:'ti-rocket',            phase:'Phase 1b', color:'#0284c7' },
-  data_privacy:       { label:'Data Privacy',          icon:'ti-lock',              phase:'Phase 1b', color:'#db2777' },
-  maintainability:    { label:'Maintainability',       icon:'ti-tool',              phase:'Phase 1b', color:'#6366f1' },
-  license_compliance: { label:'License Compliance',    icon:'ti-license',           phase:'Phase 1b', color:'#059669' },
-  observability:      { label:'Observability',         icon:'ti-eye',               phase:'Phase 1b', color:'#0ea5e9' },
-  dependency:         { label:'Dependency Mapping',    icon:'ti-topology-star-3',   phase:'Phase 2',  color:'#f59e0b' },
-  test_coverage:      { label:'Test Coverage',         icon:'ti-test-pipe',         phase:'Phase 2',  color:'#10b981' },
-  interface:          { label:'Interface / API',       icon:'ti-api',               phase:'Phase 2',  color:'#3b82f6' },
-  risk:               { label:'Risk Assessment',       icon:'ti-scale',             phase:'Phase 2',  color:'#0ea5e9' },
-  remediation:        { label:'Remediation',           icon:'ti-tool',              phase:'Phase 3',  color:'#84cc16' },
+  code_analysis:   { label:'Code Analysis',       icon:'ti-code',              phase:'Phase 1',  color:'#1a6cf6', desc:'Classifies the change (feature / refactor / bugfix / config) and flags code-quality issues and complexity changes.' },
+  security:        { label:'Security Review',      icon:'ti-shield-lock',       phase:'Phase 1',  color:'#ef4444', desc:'Scans for vulnerabilities (injection, auth, crypto, CWE Top-25). Tuned for low false positives; can BLOCK the gate.' },
+  ast_analysis:    { label:'AST Analysis',         icon:'ti-binary-tree',       phase:'Phase 1b', color:'#8b5cf6', desc:'Parses changed code into a syntax tree to reason about structure and complexity — not just raw text.' },
+  secrets_entropy: { label:'Entropy / Secrets',    icon:'ti-key',               phase:'Phase 1b', color:'#ec4899', desc:'Detects hardcoded secrets via Shannon entropy + known key prefixes; skips ordinary code identifiers. Secrets BLOCK the gate.' },
+  taint_analysis:  { label:'Taint Analysis',       icon:'ti-arrows-diff',       phase:'Phase 1b', color:'#f97316', desc:'Tracks user-controlled data from source to sink to prove injection / SSRF / path-traversal. BLOCKs the gate.' },
+  iac_analysis:    { label:'IaC Scan',             icon:'ti-server',            phase:'Phase 1b', color:'#14b8a6', desc:'Terraform / Kubernetes / Docker misconfigurations (public buckets, wildcard IAM, privileged containers). Critical → BLOCK.' },
+  temporal_risk:   { label:'Temporal Risk',        icon:'ti-clock-record',      phase:'Phase 1b', color:'#a855f7', desc:'Looks across PR history for risky patterns — repeatedly-touched hot files and escalating change risk.' },
+  schema_change:      { label:'Schema Changes',       icon:'ti-database',          phase:'Phase 1b', color:'#06b6d4', desc:'Detects DB / migration risk (Flyway, Liquibase, .sql). Destructive + irreversible migrations BLOCK the gate.' },
+  qa_scenarios:       { label:'QA Scenarios',          icon:'ti-checklist',         phase:'Phase 1b', color:'#d97706', desc:'Generates test scenarios with preconditions, acceptance criteria and runnable skeletons; requirement-aware from uploaded docs.' },
+  reference_impact:   { label:'Reference Impact',      icon:'ti-git-branch',        phase:'Phase 1b', color:'#7c3aed', desc:'Finds where changed symbols are used across the codebase — the call graph and blast radius of the change.' },
+  performance_impact: { label:'Performance Impact',    icon:'ti-rocket',            phase:'Phase 1b', color:'#0284c7', desc:'Flags N+1 queries, complexity regressions and hot-path risks introduced by the change.' },
+  data_privacy:       { label:'Data Privacy',          icon:'ti-lock',              phase:'Phase 1b', color:'#db2777', desc:'Detects unencrypted PII handling (GDPR / PCI-DSS / PDPA). Unencrypted PII holds the gate.' },
+  maintainability:    { label:'Maintainability',       icon:'ti-tool',              phase:'Phase 1b', color:'#6366f1', desc:'Flags long functions, duplication and complexity smells that hurt long-term maintainability.' },
+  license_compliance: { label:'License Compliance',    icon:'ti-license',           phase:'Phase 1b', color:'#059669', desc:'Checks newly-added dependencies for copyleft / unknown licences. Copyleft introduction BLOCKs the gate.' },
+  observability:      { label:'Observability',         icon:'ti-eye',               phase:'Phase 1b', color:'#0ea5e9', desc:'Detects removed logs / metrics and missing instrumentation on new code paths.' },
+  dependency:         { label:'Dependency Mapping',    icon:'ti-topology-star-3',   phase:'Phase 2',  color:'#f59e0b', desc:'Computes blast radius across the service dependency graph and checks changed dependencies for known CVEs (OSV). CVEs BLOCK.' },
+  test_coverage:      { label:'Test Coverage',         icon:'ti-test-pipe',         phase:'Phase 2',  color:'#10b981', desc:'Finds test gaps, validates per-method scenario coverage, flags assertion-free (hollow) tests, and generates stubs.' },
+  interface:          { label:'Interface / API',       icon:'ti-api',               phase:'Phase 2',  color:'#3b82f6', desc:'Detects contract-breaking changes in REST / gRPC / AsyncAPI / MQ and traces downstream consumer impact. Breaking → HOLD.' },
+  risk:               { label:'Risk Assessment',       icon:'ti-scale',             phase:'Phase 2',  color:'#0ea5e9', desc:'Synthesises every finding into a composite risk score and a proposed gate decision (the policy then enforces the final gate).' },
+  remediation:        { label:'Remediation',           icon:'ti-tool',              phase:'Phase 3',  color:'#84cc16', desc:'Produces concrete fix diffs, a deployment strategy, and the executive summary.' },
 };
 
 export const AGENT_ORDER = [
@@ -114,6 +114,7 @@ export function createInitialState() {
     modelApiVer: localStorage.getItem('modelApiVer') || '2024-08-01-preview',
     judges: JSON.parse(localStorage.getItem('judges') || 'null') || defaultJudges(),
     deepScan: false,
+    functionalDocs: JSON.parse(localStorage.getItem('functionalDocs') || '[]'),
     repos: [],
     primaryRepo: null,
     connectedRepos: [],
@@ -139,6 +140,7 @@ export function saveState(state) {
   if (state.ciaaRole) localStorage.setItem('ciaaRole', state.ciaaRole);
   if (state.ciaaPerms) localStorage.setItem('ciaaPerms', JSON.stringify(state.ciaaPerms));
   if (Array.isArray(state.judges)) localStorage.setItem('judges', JSON.stringify(state.judges));
+  if (Array.isArray(state.functionalDocs)) localStorage.setItem('functionalDocs', JSON.stringify(state.functionalDocs));
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -160,6 +162,22 @@ export function fmtDuration(durationS, model) {
   const isStatic = (model || '').toLowerCase() === 'static';
   if (d < 0.01) return isStatic ? '⚡ instant' : (d > 0 ? '<0.01s' : '—');
   return d.toFixed(2) + 's';
+}
+
+// Classify how an agent ran: deterministic static, LLM, or fallback (LLM failed).
+// model: e.g. 'anthropic/claude-…', 'static', or '' ; opts.fallback/opts.completed.
+export function agentEngine(model, opts = {}) {
+  const m = (model || '').toLowerCase()
+  const FALLBACK = { label: 'fallback', color: '#9a6a00', bg: '#fff8e6', border: '#f0c000',
+    title: 'LLM call failed or was skipped — used static rules. Check the model key / budget.' }
+  const STATIC = { label: 'static', color: '#1a6cf6', bg: '#eef4ff', border: '#cfe0ff',
+    title: 'Deterministic static analysis — no LLM, zero tokens (fast & reproducible by design).' }
+  const LLM = { label: 'LLM', color: '#7c3aed', bg: '#f5f0ff', border: '#e2d6fb',
+    title: 'Analysed by the LLM' + (model ? ' (' + model + ')' : '') }
+  if (opts.fallback) return FALLBACK
+  if (m === 'static') return STATIC
+  if (m) return LLM
+  return opts.completed ? FALLBACK : null   // completed with no model = fell back; else pending
 }
 
 export function canPostToGit(state) {

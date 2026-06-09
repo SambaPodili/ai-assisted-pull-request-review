@@ -1,4 +1,4 @@
-import { AGENT_META, AGENT_ORDER, fmtDuration } from '../state'
+import { AGENT_META, AGENT_ORDER, fmtDuration, agentEngine } from '../state'
 
 const PHASES = ['Phase 1', 'Phase 1b', 'Phase 2', 'Phase 3']
 
@@ -65,7 +65,8 @@ function AgentRow({ key: agentKey, meta, entry, maxTok, compact }) {
   const tokPct = isDone ? Math.round((entry.tokens / maxTok) * 100) : 0
 
   return (
-    <div className={`agent-row${isPending ? '' : ' ' + st}`} style={compact ? { padding: '6px 10px' } : {}}>
+    <div className={`agent-row${isPending ? '' : ' ' + st}`} style={compact ? { padding: '6px 10px' } : {}}
+      title={meta.desc || meta.label}>
       <div className={`agent-dot ${st}`} />
       <i
         className={`ti ${meta.icon}`}
@@ -80,6 +81,10 @@ function AgentRow({ key: agentKey, meta, entry, maxTok, compact }) {
       {isRunning && <span className="agent-badge running">running</span>}
       {isDone && <span className="agent-badge done">done</span>}
       {isFallback && <span className="agent-badge fallback">fallback</span>}
+      {(isDone || isFallback) && (() => {
+        const eng = agentEngine(entry.model, { fallback: isFallback, completed: true })
+        return eng ? <span title={eng.title} style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4, background: eng.bg, color: eng.color, border: `1px solid ${eng.border}`, flexShrink: 0 }}>{eng.label}</span> : null
+      })()}
       {timeVal}
       {!compact && tokVal}
       {!compact && (

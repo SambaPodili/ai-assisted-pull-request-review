@@ -716,6 +716,13 @@ class ImpactAnalysisOrchestrator:
         except Exception as exc:
             log.debug("[%s] Consumer-impact tracing skipped: %s", report.request_id, exc)
 
+        # ── Compliance mapping (OWASP / PCI-DSS / CWE Top 25) ────────────────
+        try:
+            from governance.compliance import assess as assess_compliance
+            report.compliance = assess_compliance(report)
+        except Exception as exc:
+            log.debug("[%s] Compliance mapping skipped: %s", report.request_id, exc)
+
         report.freeze_gate()   # snapshot computed gate/risk so storage never re-derives
         self._audit.log_analysis_completed(
             report.request_id,

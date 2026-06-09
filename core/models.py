@@ -637,6 +637,13 @@ class AnalysisReport(BaseModel):
     suppressed_count:        int = 0
     suppressed_notes:        list[str] = []
 
+    # Compliance mapping (OWASP Top 10 / PCI-DSS / CWE Top 25) — pass/fail per item.
+    compliance:              dict = {}
+
+    # The unified diff analysed — stored (capped) so code snippets render when a
+    # historical report is reopened (the live diff is otherwise gone).
+    diff_text:               str = ""
+
     # Stored gate/risk — set by orchestrator at finalization so the values
     # are stable in the stored report and don't require re-deriving at read time.
     # Declared as proper Pydantic PrivateAttr so freeze_gate() persists across

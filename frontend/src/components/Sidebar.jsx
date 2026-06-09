@@ -3,7 +3,7 @@ import { useApp } from '../AppContext'
 export default function Sidebar({ view, showView, state, dark, setDark, goHome }) {
   const connected = !!(state.userInfo)
   const name = state.userInfo
-    ? (state.userInfo.login || state.userInfo.display_name || state.userInfo.username || state.username)
+    ? (state.userInfo.display_name || state.userInfo.name || state.userInfo.login || state.userInfo.username || state.username || 'Connected')
     : 'Not connected'
 
   // Gate color for Results badge
@@ -53,8 +53,11 @@ export default function Sidebar({ view, showView, state, dark, setDark, goHome }
       <NavItem id="quality"  label="Quality metrics" icon="ti-target-arrow"  view={view} showView={showView} shortcut="6" />
       <NavItem id="insights" label="Insights"        icon="ti-chart-dots-3"  view={view} showView={showView} shortcut="7" />
 
+      <div className="nav-section">Reference</div>
+      <NavItem id="agents"   label="Analysis agents" icon="ti-robot"         view={view} showView={showView} shortcut="8" />
+
       <div className="nav-section">Settings</div>
-      <NavItem id="settings" label="Backend config"  icon="ti-settings"      view={view} showView={showView} shortcut="8" />
+      <NavItem id="settings" label="Backend config"  icon="ti-settings"      view={view} showView={showView} shortcut="9" />
 
       {/* Dark mode toggle */}
       <div style={{ padding: '8px 20px 0' }}>
@@ -73,22 +76,36 @@ export default function Sidebar({ view, showView, state, dark, setDark, goHome }
         </button>
       </div>
 
-      <div className="conn-indicator">
-        <span className={`conn-dot${connected ? ' ok' : ''}`} />
-        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{connected ? name : 'Not connected'}</span>
-        {state.ciaaPerms && (
-          <span style={{
-            marginLeft: 'auto', flexShrink: 0,
-            fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 4,
-            background: `${state.ciaaPerms.role_color || '#1a56db'}18`,
-            color: state.ciaaPerms.role_color || '#1a56db',
-            border: `1px solid ${state.ciaaPerms.role_color || '#1a56db'}44`,
-          }}>
-            {state.ciaaPerms.role_label || state.ciaaRole || 'Dev'}
-          </span>
-        )}
-      </div>
+      <UserIdentity state={state} gitName={name} connected={connected} />
     </aside>
+  )
+}
+
+function UserIdentity({ state, gitName, connected }) {
+  const ciaa = state.ciaaPerms
+  const loggedIn = !!(ciaa || state.userInfo)
+  const displayName = (ciaa && ciaa.name) || gitName || 'Not connected'
+  const roleColor = (ciaa && ciaa.role_color) || '#1a56db'
+  const roleLabel = (ciaa && (ciaa.role_label || ciaa.primary_role)) || (loggedIn ? null : null)
+  const team = ciaa && ciaa.team
+  const initials = String(displayName).split(/[\s/._-]+/).filter(Boolean).slice(0, 2)
+    .map(s => s[0]?.toUpperCase()).join('') || '?'
+
+  return (
+    <div className="user-card" title={ciaa ? `${displayName}${team ? ' · ' + team : ''} — ${ciaa.description || roleLabel || ''}` : 'Not connected'}>
+      <div className="user-avatar" style={{ background: loggedIn ? roleColor : '#9fadbf' }}>
+        {loggedIn ? initials : <i className="ti ti-user" />}
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div className="user-name">{displayName}</div>
+        <div className="user-meta">
+          {roleLabel
+            ? <><span className="user-role" style={{ background: `${roleColor}18`, color: roleColor, border: `1px solid ${roleColor}44` }}>{roleLabel}</span>{team ? <span className="user-team">{team}</span> : null}</>
+            : <span className="user-team">{loggedIn ? 'Connected' : 'Not connected'}</span>}
+        </div>
+      </div>
+      <span className={`conn-dot${connected ? ' ok' : ''}`} style={{ flexShrink: 0 }} />
+    </div>
   )
 }
 

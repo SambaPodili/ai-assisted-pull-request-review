@@ -164,6 +164,12 @@ async def submit_analysis(
         _in_flight.set(request_id, "running")       # timeout starts only now
         try:
             report = await asyncio.wait_for(orch.analyse_async(req), timeout=timeout)
+            # Persist the diff (capped) so code snippets render when the report is
+            # reopened later from Insights/History.
+            try:
+                report.diff_text = (payload.diff_text or "")[:500_000]
+            except Exception:
+                pass
             store.save(report)
             _in_flight.set(request_id, "done")
             log.info("[%s] Analysis complete — gate=%s", request_id, report.gate_decision.value)
@@ -180,6 +186,42 @@ async def submit_analysis(
 
     background.add_task(_run)
     return {"request_id": request_id, "status": "queued"}
+
+
+@router.post("/sca/pom")
+async def scan_pom_xml(request: Request):
+    """
+    Software Composition Analysis for a Maven pom.xml (Path A — direct deps).
+    POST the raw pom.xml as the body. Returns CVEs for the declared dependencies
+    (matched against OSV by exact version). Works on any branch — no lockfile, no CI.
+    """
+    from ingestion.pom_sca import scan_pom
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, detail="Empty pom.xml.")
+    try:
+        return scan_pom(data.decode("utf-8", "ignore"))
+    except ValueError as exc:
+        raise HTTPException(422, detail=str(exc))
+
+
+@router.post("/docs/extract")
+async def extract_document(request: Request, filename: str = "document"):
+    """
+    Extract plain text from an uploaded functional document (.docx / .pdf / text).
+    Send the raw file bytes as the request body with ?filename=<name>.
+    Returns {name, text, words}. Used by the Configure → Functional documents UI.
+    """
+    from ingestion.doc_extract import extract_text
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, detail="Empty file.")
+    if len(data) > 15 * 1024 * 1024:
+        raise HTTPException(413, detail="File too large (max 15 MB).")
+    text, err = extract_text(filename, data)
+    if err:
+        raise HTTPException(422, detail=err)
+    return {"name": filename, "text": text, "words": len(text.split())}
 
 
 @router.get("/progress/{request_id}")

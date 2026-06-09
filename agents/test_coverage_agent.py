@@ -101,9 +101,7 @@ class TestCoverageAgent(BaseAgent[TestCoverageResult]):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _is_test_file(path: str) -> bool:
-    lowered = path.lower()
-    return any(s in lowered for s in ("test", "spec", "__tests__", "_test.py"))
+from ingestion.test_detect import is_test_file as _is_test_file
 
 
 def _expected_test_path(src: str) -> str:

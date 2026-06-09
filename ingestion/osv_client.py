@@ -84,6 +84,38 @@ def _severity_from_vuln(vuln: dict) -> str:
     return ""
 
 
+def query_versioned(
+    items:     list[tuple[str, str, str]],   # [(name, ecosystem, version), ...]
+    timeout_s: int = 15,
+) -> dict[tuple[str, str], list[OsvVuln]]:
+    """Batch-query OSV with EXACT versions so only vulns affecting that version
+    are returned. Returns {(name, version): [OsvVuln, ...]}."""
+    items = [(n, e, v) for (n, e, v) in items if n and v]
+    if not items:
+        return {}
+    queries = [{"package": {"name": n, "ecosystem": e}, "version": v} for n, e, v in items]
+    req = urllib.request.Request(
+        OSV_BATCH_URL, data=json.dumps({"queries": queries}).encode(),
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            data = json.loads(resp.read())
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
+        log.warning("OSV versioned query failed: %s", exc)
+        return {}
+    out: dict[tuple[str, str], list[OsvVuln]] = {}
+    for (name, _eco, version), result in zip(items, data.get("results", [])):
+        vulns = [OsvVuln(
+            package=name, vuln_id=v.get("id", ""), summary=v.get("summary", "")[:200],
+            severity=_severity_from_vuln(v),
+            aliases=[a for a in v.get("aliases", []) if a.startswith("CVE-")],
+        ) for v in result.get("vulns", [])]
+        if vulns:
+            out[(name, version)] = vulns
+    return out
+
+
 def query_batch(
     packages:  list[tuple[str, str]],   # [(name, ecosystem), ...]
     timeout_s: int = 15,

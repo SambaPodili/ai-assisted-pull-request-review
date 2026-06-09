@@ -162,15 +162,18 @@ def evaluate_policy(report: AnalysisReport, settings=None) -> PolicyResult:
         elif delta <= cov_hold_threshold:
             hold_reasons.append(f"Test coverage dropped {delta:.1f}%")
 
-        # A security-relevant method changed with NO test at all is a real gap.
+        # A NEWLY-ADDED security-relevant method with no test is a real gap.
+        # (Modified methods are excluded — their tests may already exist in the
+        # repo outside this PR, which we can't see, so we don't block on those.)
         mc = getattr(tc, "method_coverage", None) or []
         untested_sec = [m for m in mc
                         if not getattr(m, "has_test", False)
+                        and getattr(m, "is_new", False)
                         and any("security" in s for s in getattr(m, "required_scenarios", []))]
         if untested_sec:
             names = ", ".join(m.method for m in untested_sec[:3])
             hold_reasons.append(
-                f"{len(untested_sec)} security-relevant method(s) changed with no unit test ({names})"
+                f"{len(untested_sec)} new security-relevant method(s) added with no unit test ({names})"
             )
 
         # Tests added with no assertions give false confidence.

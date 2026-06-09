@@ -217,7 +217,8 @@ function QueueTab({ state, insightFetch, filterQS, setRepos, repos, showView, up
       const d=await r.json()
       // Clear any leftover run flag + stale diff so the Results screen renders
       // this stored report cleanly (not the RunningView or a previous diff).
-      update({report:normalizeReport(d),lastRequestId:rid,analysisRequested:false,diffText:''})
+      // Restore the stored diff so code snippets render for this historical report.
+      update({report:normalizeReport(d),lastRequestId:rid,analysisRequested:false,diffText:d.diff_text||''})
       showView('results')
       const empty = !d.code_analysis && !(d.security&&d.security.findings&&d.security.findings.length) && !d.risk
       if(d.errors&&d.errors.length) showToast?.('This analysis failed: '+d.errors[0],'warn')

@@ -241,5 +241,7 @@ export function normalizeReport(r) {
     consumer_impacts:          r.consumer_impacts || [],
     suppressed_count:          r.suppressed_count || 0,
     suppressed_notes:          r.suppressed_notes || [],
+    compliance:                r.compliance || null,
+    diff_text:                 r.diff_text || '',
   };
 }

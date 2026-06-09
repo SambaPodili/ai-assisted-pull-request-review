@@ -41,14 +41,10 @@ _DECL = [
     re.compile(r'\bfunc\s+(?:\([^)]*\)\s*)?(\w+)\s*\(([^)]*)\)'),
 ]
 
-_TEST_FILE = ("test", "spec", "__tests__", "_test.")
 _IGNORE_NAMES = {"if", "for", "while", "switch", "catch", "return", "new", "super",
                  "this", "function", "constructor", "get", "set"}
 
-
-def _is_test_file(path: str) -> bool:
-    p = (path or "").lower()
-    return any(s in p for s in _TEST_FILE)
+from ingestion.test_detect import is_test_file as _is_test_file
 
 
 def _changed_methods(hunks) -> dict[str, dict]:

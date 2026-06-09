@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import * as d3 from 'd3'
 import { useApp } from '../AppContext'
-import { AGENT_META, AGENT_ORDER, MODEL_PROVIDERS, repoName, shortName, prNum, prHead, prBase, prTitle, fmtDuration, canPostToGit, canOverrideGate } from '../state'
+import { AGENT_META, AGENT_ORDER, MODEL_PROVIDERS, repoName, shortName, prNum, prHead, prBase, prTitle, fmtDuration, canPostToGit, canOverrideGate, agentEngine } from '../state'
 import { normalizeReport } from '../normalizeReport'
 import { backendBase, backendHeaders, gitCfg, backendPost } from '../api'
 import LivePipeline from '../components/LivePipeline'
@@ -141,7 +141,8 @@ function RunningView({ state, update, showToast }) {
           diff_text: diffText,
           deep_scan: !!state.deepScan,
           llm_config: { provider:state.modelProvider, model:state.modelName, api_key:state.modelApiKey, base_url:state.modelBaseUrl, api_version:state.modelApiVer },
-          metadata: { provider:state.provider, connected_repos:state.connectedRepos.map(repoName), diff_lines:diffLines, ...tgt.meta }
+          metadata: { provider:state.provider, connected_repos:state.connectedRepos.map(repoName), diff_lines:diffLines,
+            functional_docs:(state.functionalDocs||[]).map(d=>({name:d.name,text:(d.text||'').slice(0,40000)})).slice(0,10), ...tgt.meta }
         }
         setAgentStatus('Submitting to backend…'); setProgress(10)
         const submitResp = await fetch(state.backendUrl+'/api/v1/analyse', { method:'POST', headers, body:JSON.stringify(payload) })
@@ -712,7 +713,54 @@ function DependencyTab({r}) {
         {(r.dependency?.changed_packages||[]).length>0&&<><div className="section-heading"><i className="ti ti-package"/>Changed packages</div><div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:12}}>{(r.dependency?.changed_packages||[]).map(p=><code key={p}>{p}</code>)}</div></>}
         {(r.dependency?.cve_hits||[]).length>0&&<><div className="section-heading" style={{color:'#b91c1c'}}><i className="ti ti-bug"/>Known CVEs</div><div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:12}}>{(r.dependency?.cve_hits||[]).map(c=><span key={c} className="badge badge-red" style={{fontFamily:'var(--mono)'}}>{c}</span>)}</div></>}
       </div>
+      <MavenSca/>
       <DepAutoUpdate r={r}/>
+    </div>
+  )
+}
+
+function MavenSca() {
+  const { state } = useApp()
+  const [data,setData]=useState(null); const [err,setErr]=useState(''); const [loading,setLoading]=useState(false)
+  async function scan(text){
+    if(!state.backendUrl){setErr('Configure a Backend URL in Settings to run the scan.');return}
+    setLoading(true);setErr('');setData(null)
+    try{
+      const h={'Content-Type':'application/xml'}; if(state.backendKey)h['X-API-Key']=state.backendKey
+      const r=await fetch(`${state.backendUrl}/api/v1/sca/pom`,{method:'POST',headers:h,body:text})
+      const d=await r.json().catch(()=>({}))
+      if(!r.ok) throw new Error(d.detail||('HTTP '+r.status))
+      setData(d)
+    }catch(e){setErr(e.message)}finally{setLoading(false)}
+  }
+  function onFile(e){const f=e.target.files[0]; if(!f)return; const rd=new FileReader(); rd.onload=()=>scan(String(rd.result||'')); rd.readAsText(f); e.target.value=''}
+  const sevColor=s=>({CRITICAL:'#b91c1c',HIGH:'#9a3412',MEDIUM:'#8a5200',LOW:'#6b7280'})[s]||'#6b7280'
+  return (
+    <div className="card">
+      <div className="section-heading"><i className="ti ti-shield-bolt"/>Maven dependency scan (SCA)</div>
+      <div style={{fontSize:12.5,color:'#7a8494',lineHeight:1.6,marginBottom:10}}>
+        Upload this repo’s <code>pom.xml</code> to check declared dependencies against OSV for known CVEs.
+        Works on any branch — no lockfile or CI needed. <strong>Direct dependencies only</strong> (Maven has no lockfile for transitive resolution).
+      </div>
+      <label className="btn btn-sm" style={{cursor:'pointer'}}><i className="ti ti-upload"/> Upload pom.xml
+        <input type="file" accept=".xml,application/xml,text/xml" onChange={onFile} style={{display:'none'}}/></label>
+      {loading&&<div style={{marginTop:10,fontSize:13,color:'#7a8494',display:'flex',alignItems:'center',gap:6}}><span className="spinner" style={{width:14,height:14}}/>Scanning against OSV…</div>}
+      {err&&<div className="info-msg" style={{marginTop:10}}><i className="ti ti-alert-circle"/>{err}</div>}
+      {data&&(
+        <div style={{marginTop:12}}>
+          <div style={{fontSize:12.5,fontWeight:700,marginBottom:8,color:data.vulnerabilities.length?'#b91c1c':'#166534'}}>{data.summary}</div>
+          {data.vulnerabilities.map((v,i)=>(
+            <div key={i} className="finding">
+              <span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:10,background:`${sevColor(v.severity)}1a`,color:sevColor(v.severity),border:`1px solid ${sevColor(v.severity)}55`,whiteSpace:'nowrap',flexShrink:0}}>{v.severity}</span>
+              <div className="finding-body">
+                <div className="finding-desc"><code>{v.cve}</code> {v.summary}</div>
+                <div className="finding-file"><code>{v.package}@{v.version}</code> · scope: {v.scope} · {v.depth}</div>
+              </div>
+            </div>
+          ))}
+          {(data.unresolved||[]).length>0&&<div style={{marginTop:8,fontSize:11,color:'#9fadbf'}}><i className="ti ti-info-circle" style={{marginRight:4}}/>{data.unresolved.length} version(s) managed by a parent POM/BOM — not resolvable from this pom alone: {data.unresolved.slice(0,5).join(', ')}{data.unresolved.length>5?'…':''}</div>}
+        </div>
+      )}
     </div>
   )
 }
@@ -859,13 +907,19 @@ function UnitTestCoverage({ tc }) {
           {totalMissing? `${totalMissing} scenario(s) not covered` : 'all recommended scenarios covered'}
         </span>
       </div>
-      <div style={{fontSize:11.5,color:'#7a8494',marginBottom:12}}>{tc.scenario_summary} · ✓ = evidenced in this PR’s tests, ✗ = recommended but not found.</div>
+      <div style={{fontSize:11.5,color:'#7a8494',marginBottom:8}}>{tc.scenario_summary} · ✓ = evidenced in this PR’s tests, ✗ = not found in this PR.</div>
+      <div style={{fontSize:11,color:'#9a6a00',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:7,padding:'7px 10px',marginBottom:12,display:'flex',alignItems:'flex-start',gap:6}}>
+        <i className="ti ti-info-circle" style={{marginTop:1}}/>
+        <span>Only tests <strong>included in this PR</strong> are scanned. A method may already be covered by <strong>existing tests in the repo</strong> that aren’t part of this change — so treat ✗ as "verify", not "definitely untested". <strong>Newly-added methods</strong> with no test are the real gaps.</span>
+      </div>
       {methods.map((m,i)=>(
         <div key={i} style={{padding:'10px 0',borderTop:i?'1px solid #f0f2f5':'none'}}>
           <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:6}}>
             <code style={{fontSize:12.5,fontWeight:700,color:'#0d1117'}}>{m.method}()</code>
             {m.is_new && <span className="badge badge-blue" style={{fontSize:10}}>new</span>}
-            {!m.has_test && <span className="badge badge-red" style={{fontSize:10}}><i className="ti ti-alert-triangle" style={{fontSize:10,marginRight:2}}/>no test found</span>}
+            {!m.has_test && (m.is_new
+              ? <span className="badge badge-red" style={{fontSize:10}}><i className="ti ti-alert-triangle" style={{fontSize:10,marginRight:2}}/>new · no test</span>
+              : <span className="badge badge-amber" style={{fontSize:10}} title="No test in this PR — existing repo tests may already cover it">no test in this PR</span>)}
             <span style={{fontSize:11,color:'#9fadbf',fontFamily:'JetBrains Mono,monospace'}}>{(m.file||'').split(/[\\/]/).pop()}</span>
           </div>
           <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
@@ -1147,6 +1201,72 @@ function ChecklistTab({r, canOverride}) {
   )
 }
 
+function ComplianceTab({r, snipCache}) {
+  const c = r.compliance
+  if (!c || !c.standards) return <div className="card"><div className="empty-state"><i className="ti ti-shield-off"/>No compliance data — run analysis with a connected backend.</div></div>
+  const fail = (c.overall||{}).fail || 0
+  const pass = (c.overall||{}).pass || 0
+  function exportMd() {
+    const lines = [`# Compliance Report`, ``, `**Overall: ${c.overall.status}** — ${fail} failed, ${pass} passed`, ``]
+    c.standards.forEach(s=>{ lines.push(`## ${s.name}`); s.items.forEach(it=>lines.push(`- [${it.status==='fail'?'x':' '}] **${it.id}** ${it.title}${it.detail?` — ${it.detail}`:''}`)); lines.push('') })
+    const blob = new Blob([lines.join('\n')], {type:'text/markdown'})
+    const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='compliance-report.md'; a.click(); URL.revokeObjectURL(a.href)
+  }
+  return (
+    <div>
+      <div className="card" style={{marginBottom:12}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:10}}>
+          <div className="card-title" style={{marginBottom:0}}><i className="ti ti-shield-check"/>Compliance mapping</div>
+          <div style={{display:'flex',alignItems:'center',gap:10}}>
+            <span style={{fontSize:13,fontWeight:700,padding:'3px 12px',borderRadius:14,
+              background:fail?'#fff1f2':'#f0fdf4', color:fail?'#991b1b':'#166534', border:`1px solid ${fail?'#fecaca':'#bbf7d0'}`}}>
+              {c.overall.status} · {fail} failed / {pass} passed
+            </span>
+            <button className="btn btn-sm" onClick={exportMd}><i className="ti ti-download"/> Export</button>
+          </div>
+        </div>
+        <div style={{fontSize:12,color:'#7a8494',marginTop:8}}>Derived from this change’s findings. <strong>Fail</strong> = evidence against the control in this PR; <strong>Pass</strong> = checked, none found.</div>
+      </div>
+      {c.standards.map((s,i)=>{
+        const fails=s.items.filter(it=>it.status==='fail')
+        return (
+          <div key={i} className="card" style={{marginBottom:12}}>
+            <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
+              <div className="card-title" style={{marginBottom:0}}>{s.name}</div>
+              <span style={{marginLeft:'auto',fontSize:11,fontWeight:700,color:fails.length?'#991b1b':'#166534'}}>
+                {fails.length?`${fails.length} failing`:'all clear'}
+              </span>
+            </div>
+            <div style={{display:'flex',flexDirection:'column',gap:6}}>
+              {s.items.map((it,j)=>{
+                const f=it.status==='fail'
+                return (
+                  <div key={j} style={{display:'flex',alignItems:'flex-start',gap:9,padding:'7px 10px',borderRadius:7,
+                    background:f?'#fff7f7':'#fafdfb', border:`1px solid ${f?'#fbdcdc':'#e3f3e9'}`}}>
+                    <span style={{fontSize:13,flexShrink:0,color:f?'#b91c1c':'#16a34a'}}>{f?'✗':'✓'}</span>
+                    <div style={{minWidth:0,flex:1}}>
+                      <div style={{fontSize:12.5,color:'#1a2332'}}><strong>{it.id}</strong> {it.title}</div>
+                      {it.detail&&<div style={{fontSize:11,color:f?'#9a3412':'#7a8494'}}>{it.detail}</div>}
+                      {(it.evidence||[]).map((ev,k)=>(
+                        <div key={k} style={{marginTop:6}}>
+                          <div style={{fontSize:11,color:'#7a2020'}}>
+                            {ev.label}{ev.file?<span style={{color:'#9fadbf'}}> · <code>{(ev.file||'').split(/[\\/]/).pop()}</code>{ev.line?`:${ev.line}`:''}</span>:null}
+                          </div>
+                          {ev.file&&ev.line&&getCodeSnippetJSX(ev.file,ev.line,snipCache,2)}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 function TimingsTab({r}) {
   const timings=r.agent_timings||[]; const totalTokens=r.token_usage||0; const totalTime=r.duration_s||0
   if (!timings.length) return <div className="card"><div className="section-heading"><i className="ti ti-clock"/>Agent timings</div><div className="empty-state"><i className="ti ti-clock-off"/>No timing data — run analysis with a connected backend</div></div>
@@ -1172,7 +1292,7 @@ function TimingsTab({r}) {
                 <div style={{display:'flex',alignItems:'center',gap:7}}>
                   <div style={{width:10,height:10,borderRadius:2,background:col,flexShrink:0}}/>
                   <span style={{fontSize:13,fontWeight:500,color:'#0d1117'}}>{sName(t.agent)}</span>
-                  {(!t.tokens||t.tokens===0)&&<span style={{fontSize:10,background:'#fff8ec',border:'1px solid #f59e0b',borderRadius:10,padding:'1px 7px',color:'#8a5200'}}>fallback</span>}
+                  {(() => { const eng=agentEngine(t.model,{completed:true}); return eng?<span title={eng.title} style={{fontSize:10,fontWeight:700,background:eng.bg,border:`1px solid ${eng.border}`,borderRadius:10,padding:'1px 8px',color:eng.color}}>{eng.label}</span>:null })()}
                 </div>
                 <div style={{display:'flex',gap:14,fontSize:12,fontFamily:'JetBrains Mono,monospace'}}>
                   <span><strong>{(t.duration_s||0).toFixed(2)}s</strong></span>
@@ -2380,7 +2500,7 @@ const RESULT_TABS = [
   {group:'Security',tabs:[{id:'security',label:'Security'},{id:'advanced',label:'⚗ Advanced'}]},
   {group:'Impact',tabs:[{id:'references',label:'🔗 References'},{id:'dependency',label:'Dependency'},{id:'interface',label:'Interface'},{id:'schema',label:'Schema'}]},
   {group:'Quality',tabs:[{id:'qa',label:'🧪 QA Scenarios'},{id:'performance',label:'🚀 Performance'},{id:'privacy',label:'🔒 Privacy'},{id:'quality',label:'🔧 Quality'}]},
-  {group:'Actions',tabs:[{id:'checklist',label:'✅ Checklist'},{id:'remediation',label:'Remediation'},{id:'timings',label:'⏱ Timings'}]},
+  {group:'Actions',tabs:[{id:'checklist',label:'✅ Checklist'},{id:'compliance',label:'🛡 Compliance'},{id:'remediation',label:'Remediation'},{id:'timings',label:'⏱ Timings'}]},
 ]
 const ALL_TABS = RESULT_TABS.flatMap(g=>g.tabs.map(t=>t.id))
 
@@ -2486,6 +2606,7 @@ export default function ResultsView({ active, showView, showToast }) {
       case 'privacy': return <PrivacyTab r={r} snipCache={snipCache}/>
       case 'quality': return <QualityTab r={r} snipCache={snipCache}/>
       case 'checklist': return <ChecklistTab r={r} canOverride={canOverrideGate(state)}/>
+      case 'compliance': return <ComplianceTab r={r} snipCache={snipCache}/>
       case 'timings': return <TimingsTab r={r}/>
       case 'references': return <ReferencesTab r={r}/>
       default: return null

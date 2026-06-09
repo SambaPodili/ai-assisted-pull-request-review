@@ -193,6 +193,23 @@ def _build_fallback_scenarios(request: AnalysisRequest) -> list[QAScenario]:
     scenarios: list[QAScenario] = []
     idx = 1
 
+    # Requirement-aware scenarios from uploaded functional documents.
+    fdocs = (request.metadata or {}).get("functional_docs") or []
+    for doc in fdocs[:5]:
+        name = (doc.get("name") or "spec") if isinstance(doc, dict) else "spec"
+        scenarios.append(_make_scenario(
+            idx, f"Requirement verification — {name}", QAScenarioType.FUNCTIONAL, RiskLevel.HIGH,
+            f"Verify the change satisfies the documented functional requirements in '{name}' "
+            "and does not contradict any stated acceptance criteria.",
+            ["Map each changed behaviour to a requirement / acceptance criterion in the document",
+             "Write a test per acceptance criterion that the change touches",
+             "Confirm no documented requirement is broken or left unimplemented",
+             "Flag any change that has NO corresponding requirement (scope creep)"],
+            "Every affected acceptance criterion has a passing test; no documented requirement regresses.",
+            [name], hint="Trace tests to requirement IDs (e.g. @Tag/@Requirement annotations).",
+        ))
+        idx += 1
+
     for hunk in request.hunks:
         fp      = hunk.file_path
         content = hunk.content
@@ -423,6 +440,15 @@ Respond ONLY with valid JSON matching the QAScenariosResult schema."""
             "",
         ]
         parts.append(format_hunks_for_prompt(request.hunks, max_chars_per_hunk=2000))
+        # Include uploaded functional/requirement docs so scenarios trace to them.
+        fdocs = (request.metadata or {}).get("functional_docs") or []
+        if fdocs:
+            parts.append("\n--- FUNCTIONAL REQUIREMENTS (verify the change against these) ---")
+            for doc in fdocs[:5]:
+                if isinstance(doc, dict):
+                    parts.append(f"\n# {doc.get('name','spec')}\n{(doc.get('text') or '')[:6000]}")
+            parts.append("\nGenerate scenarios that verify each affected requirement and flag any "
+                         "requirement left unimplemented or contradicted.")
         return "\n".join(parts)
 
     def fallback_result(self, request: AnalysisRequest) -> QAScenariosResult:

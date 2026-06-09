@@ -66,8 +66,11 @@ export default function ConfigureView({ showView, showToast }) {
       if (!r.ok) { const t = await r.text(); throw new Error(`${r.status}: ${t.slice(0, 200)}`) }
 
       const userInfo = await r.json()
-      const name = userInfo.login || userInfo.display_name || userInfo.username || state.username
-      const ws   = (!state.workspace && userInfo.username) ? userInfo.username : state.workspace
+      const name = userInfo.display_name || userInfo.name || userInfo.login || userInfo.username || state.username || 'Connected'
+      // Bitbucket Server has no "workspace" — don't auto-fill it with the username,
+      // or repo loading would treat it as a project key and fail.
+      const ws   = (state.provider !== 'bitbucket_server' && !state.workspace && userInfo.username)
+        ? userInfo.username : state.workspace
 
       const roleData = await fetchCiaaRole({ ...state, workspace: ws })
       const patch    = { userInfo, workspace: ws }
@@ -84,6 +87,37 @@ export default function ConfigureView({ showView, showToast }) {
     }
     setConnecting(false)
   }
+
+  // ── Functional documents ─────────────────────────────────────────────────
+  const docs = state.functionalDocs || []
+  const MAX_DOC = 100_000   // 100 KB per doc kept (trim the rest)
+  const _readLocal = f => new Promise(res => {
+    const r = new FileReader()
+    r.onload  = () => res({ name: f.name, text: String(r.result || '').slice(0, MAX_DOC) })
+    r.onerror = () => res(null)
+    r.readAsText(f)
+  })
+  async function _extractServer(f) {
+    if (!state.backendUrl) { showToast?.(`${f.name}: Word/PDF needs a backend — configure Backend URL in Settings.`, 'warn'); return null }
+    try {
+      const h = {}; if (state.backendKey) h['X-API-Key'] = state.backendKey
+      const r = await fetch(`${state.backendUrl}/api/v1/docs/extract?filename=${encodeURIComponent(f.name)}`,
+        { method: 'POST', headers: h, body: f })
+      const d = await r.json().catch(() => ({}))
+      if (!r.ok) { showToast?.(`${f.name}: ${d.detail || 'could not extract text'}`, 'warn'); return null }
+      return { name: d.name || f.name, text: (d.text || '').slice(0, MAX_DOC) }
+    } catch (e) { showToast?.(`${f.name}: ${e.message}`, 'error'); return null }
+  }
+  async function addDocs(fileList) {
+    const files = Array.from(fileList)
+    const isBinary = f => /\.(docx?|pdf)$/i.test(f.name)
+    const read = await Promise.all(files.map(f => isBinary(f) ? _extractServer(f) : _readLocal(f)))
+    const valid = read.filter(d => d && d.text.trim()).map(d => ({ ...d, size: d.text.length }))
+    if (!valid.length) { showToast?.('No text could be extracted from those files.', 'warn'); return }
+    update({ functionalDocs: [...docs, ...valid] })
+    showToast?.(`${valid.length} functional document(s) added`, 'success')
+  }
+  function removeDoc(i) { update({ functionalDocs: docs.filter((_, idx) => idx !== i) }) }
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, maxWidth: 960 }}>
@@ -271,6 +305,48 @@ export default function ConfigureView({ showView, showToast }) {
             )}
             <div className="field-hint" style={{ marginTop: 8 }} dangerouslySetInnerHTML={{ __html: mp.hint || '' }} />
           </div>
+        </div>
+      </div>
+
+      {/* ── Functional documents (full width) ── */}
+      <div style={{ gridColumn: '1 / -1' }}>
+        <div className="card">
+          <div className="card-title"><i className="ti ti-file-text" />Functional documents</div>
+          <div style={{ fontSize: 12.5, color: '#7a8494', lineHeight: 1.6, marginBottom: 12 }}>
+            Upload functional / requirement specs (user stories, acceptance criteria, BRD).
+            They’re used to make <strong>QA scenarios requirement-aware</strong> and to check the change against intended behaviour.
+            <strong>Word (.docx)</strong> and <strong>PDF</strong> are extracted on the backend; text formats
+            (<code>.txt .md .json .csv</code>) are read directly. (Legacy <code>.doc</code> → save as .docx.)
+          </div>
+
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 7, cursor: 'pointer',
+            border: '1.5px dashed #c7d2e8', borderRadius: 8, padding: '10px 16px', fontSize: 13,
+            color: '#1a6cf6', fontWeight: 600, background: '#f5f8ff' }}>
+            <i className="ti ti-upload" /> Upload documents
+            <input type="file" multiple accept=".txt,.md,.markdown,.json,.csv,.text,.adoc,.rst,.docx,.pdf"
+              onChange={e => { addDocs(e.target.files); e.target.value = '' }}
+              style={{ display: 'none' }} />
+          </label>
+
+          {docs.length > 0 && (
+            <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {docs.map((d, i) => (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
+                  border: '1px solid #e8eaed', borderRadius: 8, background: '#fff' }}>
+                  <i className="ti ti-file-text" style={{ color: '#1a6cf6', fontSize: 18, flexShrink: 0 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#0d1117', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name}</div>
+                    <div style={{ fontSize: 11, color: '#9fadbf' }}>{(d.size / 1024).toFixed(1)} KB · {d.text.split(/\s+/).length} words</div>
+                  </div>
+                  <button className="btn btn-sm" onClick={() => removeDoc(i)} title="Remove"
+                    style={{ flexShrink: 0, color: '#b81c1c' }}><i className="ti ti-trash" /></button>
+                </div>
+              ))}
+              <div style={{ fontSize: 11, color: '#9fadbf' }}>
+                {docs.length} document(s) · {(docs.reduce((n, d) => n + d.size, 0) / 1024).toFixed(1)} KB total — included with each analysis as requirement context.
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

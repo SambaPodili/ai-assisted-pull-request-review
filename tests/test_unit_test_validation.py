@@ -85,6 +85,24 @@ def test_hollow_test_detection():
     assert not any("refund_ok" in h for h in hollow)  # has assertEquals → fine
 
 
+def test_gate_only_holds_untested_NEW_security_method():
+    """A modified (not new) untested security method must NOT block — its tests
+    may exist in the repo outside this PR. A new one with no test should HOLD."""
+    from core.models import (AnalysisReport, RiskResult, RiskLevel, GateDecision,
+                             TestCoverageResult, MethodTestCoverage)
+    from governance.gate_policy import evaluate_policy
+
+    def report(is_new):
+        m = MethodTestCoverage(method="authenticate", file_path="Auth.java", is_new=is_new,
+                               has_test=False, required_scenarios=["happy path", "security (authz / injection)"])
+        return AnalysisReport(request_id="t", change_type=ChangeType.PR, repo_url="r",
+                              source_ref="a", target_ref="b",
+                              risk=RiskResult(overall_risk=RiskLevel.LOW, risk_score=10, gate_decision=GateDecision.APPROVE),
+                              test_coverage=TestCoverageResult(method_coverage=[m]))
+    assert evaluate_policy(report(is_new=False)).gate == GateDecision.APPROVE   # modified → no false hold
+    assert evaluate_policy(report(is_new=True)).gate == GateDecision.HOLD       # new + untested → hold
+
+
 def test_gate_holds_on_hollow_tests():
     from core.models import (AnalysisReport, RiskResult, RiskLevel, GateDecision, TestCoverageResult)
     from governance.gate_policy import evaluate_policy

@@ -17,9 +17,10 @@ import HistoryView from './views/HistoryView'
 import SettingsView from './views/SettingsView'
 import QualityView from './views/QualityView'
 import InsightsView from './views/InsightsView'
+import AgentsView from './views/AgentsView'
 
 const STEP_VIEWS = ['configure', 'repos', 'target', 'results']
-const ALL_VIEWS   = ['configure', 'repos', 'target', 'results', 'history', 'quality', 'insights', 'settings']
+const ALL_VIEWS   = ['configure', 'repos', 'target', 'results', 'history', 'quality', 'insights', 'agents', 'settings']
 
 const PAGE_TITLES = {
   configure: 'Configure provider',
@@ -30,6 +31,7 @@ const PAGE_TITLES = {
   settings:  'Backend settings',
   quality:   'Quality metrics',
   insights:  'Team insights',
+  agents:    'Analysis agents',
 }
 
 function useTheme() {
@@ -106,8 +108,8 @@ function AppShell() {
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return
       if (e.metaKey || e.ctrlKey) return
 
-      // Number keys 1-8: jump to views
-      if (!e.altKey && e.key >= '1' && e.key <= '8') {
+      // Number keys 1-9: jump to views
+      if (!e.altKey && e.key >= '1' && e.key <= '9') {
         const idx = parseInt(e.key) - 1
         if (ALL_VIEWS[idx]) showView(ALL_VIEWS[idx])
         return
@@ -165,6 +167,7 @@ function AppShell() {
             {v === 'settings'  && <SettingsView  active={view === 'settings'}  {...viewProps} />}
             {v === 'quality'   && <QualityView   active={view === 'quality'}   {...viewProps} />}
             {v === 'insights'  && <InsightsView  active={view === 'insights'}  {...viewProps} />}
+            {v === 'agents'    && <AgentsView    active={view === 'agents'}    {...viewProps} />}
           </div>
         ))}
 

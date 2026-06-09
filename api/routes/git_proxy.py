@@ -67,10 +67,21 @@ async def verify_credentials(cfg: GitConfig):
         d = _get(f"{_github_base(cfg)}/user", h)
         return {"ok": True, "login": d.get("login",""), "name": d.get("name",""), "avatar": d.get("avatar_url","")}
     elif cfg.provider == "bitbucket_server":
+        base = _bb_server_base(cfg)
+        login = cfg.username or ""
+        name  = cfg.username or ""
+        email = ""
+        # Fetch the real user profile so we show the display name, not the slug.
         try:
-            _get(f"{_bb_server_base(cfg)}/application-properties".replace("/rest/api/1.0",""), h)
-        except Exception: pass
-        return {"ok": True, "login": cfg.username, "name": cfg.username, "version": "Bitbucket Server"}
+            if cfg.username:
+                d = _get(f"{base}/users/{cfg.username}", h)
+                login = d.get("slug") or d.get("name") or login
+                name  = d.get("displayName") or d.get("name") or login
+                email = d.get("emailAddress", "")
+        except Exception:
+            pass
+        return {"ok": True, "login": login, "name": name, "display_name": name,
+                "email": email, "version": "Bitbucket Server"}
     else:
         d = _get("https://api.bitbucket.org/2.0/user", h)
         return {"ok": True, "login": d.get("username", d.get("nickname","")), "name": d.get("display_name","")}
@@ -164,7 +175,10 @@ async def list_repos(cfg: GitConfig):
 
     elif cfg.provider == "bitbucket_server":
         base = _bb_server_base(cfg)
-        key  = (cfg.project_key or cfg.workspace or "").strip().upper()
+        # Only the explicit project key selects a single project. (workspace is a
+        # Bitbucket *Cloud* concept and may be auto-filled with the username — using
+        # it here would wrongly target a project named after the user and fail.)
+        key  = (cfg.project_key or "").strip().upper()
 
         if key:
             # ── Fast path: single project ──────────────────────────────────
