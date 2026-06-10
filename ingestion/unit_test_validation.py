@@ -174,24 +174,35 @@ def validate(request: AnalysisRequest) -> tuple[list[MethodTestCoverage], str]:
     src_ref = (request.source_ref or "") + " " + str(meta.get("title", "")) + " " + str(meta.get("pr_title", ""))
     is_bugfix = bool(re.search(r'(?i)\b(fix|bug|hotfix|patch|defect|issue)\b', src_ref))
 
-    tests = _test_corpus(request.hunks)
+    pr_tests = _test_corpus(request.hunks)
+    # Repo-aware: existing test files fetched from the repo (not part of the PR),
+    # so a method already covered elsewhere isn't falsely flagged untested.
+    existing = meta.get("existing_tests") or []
+    repo_tests = "\n".join((d.get("text", "") if isinstance(d, dict) else "")
+                           for d in existing).lower()
+    all_tests = pr_tests + "\n" + repo_tests
+
     results: list[MethodTestCoverage] = []
     total_req = total_missing = 0
     for name, info in sorted(methods.items()):
         required = _required_scenarios(name, info["args"], info["body"], info["file"], is_bugfix)
-        covered  = _covered_scenarios(name, required, tests)
+        covered  = _covered_scenarios(name, required, all_tests)
         missing  = [s for s in required if s not in covered]
-        has_test = name.lower() in tests
+        low = name.lower()
+        in_pr   = low in pr_tests
+        in_repo = low in repo_tests
         results.append(MethodTestCoverage(
             method=name, file_path=info["file"], is_new=info["is_new"],
-            has_test=has_test, required_scenarios=required,
+            has_test=in_pr or in_repo, required_scenarios=required,
             covered_scenarios=covered, missing_scenarios=missing,
+            test_source=("pr" if in_pr else "repo" if in_repo else "none"),
         ))
         total_req += len(required)
         total_missing += len(missing)
 
+    src = " (incl. existing repo tests)" if existing else ""
     summary = (f"{len(results)} changed method(s) · {total_req} scenario(s) recommended · "
-               f"{total_missing} not yet covered")
+               f"{total_missing} not yet covered{src}")
     return results, summary
 
 

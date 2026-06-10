@@ -60,7 +60,7 @@ def trace_consumer_impacts(report: AnalysisReport, max_items: int = 30) -> list[
     seen: set[tuple] = set()
 
     def _add(change, change_type, ref, severity):
-        key = (change, getattr(ref, "file_path", ""), getattr(ref, "line", 0))
+        key = (change, getattr(ref, "repo", ""), getattr(ref, "file_path", ""), getattr(ref, "line", 0))
         if key in seen:
             return
         seen.add(key)
@@ -72,6 +72,7 @@ def trace_consumer_impacts(report: AnalysisReport, max_items: int = 30) -> list[
             symbol=getattr(ref, "symbol", ""),
             failure_mode=_FAILURE_MODE.get(change_type, "Behavioural change — verify caller"),
             severity=severity,
+            repo=getattr(ref, "repo", "") or "",
         ))
 
     # ── 1) Interface breaking changes ─────────────────────────────────────────

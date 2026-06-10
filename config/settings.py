@@ -6,13 +6,45 @@ Loaded from environment variables / .env file via pydantic-settings.
 Use get_settings() everywhere — it is cached after first call.
 """
 from __future__ import annotations
+import json
 from functools import lru_cache
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Annotated
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict, NoDecode
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore",
+        # Accept both the Python field name and the UPPER_CASE env alias when
+        # constructing Settings(...) directly. Without this, Settings(cors_origins=[…])
+        # is silently ignored (only CORS_ORIGINS=… works) — a config footgun.
+        populate_by_name=True,
+    )
+
+    # List-valued settings come from env vars as raw strings. pydantic-settings
+    # would otherwise json.loads() them and crash on a plain value (e.g.
+    # CORS_ORIGINS=* or API_KEYS=mykey) with "JSONDecodeError: Expecting value".
+    # NoDecode (on the fields) skips that, and this validator accepts all of:
+    #   JSON  ->  ["a","b"]  /  [{"key":"..."}]
+    #   CSV   ->  a, b, c
+    #   bare  ->  mykey   (single element)
+    @field_validator("api_keys", "compliance_frameworks", "cors_origins", mode="before")
+    @classmethod
+    def _coerce_list(cls, v):
+        if v is None:
+            return []
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return []
+            if s[0] in "[{":
+                try:
+                    return json.loads(s)
+                except (ValueError, TypeError):
+                    pass   # not JSON after all — fall through to CSV split
+            return [part.strip() for part in s.split(",") if part.strip()]
+        return v
 
     # ── Anthropic ──────────────────────────────────────────────────────────────
     anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
@@ -76,7 +108,7 @@ class Settings(BaseSettings):
     # For many users prefer API_KEYS_FILE pointing to a JSON file — easier to
     # manage, diff in git, and reload without restarting the server.
     # Roles: admin | analyst | reviewer | developer | auditor | ci_system
-    api_keys:       list      = Field(default_factory=list, alias="API_KEYS")
+    api_keys:       Annotated[list, NoDecode] = Field(default_factory=list, alias="API_KEYS")
     api_keys_file:  str       = Field(default="",           alias="API_KEYS_FILE")
     skip_auth:      bool      = Field(default=False,        alias="SKIP_AUTH")
 
@@ -111,7 +143,7 @@ class Settings(BaseSettings):
 
     # ── Governance ────────────────────────────────────────────────────────────
     audit_log_path:         str = Field(default="logs/audit.jsonl", alias="AUDIT_LOG_PATH")
-    compliance_frameworks:  list[str] = Field(
+    compliance_frameworks:  Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["MAS TRM", "PCI-DSS 4.0", "OWASP ASVS L2"],
         alias="COMPLIANCE_FRAMEWORKS",
     )
@@ -128,7 +160,7 @@ class Settings(BaseSettings):
     log_format:       str  = Field(default="text",  alias="LOG_FORMAT")   # "text" | "json"
 
     # ── API security ──────────────────────────────────────────────────────────
-    cors_origins:     list[str] = Field(
+    cors_origins:     Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["*"],
         alias="CORS_ORIGINS",
     )
@@ -168,6 +200,13 @@ class Settings(BaseSettings):
     # Kept well under analysis_timeout_s so the worst-case across the agent DAG
     # (a few sequential layers) still fits inside the overall budget.
     llm_request_timeout_s: int = Field(default=45, alias="LLM_REQUEST_TIMEOUT_S")
+    # Max LLM requests in flight at once across the whole process. The pipeline
+    # fans out ~13 agents in parallel; cloud providers (Anthropic/OpenAI) handle
+    # that easily, but a self-hosted / custom OpenAI-compatible server (vLLM,
+    # LM Studio, an org gateway with per-client connection limits) often refuses
+    # or resets connections under that load — surfacing as "failed to connect".
+    # Lower this (e.g. 2–4) for a small/local custom endpoint. 0 = unlimited.
+    llm_max_concurrency:   int = Field(default=8, alias="LLM_MAX_CONCURRENCY")
     # Sampling temperature. 0.0 = deterministic — the same diff yields the same
     # findings and gate on every run, essential for reviewer trust and
     # reproducible audits. Raise only if you deliberately want varied output.

@@ -23,6 +23,77 @@ async function fetchRealDiff(state, target) {
   } catch (e) { console.warn('Diff fetch failed:', e.message); return '' }
 }
 
+// Candidate paths of the test file(s) that would cover a given source file.
+function testCandidatesFor(path) {
+  const p = (path||'').replace(/\\/g,'/')
+  const dir = p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : ''
+  const file = p.slice(p.lastIndexOf('/')+1)
+  const base = file.replace(/\.[^.]+$/,'')
+  const ext = (file.match(/\.([^.]+)$/)||[])[1] || ''
+  const out = []
+  if (ext==='java' || ext==='kt') {
+    const td = dir.replace('/main/','/test/')
+    out.push(`${td}/${base}Test.${ext}`, `${td}/${base}Tests.${ext}`, `${td}/${base}IT.java`, `${dir}/${base}Test.${ext}`)
+  } else if (ext==='py') {
+    out.push(`${dir}/test_${file}`, `${dir}/${base}_test.py`, `${dir.replace(/[^/]*$/,'tests')}/test_${file}`, `tests/test_${file}`)
+  } else if (['ts','tsx','js','jsx'].includes(ext)) {
+    out.push(`${dir}/${base}.test.${ext}`, `${dir}/${base}.spec.${ext}`, `${dir}/__tests__/${base}.test.${ext}`)
+  } else if (ext==='go') {
+    out.push(`${dir}/${base}_test.go`)
+  }
+  return [...new Set(out.filter(Boolean))]
+}
+
+// Fetch existing test files from the repo (paired with each changed source file).
+// Best-effort + bounded: skips silently if git creds/endpoint aren't available.
+async function fetchExistingTests(state, tgt, diffText, headers) {
+  const isTest = f => /(^|\/)(tests?|specs?|__tests__)\//i.test(f) || /(_test\.|\.test\.|\.spec\.|Test\.|Tests\.|Spec\.|_spec\.)/.test(f)
+  const changed = Object.keys(parseDiffToSnippets(diffText)).filter(f=>!isTest(f)).slice(0,15)
+  if (!changed.length) return []
+  const cfg = gitCfg(state)
+  const repo_slug = repoName(state.primaryRepo)
+  const ref = tgt.source
+  const found = []
+  let calls = 0
+  for (const src of changed) {
+    for (const cand of testCandidatesFor(src)) {
+      if (calls++ >= 40) return found    // hard cap on requests
+      try {
+        const r = await fetch(state.backendUrl+'/api/v1/git/file', {
+          method:'POST', headers, body:JSON.stringify({ cfg, repo_slug, path:cand, ref }),
+          signal: AbortSignal.timeout(8000),
+        })
+        if (r.ok) { const d = await r.json(); if (d.found) { found.push({ path:d.path, text:(d.content||'').slice(0,60000) }); break } }
+      } catch(_) {}
+    }
+  }
+  return found
+}
+
+// Cross-repo call-site search: ask the backend proxy to run the git provider's
+// code-search API over the reviewer-declared dependent repos. Results are folded
+// into reference impact + consumer impact server-side. Resilient — returns [] on
+// any failure so analysis proceeds with the manual checklist fallback.
+async function fetchCrossRepoRefs(state, tgt, diffText, headers) {
+  const empty = { refs: [], backend: 'none', repos: [] }
+  if (!state.connectedRepos?.length || !diffText || !state.backendUrl) return empty
+  const cfg = gitCfg(state)
+  const repo_slugs = state.connectedRepos.map(repoName)
+  try {
+    const r = await fetch(state.backendUrl+'/api/v1/git/xref', {
+      method:'POST', headers,
+      // 70s: the clone fallback (search-disabled Bitbucket Server) needs headroom.
+      body: JSON.stringify({ cfg, repo_slugs, diff_text: diffText.slice(0, 400000), ref: tgt.source }),
+      signal: AbortSignal.timeout(70000),
+    })
+    if (r.ok) {
+      const d = await r.json()
+      return { refs: d.references || [], backend: d.backend || 'none', repos: d.searched_repos || repo_slugs }
+    }
+  } catch(_) {}
+  return { ...empty, repos: repo_slugs }
+}
+
 function parseDiffToSnippets(diffText) {
   const result = {}; if (!diffText) return result
   let currentFile=null, newLine=0, oldLine=0
@@ -101,6 +172,7 @@ function RunningView({ state, update, showToast }) {
   const [progressLabel, setProgressLabel] = useState('Waiting for agents…')
   const [agentStatus, setAgentStatus] = useState('Initialising agents…')
   const [diffInfo, setDiffInfo] = useState('')
+  const [xrefInfo, setXrefInfo] = useState('')
   const [simHint, setSimHint] = useState('')
   const target = useRef(buildAnalysisTarget(state))
   const startTime = useRef(Date.now())
@@ -133,6 +205,35 @@ function RunningView({ state, update, showToast }) {
     const diffKb = diffText ? Math.round(diffText.length/1024) : 0
     setDiffInfo(diffText ? `Diff fetched — ${diffLines.toLocaleString()} lines · ${diffKb} KB` : '⚠ No diff — check token permissions')
 
+    // Repo-aware coverage: fetch existing test files (paired with changed source)
+    // so methods already tested in the repo aren't flagged as untested.
+    let existingTests = []
+    try {
+      if (diffText && state.backendUrl && state.primaryRepo) {
+        setAgentStatus('Locating existing tests in repo…')
+        existingTests = await fetchExistingTests(state, tgt, diffText, headers)
+      }
+    } catch(_) {}
+
+    // Cross-repo impact: search reviewer-declared dependent repos for call-sites
+    // of the changed symbols (provider code-search API → clone+grep fallback).
+    let externalRefs = []
+    try {
+      if (diffText && state.backendUrl && state.connectedRepos.length) {
+        setAgentStatus(`Searching ${state.connectedRepos.length} dependent repo(s) for call-sites…`)
+        const xref = await fetchCrossRepoRefs(state, tgt, diffText, headers)
+        externalRefs = xref.refs
+        const labelMap = { local_mirror:'warm local mirror', bitbucket_server_search:'Bitbucket Server search',
+                      github_search:'GitHub code search', bitbucket_cloud_search:'Bitbucket code search',
+                      clone_grep:'shallow clone + grep', none:'no backend', unsupported:'unsupported provider' }
+        const via = String(xref.backend||'').split('+').map(b=>labelMap[b]||b).join(' + ')
+        const nRepos = (xref.repos||[]).length
+        setXrefInfo(externalRefs.length
+          ? `Traced ${externalRefs.length} cross-repo call-site${externalRefs.length===1?'':'s'} across ${nRepos} dependent repo${nRepos===1?'':'s'} via ${via}.`
+          : `No cross-repo call-sites found in ${nRepos} dependent repo${nRepos===1?'':'s'}${xref.backend==='none'?'':` (via ${via})`}.`)
+      }
+    } catch(_) {}
+
     if (state.backendUrl) {
       try {
         const payload = {
@@ -142,7 +243,8 @@ function RunningView({ state, update, showToast }) {
           deep_scan: !!state.deepScan,
           llm_config: { provider:state.modelProvider, model:state.modelName, api_key:state.modelApiKey, base_url:state.modelBaseUrl, api_version:state.modelApiVer },
           metadata: { provider:state.provider, connected_repos:state.connectedRepos.map(repoName), diff_lines:diffLines,
-            functional_docs:(state.functionalDocs||[]).map(d=>({name:d.name,text:(d.text||'').slice(0,40000)})).slice(0,10), ...tgt.meta }
+            functional_docs:(state.functionalDocs||[]).map(d=>({name:d.name,text:(d.text||'').slice(0,40000)})).slice(0,10),
+            existing_tests: existingTests, external_references: externalRefs, ...tgt.meta }
         }
         setAgentStatus('Submitting to backend…'); setProgress(10)
         const submitResp = await fetch(state.backendUrl+'/api/v1/analyse', { method:'POST', headers, body:JSON.stringify(payload) })
@@ -296,6 +398,11 @@ function RunningView({ state, update, showToast }) {
           <i className="ti ti-file-code" style={{fontSize:14}}/><span>{diffInfo}</span>
         </div>
       )}
+      {xrefInfo && (
+        <div style={{marginBottom:14,padding:'8px 12px',background:'#f3f6fb',border:'1px solid #d8e0ec',borderRadius:7,fontSize:12,color:'#3a4452',display:'flex',alignItems:'center',gap:7}}>
+          <i className="ti ti-affiliate" style={{fontSize:14}}/><span>{xrefInfo}</span>
+        </div>
+      )}
       <div className="pipeline-scroll"><LivePipeline agentMap={agentMap}/></div>
       {simHint && (
         <div style={{marginTop:14,textAlign:'center',fontSize:11,color:'#c0c9d8'}}>
@@ -358,27 +465,43 @@ function SevChip({sev}) {
 
 // Reviewer feedback control — mark a finding as false positive / valid.
 // Feeds the feedback loop so noisy checks surface in Insights over time.
+// Rendered as two clearly-visible pill buttons so reviewers can triage at a glance.
 function FindingFeedback({ r, agent, category='', file='' }) {
   const { state } = useApp()
   const [sent, setSent] = useState('')
+  const [busy, setBusy] = useState(false)
   async function send(verdict) {
+    if (busy) return
     if (!state.backendUrl || !r.request_id) { setSent('need-backend'); return }
+    setBusy(true)
     try {
       await backendPost(state, `/api/v1/report/${r.request_id}/feedback`,
         { agent, category, file_path: file, verdict })
       setSent(verdict)
-    } catch { setSent('error') }
+    } catch { setSent('error') } finally { setBusy(false) }
   }
-  if (sent === 'false_positive') return <span style={{fontSize:10,color:'#7a8494'}}>↩ marked false positive</span>
-  if (sent === 'valid')          return <span style={{fontSize:10,color:'#166534'}}>✓ confirmed valid</span>
-  if (sent === 'need-backend')   return <span style={{fontSize:10,color:'#b91c1c'}}>backend required</span>
-  if (sent === 'error')          return <span style={{fontSize:10,color:'#b91c1c'}}>failed</span>
+  const pill = (extra={}) => ({
+    display:'inline-flex',alignItems:'center',gap:5,fontSize:11,fontWeight:600,
+    padding:'4px 11px',borderRadius:20,cursor:busy?'default':'pointer',
+    lineHeight:1,transition:'all .12s',userSelect:'none',...extra,
+  })
+  if (sent === 'false_positive')
+    return <span style={pill({background:'#eef1f5',color:'#5b6675',border:'1px solid #d4dae2',cursor:'default'})}>⚐ Marked false positive</span>
+  if (sent === 'valid')
+    return <span style={pill({background:'#e9f8ef',color:'#166534',border:'1px solid #b5e8cf',cursor:'default'})}>✓ Confirmed valid</span>
+  if (sent === 'need-backend')
+    return <span style={{fontSize:11,color:'#b91c1c'}}>Connect a backend to record reviewer feedback.</span>
+  if (sent === 'error')
+    return <span style={{fontSize:11,color:'#b91c1c'}}>Couldn’t save — retry.</span>
   return (
-    <span style={{display:'inline-flex',gap:8,fontSize:10}}>
-      <button onClick={()=>send('false_positive')} title="This finding is a false positive"
-        style={{border:'none',background:'none',color:'#9fadbf',cursor:'pointer',padding:0,fontSize:10}}>⚐ false positive</button>
-      <button onClick={()=>send('valid')} title="Confirm this is a real issue"
-        style={{border:'none',background:'none',color:'#9fadbf',cursor:'pointer',padding:0,fontSize:10}}>✓ valid</button>
+    <span style={{display:'inline-flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+      <span style={{fontSize:10,color:'#9fadbf',textTransform:'uppercase',letterSpacing:.4,marginRight:1}}>Triage:</span>
+      <button type="button" disabled={busy} onClick={()=>send('valid')}
+        title="Confirm this is a real issue worth acting on"
+        style={pill({background:'#fff',color:'#166534',border:'1px solid #9bd9b8'})}>✓ Valid</button>
+      <button type="button" disabled={busy} onClick={()=>send('false_positive')}
+        title="This finding is a false positive — teach CIAA to stop flagging it for this repo"
+        style={pill({background:'#fff',color:'#9a3412',border:'1px solid #e6c4a6'})}>⚐ False positive</button>
     </span>
   )
 }
@@ -699,27 +822,107 @@ function AdvancedTab({r, snipCache}) {
   )
 }
 
+// Bands give the number meaning at a glance. Kept in sync with the gate weighting.
+function blastBand(score) {
+  if (score >= 76) return { label:'CRITICAL', color:'#991b1b', note:'change can ripple across many components — review downstream carefully' }
+  if (score >= 51) return { label:'HIGH',     color:'#b91c1c', note:'meaningful downstream reach — verify dependents and contracts' }
+  if (score >= 21) return { label:'MODERATE', color:'#8a5200', note:'limited reach — a handful of callers/impacts' }
+  return { label:'LOW', color:'#0c7c4b', note:'little to no downstream reach detected' }
+}
+
 function DependencyTab({r}) {
   const blast=r.dependency?.blast_radius_score||0
+  const band = blastBand(blast)
+  // Reconstruct the contributing signals (mirrors governance/blast_radius.py) so
+  // the score is explainable rather than a mystery number.
+  const refs     = r.reference_impact?.total_references || 0
+  const hiFiles  = (r.reference_impact?.high_impact_files||[]).length
+  const shared   = (r.reference_impact?.shared_lib_breaks||[]).length
+  const breaking = (r.interface?.breaking_changes||[]).length
+  const services = (r.dependency?.affected_services||[]).length
+  const factors = [
+    { label:'References to changed code (in-repo + dependents)', n:refs,     w:2,  hint:'call-sites that use a symbol you changed' },
+    { label:'High-impact files (≥3 references)',                 n:hiFiles,  w:8,  hint:'files that lean heavily on the changed code' },
+    { label:'Breaking API / contract changes',                  n:breaking, w:18, hint:'removed/renamed/retyped public surface' },
+    { label:'Shared / common library changes',                  n:shared,   w:15, hint:'edits under shared/common/core paths' },
+    { label:'Declared dependent repos',                         n:services, w:12, hint:'repos you flagged as consumers' },
+  ].filter(f=>f.n>0)
+  const signalSum = Math.min(100, factors.reduce((a,f)=>a+f.n*f.w,0))
+  const graphExtra = blast - signalSum   // >0 ⇒ a service-graph traversal added reach
   return (
     <div>
       <div className="card">
         <div className="section-heading"><i className="ti ti-topology-star-3"/>Blast radius analysis</div>
         <div style={{marginBottom:12}}>
-          <div style={{fontSize:12,color:'#7a8494',marginBottom:5}}>Blast radius score: {blast}/100</div>
-          <div className="score-bar"><div className="score-fill" style={{width:`${blast}%`,background:blast>70?'var(--red)':blast>40?'#8a5200':'var(--green)'}}/></div>
+          <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:6,flexWrap:'wrap'}}>
+            <span style={{fontSize:13,color:'#3a4452'}}>Blast radius score: <strong>{blast}/100</strong></span>
+            <span style={{fontSize:11,fontWeight:700,padding:'2px 9px',borderRadius:10,background:`${band.color}1a`,color:band.color,border:`1px solid ${band.color}55`}}>{band.label}</span>
+          </div>
+          <div className="score-bar"><div className="score-fill" style={{width:`${blast}%`,background:band.color}}/></div>
+          <div style={{fontSize:11.5,color:'#7a8494',marginTop:6,lineHeight:1.5}}>
+            <strong>What this means:</strong> how far a problem in this change could spread across the codebase and services — {band.note}.
+          </div>
         </div>
-        {(r.dependency?.affected_services||[]).length>0&&<><div className="section-heading"><i className="ti ti-server"/>Affected services</div><div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:12}}>{(r.dependency?.affected_services||[]).map(s=><span key={s} className="badge badge-amber">{s}</span>)}</div></>}
+
+        {/* Score breakdown — makes the number explainable to any reviewer */}
+        <div style={{background:'#f7f8fa',border:'1px solid #e8eaed',borderRadius:8,padding:'10px 12px',marginBottom:12}}>
+          <div style={{fontSize:11,fontWeight:700,color:'#5b6675',textTransform:'uppercase',letterSpacing:.4,marginBottom:7}}>How this score is calculated</div>
+          {factors.length===0 && graphExtra<=0
+            ? <div style={{fontSize:12,color:'#7a8494'}}>No downstream-reach signals were found, so the score is 0. Select dependent repos on the Repos screen, or configure <code>SERVICE_MAP_PATH</code> / <code>REPOS_ROOT</code>, to include cross-service reach.</div>
+            : <>
+                <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+                  <thead><tr style={{color:'#9fadbf',fontSize:10,textTransform:'uppercase'}}>
+                    <th style={{textAlign:'left',padding:'3px 4px'}}>Signal</th>
+                    <th style={{textAlign:'right',padding:'3px 4px'}}>Count</th>
+                    <th style={{textAlign:'right',padding:'3px 4px'}}>Weight</th>
+                    <th style={{textAlign:'right',padding:'3px 4px'}}>Points</th>
+                  </tr></thead>
+                  <tbody>
+                    {factors.map((f,i)=>(
+                      <tr key={i} style={{borderTop:'1px solid #edeef1'}} title={f.hint}>
+                        <td style={{padding:'4px 4px',color:'#3a4452'}}>{f.label}</td>
+                        <td style={{padding:'4px 4px',textAlign:'right',fontFamily:'var(--mono)'}}>{f.n}</td>
+                        <td style={{padding:'4px 4px',textAlign:'right',color:'#9fadbf'}}>×{f.w}</td>
+                        <td style={{padding:'4px 4px',textAlign:'right',fontFamily:'var(--mono)',fontWeight:600}}>{f.n*f.w}</td>
+                      </tr>
+                    ))}
+                    {graphExtra>0 && (
+                      <tr style={{borderTop:'1px solid #edeef1'}} title="Transitive reach from the configured service dependency graph (NetworkX/Neo4j).">
+                        <td style={{padding:'4px 4px',color:'#3a4452'}}>Service-graph transitive reach</td>
+                        <td style={{padding:'4px 4px',textAlign:'right',color:'#9fadbf'}}>—</td>
+                        <td style={{padding:'4px 4px',textAlign:'right',color:'#9fadbf'}}>—</td>
+                        <td style={{padding:'4px 4px',textAlign:'right',fontFamily:'var(--mono)',fontWeight:600}}>{graphExtra}</td>
+                      </tr>
+                    )}
+                  </tbody>
+                  <tfoot><tr style={{borderTop:'2px solid #e0e2e6'}}>
+                    <td colSpan={3} style={{padding:'5px 4px',fontWeight:700,color:'#3a4452'}}>Total (capped at 100)</td>
+                    <td style={{padding:'5px 4px',textAlign:'right',fontFamily:'var(--mono)',fontWeight:700}}>{blast}</td>
+                  </tr></tfoot>
+                </table>
+              </>}
+          <div style={{fontSize:11,color:'#9fadbf',marginTop:8,lineHeight:1.5}}>
+            Bands: <span style={{color:'#0c7c4b'}}>0–20 Low</span> · <span style={{color:'#8a5200'}}>21–50 Moderate</span> · <span style={{color:'#b91c1c'}}>51–75 High</span> · <span style={{color:'#991b1b'}}>76–100 Critical</span>.
+            A score with no dependent repos reflects reach <em>within this repository</em>; add dependents or a service graph to include cross-service reach.
+          </div>
+        </div>
+        {(r.dependency?.affected_services||[]).length>0&&<><div className="section-heading"><i className="ti ti-server"/>Affected downstream services ({(r.dependency?.affected_services||[]).length})</div><div style={{fontSize:11,color:'#9fadbf',marginBottom:6}}>Declared dependent repos + any traced from the service graph.</div><div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:12}}>{(r.dependency?.affected_services||[]).map(s=><span key={s} className="badge badge-amber">{s}</span>)}</div></>}
         {(r.dependency?.changed_packages||[]).length>0&&<><div className="section-heading"><i className="ti ti-package"/>Changed packages</div><div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:12}}>{(r.dependency?.changed_packages||[]).map(p=><code key={p}>{p}</code>)}</div></>}
         {(r.dependency?.cve_hits||[]).length>0&&<><div className="section-heading" style={{color:'#b91c1c'}}><i className="ti ti-bug"/>Known CVEs</div><div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:12}}>{(r.dependency?.cve_hits||[]).map(c=><span key={c} className="badge badge-red" style={{fontFamily:'var(--mono)'}}>{c}</span>)}</div></>}
+        {(r.dependency?.notes||[]).length>0&&(r.dependency?.cve_hits||[]).length===0&&(r.dependency?.affected_services||[]).length===0&&(
+          <div style={{padding:'9px 12px',background:'#f3f6fb',border:'1px solid #d8e0ec',borderRadius:8,fontSize:12,color:'#3a4452',lineHeight:1.55,display:'flex',gap:8}}>
+            <i className="ti ti-info-circle" style={{flexShrink:0,marginTop:2,color:'#1a6cf6'}}/>
+            <div>{(r.dependency?.notes||[]).map((n,i)=><div key={i}>{n}</div>)}</div>
+          </div>
+        )}
       </div>
-      <MavenSca/>
+      <MavenSca report={r}/>
       <DepAutoUpdate r={r}/>
     </div>
   )
 }
 
-function MavenSca() {
+function MavenSca({ report }) {
   const { state } = useApp()
   const [data,setData]=useState(null); const [err,setErr]=useState(''); const [loading,setLoading]=useState(false)
   async function scan(text){
@@ -755,6 +958,7 @@ function MavenSca() {
               <div className="finding-body">
                 <div className="finding-desc"><code>{v.cve}</code> {v.summary}</div>
                 <div className="finding-file"><code>{v.package}@{v.version}</code> · scope: {v.scope} · {v.depth}</div>
+                {report && <div style={{marginTop:6}}><FindingFeedback r={report} agent="dependency" category={v.cve||''} file={v.package||''}/></div>}
               </div>
             </div>
           ))}
@@ -767,31 +971,58 @@ function MavenSca() {
 
 function InterfaceTab({r}) {
   const impacts = r.consumer_impacts || []
+  const breaking = r.interface?.breaking_changes || []
+  const additive = r.interface?.additive_changes || []
+  // Downstream repos the reviewer flagged as dependents (DependencyResult.affected_services,
+  // populated from the connected-repos selection). CIAA can't see their source, so when a
+  // breaking change exists these must be verified manually.
+  const declaredDeps = r.dependency?.affected_services || []
   return (
     <div>
       <div className="card">
         <div className="section-heading"><i className="ti ti-api"/>Contract breaking changes</div>
         {!(r.interface?.breaking_changes||[]).length?<div className="empty-state"><i className="ti ti-circle-check"/>No breaking interface changes</div>
           :(r.interface?.breaking_changes||[]).map((b,i)=>(
-            <div key={i} className="finding">
-              <span className={`sev sev-${b.severity}`}>{b.severity}</span>
-              <div className="finding-body"><div className="finding-desc"><span className="badge badge-dim" style={{marginRight:6}}>{b.type}</span>{(b.break_type||'').replace(/_/g,' ')} change</div><div className="finding-file">{b.path||''}</div></div>
+            <div key={i} className="finding" style={{flexDirection:'column',alignItems:'stretch',gap:7}}>
+              <div style={{display:'flex',gap:10,alignItems:'flex-start'}}>
+                <span className={`sev sev-${b.severity}`}>{b.severity}</span>
+                <div className="finding-body"><div className="finding-desc"><span className="badge badge-dim" style={{marginRight:6}}>{b.type}</span>{(b.break_type||'').replace(/_/g,' ')} change</div><div className="finding-file">{b.path||''}</div></div>
+              </div>
+              <div><FindingFeedback r={r} agent="interface" category={b.break_type||b.type||''} file={b.path||''}/></div>
             </div>
           ))}
       </div>
+      {additive.length>0 && (
+        <div className="card">
+          <div className="section-heading" style={{color:'#1e40af'}}><i className="ti ti-plus"/>Data-model / contract additions ({additive.length})</div>
+          <div style={{fontSize:12,color:'#7a8494',marginBottom:10,lineHeight:1.55}}>
+            Fields added to serializable data classes. <strong>Not breaking</strong>, but they appear in JSON/API output — confirm consumers and deserializers tolerate unknown fields, and update API docs / schemas.
+          </div>
+          {additive.map((a,i)=>(
+            <div key={i} className="finding" style={{alignItems:'flex-start',gap:8}}>
+              <span style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:8,background:'#eff5ff',color:'#1e40af',border:'1px solid #c5d8fb',whiteSpace:'nowrap',flexShrink:0}}>ADDITIVE</span>
+              <div className="finding-body"><div className="finding-desc">{a}</div></div>
+            </div>
+          ))}
+        </div>
+      )}
       {impacts.length>0 && (
         <div className="card">
           <div className="section-heading" style={{color:'#b91c1c'}}><i className="ti ti-affiliate"/>Downstream consumers that will break ({impacts.length})</div>
-          <div style={{fontSize:12,color:'#7a8494',marginBottom:10}}>Exact call-sites affected by these breaking changes, with the likely runtime failure.</div>
+          <div style={{fontSize:12,color:'#7a8494',marginBottom:10}}>Exact call-sites affected by these breaking changes, with the likely runtime failure. <strong>Cross-repo</strong> rows were traced in dependent repos via the provider’s code search.</div>
           <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
             <thead><tr style={{color:'#9fadbf',fontSize:10,textTransform:'uppercase'}}>
               <th style={{textAlign:'left',padding:'5px 6px'}}>Change</th>
+              <th style={{textAlign:'left',padding:'5px 6px'}}>Repo</th>
               <th style={{textAlign:'left',padding:'5px 6px'}}>Caller (file:line)</th>
               <th style={{textAlign:'left',padding:'5px 6px'}}>Failure mode</th>
             </tr></thead>
             <tbody>{impacts.map((ci,i)=>(
               <tr key={i} style={{borderTop:'1px solid #f5f6f8'}}>
                 <td style={{padding:'5px 6px'}}><code>{ci.change}</code> <span style={{fontSize:10,color:'#9fadbf'}}>({(ci.change_type||'').replace(/_/g,' ')})</span></td>
+                <td style={{padding:'5px 6px'}}>{ci.repo
+                  ? <span style={{fontSize:10,fontWeight:600,padding:'2px 7px',borderRadius:8,background:'#fff1f1',color:'#b91c1c',border:'1px solid #f8c0c0'}}>{ci.repo}</span>
+                  : <span style={{fontSize:10,color:'#9fadbf'}}>this repo</span>}</td>
                 <td style={{padding:'5px 6px',fontFamily:'var(--mono)',fontSize:11}}>{ci.file_path?`${ci.file_path}${ci.line?':'+ci.line:''}`:<span style={{color:'#9fadbf'}}>no caller found — verify external consumers</span>}</td>
                 <td style={{padding:'5px 6px',color:'#b91c1c'}}>{ci.failure_mode}</td>
               </tr>
@@ -799,23 +1030,78 @@ function InterfaceTab({r}) {
           </table>
         </div>
       )}
+      {declaredDeps.length>0 && (
+        <div className="card">
+          <div className="section-heading" style={{color:breaking.length?'#b91c1c':'#5b6675'}}>
+            <i className="ti ti-affiliate"/>Declared downstream repos ({declaredDeps.length})
+          </div>
+          <div style={{fontSize:12,color:'#7a8494',marginBottom:10,lineHeight:1.55}}>
+            {breaking.length
+              ? <>This PR has <strong>{breaking.length} breaking change(s)</strong> and you flagged these repos as dependents. CIAA can’t read their source code, so <strong>verify each one</strong> still compiles/calls correctly against the new contract.</>
+              : <>You flagged these repos as dependents. No breaking interface changes were detected, so they’re likely unaffected — but confirm if this PR changes shared behaviour.</>}
+          </div>
+          <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
+            {declaredDeps.map(s=>(
+              <span key={s} style={{display:'inline-flex',alignItems:'center',gap:6,fontSize:12,padding:'5px 11px',borderRadius:8,
+                background:breaking.length?'#fff1f1':'#f3f6fb',color:breaking.length?'#b91c1c':'#3a4452',
+                border:`1px solid ${breaking.length?'#f8c0c0':'#d8e0ec'}`}}>
+                <i className="ti ti-git-branch" style={{fontSize:12}}/>{s}
+              </span>
+            ))}
+          </div>
+          <div style={{fontSize:11,color:'#9fadbf',marginTop:10,lineHeight:1.5}}>
+            <i className="ti ti-info-circle" style={{marginRight:4}}/>
+            To trace exact call-sites inside these repos automatically, run CIAA with <code>REPO_LOCAL_PATH</code> pointing at their clones (or a <code>SERVICE_MAP_PATH</code> graph). Otherwise this is a manual checklist.
+          </div>
+        </div>
+      )}
     </div>
   )
 }
 
+// Plain-English explanation of what a schema change does + what to verify,
+// so the Schema tab is actionable even when the agent gives no description.
+const SCHEMA_EXPLAIN = {
+  add_table:    ['Creates a new table.', 'Confirm the migration is additive only and the app handles the table not existing on older nodes during rollout.'],
+  drop_table:   ['Deletes a table and all its rows — irreversible data loss.', 'Require a verified backup + DBA sign-off; confirm no service still reads this table.'],
+  add_column:   ['Adds a column. Safe if nullable / has a default; a NOT NULL column with no default can lock a large table on write.', 'Check the column is nullable or back-filled before any NOT NULL constraint.'],
+  drop_column:  ['Removes a column — data in it is lost and any code/SQL referencing it breaks.', 'Grep the codebase for the column; deploy code that stops reading it first (expand/contract).'],
+  alter_column: ['Changes a column’s type/constraint. Type narrowing can truncate or reject existing rows.', 'Validate existing values fit the new type; do it in two steps for large tables.'],
+  rename:       ['Renames a table/column — breaks every query still using the old name.', 'Use a view/alias or expand-contract so old and new names coexist during rollout.'],
+  add_index:    ['Adds an index. On large tables a blocking CREATE INDEX can hold locks; prefer CONCURRENTLY / online DDL.', 'Confirm it’s built online and won’t block writes during deploy.'],
+  drop_index:   ['Removes an index — queries that relied on it may do full scans and slow down.', 'Check no hot query plan depends on this index before dropping.'],
+}
 function SchemaTab({r}) {
+  const sc = r.schema_change
+  const changes = sc?.changes || []
+  const sevC = s => ({critical:'#991b1b',high:'#b91c1c',medium:'#92400e',low:'#1e40af'})[(s||'').toLowerCase()]||'#7a8494'
   return (
     <div className="card">
       <div className="section-heading"><i className="ti ti-database"/>Database schema changes</div>
-      {r.schema_change?.has_irreversible&&<div className="err-msg" style={{marginBottom:12}}><i className="ti ti-alert-triangle"/>Irreversible changes detected — DBA sign-off required</div>}
-      {r.schema_change?.has_destructive&&!r.schema_change?.has_irreversible&&<div style={{padding:'8px 12px',background:'#fff8ec',border:'1px solid #8a5200',borderRadius:'var(--r)',fontSize:12,color:'#8a5200',display:'flex',alignItems:'center',gap:7,marginBottom:12}}><i className="ti ti-alert-triangle"/>Destructive changes — verify rollback plan</div>}
-      {!(r.schema_change?.changes||[]).length?<div className="empty-state"><i className="ti ti-database"/>No schema changes detected</div>
-        :(r.schema_change?.changes||[]).map((c,i)=>(
-          <div key={i} className="finding">
-            <span className={`sev sev-${c.severity}`}>{c.severity}</span>
-            <div className="finding-body"><div className="finding-desc"><code>{(c.change_type||'').replace(/_/g,' ')}</code> on <code>{c.table||''}</code></div><div className="finding-file">{c.reversible?'Reversible':'⚠ Not reversible'}</div></div>
+      {sc?.summary && <div style={{fontSize:13,color:'#4a5568',lineHeight:1.55,marginBottom:12}}>{sc.summary}</div>}
+      {sc?.has_irreversible&&<div className="err-msg" style={{marginBottom:12}}><i className="ti ti-alert-triangle"/>Irreversible changes detected — verified backup + DBA sign-off required before merge.</div>}
+      {sc?.has_destructive&&!sc?.has_irreversible&&<div style={{padding:'8px 12px',background:'#fff8ec',border:'1px solid #8a5200',borderRadius:'var(--r)',fontSize:12,color:'#8a5200',display:'flex',alignItems:'center',gap:7,marginBottom:12}}><i className="ti ti-alert-triangle"/>Destructive changes — verify the rollback plan works on a copy of prod.</div>}
+      {!changes.length?<div className="empty-state"><i className="ti ti-database"/>No schema changes detected in this PR.</div>
+        :changes.map((c,i)=>{
+          const ct = (c.change_type||'').toLowerCase()
+          const [what, verify] = SCHEMA_EXPLAIN[ct] || [c.description||'Schema change.', 'Review the migration and its rollback path.']
+          const target = [c.table, c.column && `· column ${c.column}`].filter(Boolean).join(' ')
+          return (
+          <div key={i} className="finding" style={{flexDirection:'column',alignItems:'stretch',gap:8,borderLeft:`3px solid ${sevC(c.severity)}`}}>
+            <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+              <span style={{fontSize:11,fontWeight:700,padding:'2px 9px',borderRadius:10,background:`${sevC(c.severity)}1a`,color:sevC(c.severity),border:`1px solid ${sevC(c.severity)}55`,textTransform:'uppercase'}}>{c.severity||'medium'}</span>
+              <code style={{fontSize:13}}>{ct.replace(/_/g,' ')}</code>
+              {c.table && <span style={{fontSize:13,color:'#4a5568'}}>on <code>{target}</code></span>}
+              <span style={{marginLeft:'auto',fontSize:11,fontWeight:600,color:c.reversible?'#166534':'#b91c1c'}}>{c.reversible?'↩ Reversible':'⚠ Not reversible'}</span>
+            </div>
+            {c.description && <div style={{fontSize:12.5,color:'#374151'}}>{c.description}</div>}
+            <div style={{fontSize:12,color:'#5b6675',lineHeight:1.55}}><strong>What it does:</strong> {what}</div>
+            <div style={{fontSize:12,color:'#5b6675',lineHeight:1.55}}><strong>Before merge:</strong> {verify}</div>
+            {c.file && <div className="finding-file" style={{fontFamily:'var(--mono)'}}>{c.file}</div>}
+            {c.rollback_sql && <div><div style={{fontSize:10,color:'#9fadbf',textTransform:'uppercase',letterSpacing:.4,margin:'2px 0 3px'}}>Rollback SQL</div><pre style={{margin:0,padding:'8px 10px',background:'#0d1117',color:'#e6edf3',borderRadius:6,fontSize:11.5,overflowX:'auto',fontFamily:'var(--mono)'}}>{c.rollback_sql}</pre></div>}
+            <div style={{marginTop:2}}><FindingFeedback r={r} agent="schema_change" category={ct} file={c.file||''}/></div>
           </div>
-        ))}
+        )})}
     </div>
   )
 }
@@ -917,9 +1203,11 @@ function UnitTestCoverage({ tc }) {
           <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:6}}>
             <code style={{fontSize:12.5,fontWeight:700,color:'#0d1117'}}>{m.method}()</code>
             {m.is_new && <span className="badge badge-blue" style={{fontSize:10}}>new</span>}
+            {m.has_test && m.test_source==='repo' && <span className="badge badge-green" style={{fontSize:10}} title="Covered by an existing test file in the repo (not part of this PR)"><i className="ti ti-circle-check" style={{fontSize:10,marginRight:2}}/>existing repo test</span>}
+            {m.has_test && m.test_source==='pr' && <span className="badge badge-green" style={{fontSize:10}}>tested in PR</span>}
             {!m.has_test && (m.is_new
               ? <span className="badge badge-red" style={{fontSize:10}}><i className="ti ti-alert-triangle" style={{fontSize:10,marginRight:2}}/>new · no test</span>
-              : <span className="badge badge-amber" style={{fontSize:10}} title="No test in this PR — existing repo tests may already cover it">no test in this PR</span>)}
+              : <span className="badge badge-amber" style={{fontSize:10}} title="No test found in this PR or the paired repo test file">no test found</span>)}
             <span style={{fontSize:11,color:'#9fadbf',fontFamily:'JetBrains Mono,monospace'}}>{(m.file||'').split(/[\\/]/).pop()}</span>
           </div>
           <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
@@ -1311,33 +1599,40 @@ function TimingsTab({r}) {
   )
 }
 
-// ── Reference Graph (D3 force-directed) ────────────────────────────────────────
+// ── Reference Graph (layered DAG / force, folder grouping, focus highlight) ─────
+// Force layouts turn into an unreadable "hairball" once there are many links.
+// Three things fix that, all available here: a deterministic LAYERED layout
+// (columns by call-distance, links flow one way), FOLDER GROUPING (collapses
+// files in a directory into one module node — the biggest link reduction), and
+// FOCUS-ON-HOVER (dim everything except the hovered node's direct connections).
 function ReferenceGraph({ ref: refData }) {
   const containerRef = useRef(null)
   const simRef       = useRef(null)
+  const totalFiles = new Set((refData?.references || []).map(r => r.file_path)).size
+  const [mode, setMode]   = useState('layered')        // 'layered' | 'force'
+  const [group, setGroup] = useState(totalFiles > 18)  // auto-group busy graphs
 
   useEffect(() => {
     const el = containerRef.current
     if (!el || !refData) return
-    // Dynamic import of d3 (already in bundle)
-    renderGraph(d3, el, refData)
+    renderGraph(d3, el, refData, mode, group)
     return () => { if (simRef.current) { simRef.current.stop(); simRef.current = null } }
-  }, [refData])
+  }, [refData, mode, group])
 
-  function renderGraph(d3, el, ref) {
+  function renderGraph(d3, el, ref, mode, group) {
     el.innerHTML = ''
     if (simRef.current) { simRef.current.stop(); simRef.current = null }
 
     const W = el.clientWidth || 860
     const H = 540
     const symbols    = (ref.changed_symbols  || []).slice(0, 12)
-    const sharedLibs = (ref.shared_lib_breaks|| []).slice(0, 6)
+    const sharedLibs = (ref.shared_lib_breaks || []).slice(0, 6)
 
     const depthColor = d => (['#3b82f6','#0d9488','#7c3aed','#6b7280'])[Math.min(d,4)-1] || '#6b7280'
     const depthBg    = d => (['#eff6ff','#f0fdfa','#f5f3ff','#f9fafb'])[Math.min(d,4)-1] || '#f9fafb'
     const depthLabel = d => (['Direct callers','Callers of callers','3rd level','4th level+'])[Math.min(d,4)-1] || 'Deep'
 
-    // Build file meta — count refs per file + min depth
+    // ── Per-file metadata ──
     const fileMeta = {}
     ;(ref.references || []).forEach(r => {
       const fp = r.file_path
@@ -1349,181 +1644,193 @@ function ReferenceGraph({ ref: refData }) {
         fileMeta[r.from_file] = { count:0, depth:(r.depth||2)-1, symbols:new Set() }
     })
 
-    const totalFiles = Object.keys(fileMeta).length
-    const MAX_FILE_NODES = 24
-    const topFiles = Object.entries(fileMeta)
-      .sort(([,a],[,b]) => b.count - a.count).slice(0, MAX_FILE_NODES)
-      .map(([fp, meta]) => {
-        const parts = fp.replace(/\\/g,'/').split('/')
-        return { id:'file:'+fp, label:parts.slice(-2).join('/'), fullPath:fp,
-                 count:meta.count, depth:meta.depth, type:'file',
-                 r:Math.min(7 + meta.count * 1.5, 18) }
+    // Folder grouping → one node per directory (collapses many files → few modules)
+    const dirOf = fp => { const p = fp.replace(/\\/g,'/').split('/'); return p.slice(0,-1).join('/') || '(root)' }
+    const keyOf = fp => group ? dirOf(fp) : fp
+    const aggMeta = {}
+    Object.entries(fileMeta).forEach(([fp, m]) => {
+      const k = keyOf(fp)
+      if (!aggMeta[k]) aggMeta[k] = { count:0, depth:m.depth, files:new Set() }
+      aggMeta[k].count += m.count
+      aggMeta[k].depth  = Math.min(aggMeta[k].depth, m.depth)
+      aggMeta[k].files.add(fp)
+    })
+
+    const totalUnits = Object.keys(aggMeta).length
+    const MAX_NODES  = group ? 40 : 26
+    const topUnits = Object.entries(aggMeta)
+      .sort(([,a],[,b]) => b.count - a.count).slice(0, MAX_NODES)
+      .map(([k, m]) => {
+        const parts = k.replace(/\\/g,'/').split('/')
+        return { id:'node:'+k, key:k, label: group ? (parts.slice(-2).join('/')||k) : parts.slice(-1)[0],
+                 fullPath:k, count:m.count, depth:m.depth, files:[...m.files],
+                 type: group ? 'module' : 'file', r: Math.min(7 + m.count * 1.4, 18) }
       })
 
     const symNodes = symbols.map(s => ({
-      id:'sym:'+s, label:s.length>20?s.slice(0,18)+'…':s,
-      fullLabel:s, type:'symbol', r:14, fx:null, fy:null,
+      id:'sym:'+s, label:s.length>20?s.slice(0,18)+'…':s, fullLabel:s, type:'symbol', depth:0, r:14,
     }))
     const libNodes = sharedLibs.map(p => {
       const parts = p.replace(/\\/g,'/').split('/')
-      return { id:'lib:'+p, label:parts.slice(-2).join('/'), fullPath:p, type:'shared_lib', r:11 }
+      return { id:'lib:'+p, label:parts.slice(-2).join('/'), fullPath:p, type:'shared_lib', depth:5, r:11 }
     })
 
-    const nodes  = [...symNodes, ...topFiles, ...libNodes]
+    const nodes   = [...symNodes, ...topUnits, ...libNodes]
     const nodeIds = new Set(nodes.map(n => n.id))
 
-    const linkSet = new Set()
-    const links   = []
+    const linkSet = new Set(); const links = []
     ;(ref.references || []).forEach(r => {
       const depth = r.depth || 1
-      const tgt   = 'file:' + r.file_path
-      const src   = (depth === 1 || !r.from_file) ? 'sym:' + (r.symbol||'') : 'file:' + r.from_file
-      const key   = src + '→' + tgt
+      const tgt   = 'node:' + keyOf(r.file_path)
+      const src   = (depth === 1 || !r.from_file) ? 'sym:' + (r.symbol||'') : 'node:' + keyOf(r.from_file)
+      if (src === tgt) return
+      const key = src + '→' + tgt
       if (!linkSet.has(key) && nodeIds.has(src) && nodeIds.has(tgt)) {
         linkSet.add(key); links.push({ source:src, target:tgt, depth })
       }
     })
-    libNodes.forEach(ln => {
-      if (symNodes.length) links.push({ source:symNodes[0].id, target:ln.id, shared:true })
-    })
+    libNodes.forEach(ln => { if (symNodes.length) links.push({ source:symNodes[0].id, target:ln.id, shared:true }) })
 
     if (!nodes.length) {
       el.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#7a8494;font-size:13px"><i class="ti ti-topology-star-3" style="margin-right:8px"/>No graph data to display</div>`
       return
     }
 
-    const svg = d3.select(el).append('svg')
-      .attr('width','100%').attr('height',H)
+    const svg = d3.select(el).append('svg').attr('width','100%').attr('height',H)
       .style('border-radius','8px').style('background','#f7f8fa')
-
     const defs = svg.append('defs')
     defs.append('marker').attr('id','refArrow').attr('viewBox','0 -4 8 8')
-      .attr('refX',20).attr('refY',0).attr('markerWidth',6).attr('markerHeight',6)
-      .attr('orient','auto')
+      .attr('refX',18).attr('refY',0).attr('markerWidth',6).attr('markerHeight',6).attr('orient','auto')
       .append('path').attr('d','M0,-4L8,0L0,4').attr('fill','#c9d4e8')
-
     const zoomLayer = svg.append('g')
-    svg.call(d3.zoom().scaleExtent([0.3, 3])
-      .on('zoom', e => zoomLayer.attr('transform', e.transform)))
+    svg.call(d3.zoom().scaleExtent([0.3, 3]).on('zoom', e => zoomLayer.attr('transform', e.transform)))
 
-    // Concentric rings by call distance: changed symbols in the centre, direct
-    // callers on the first ring, callers-of-callers further out, shared libs
-    // outermost. Reads as "what calls the changed code, and how far away".
-    const maxR = Math.min(W, H) / 2 - 40
-    const ringR = d => {
-      if (d.type === 'symbol')     return 0
-      if (d.type === 'shared_lib') return maxR
-      return Math.min([0.34, 0.60, 0.82, 0.95][Math.min(d.depth, 4) - 1] || 0.95, 1) * maxR
-    }
-    const sim = d3.forceSimulation(nodes)
-      .force('link',      d3.forceLink(links).id(d=>d.id).distance(d=>d.shared?120:70).strength(0.12))
-      .force('charge',    d3.forceManyBody().strength(d=>d.type==='symbol'?-700:-260))
-      .force('radial',    d3.forceRadial(ringR, W/2, H/2).strength(d=>d.type==='symbol'?1:0.55))
-      .force('collision', d3.forceCollide().radius(d=>d.r+12).strength(0.9))
-    simRef.current = sim
-
-    const linkEl = zoomLayer.append('g').selectAll('line').data(links).join('line')
-      .attr('stroke', d=>d.shared?'#f59e0b':depthColor(d.depth||1))
-      .attr('stroke-width', d=>d.shared?1.5:d.depth===1?1.5:1)
-      .attr('stroke-opacity', d=>d.shared?.8:d.depth===1?.6:.35)
-      .attr('stroke-dasharray', d=>{
-        if(d.shared) return '4 3'; if(d.depth===2) return '3 2'; if(d.depth>=3) return '2 3'; return null
-      })
-      .attr('marker-end','url(#refArrow)')
-
+    const nodeById  = new Map(nodes.map(n => [n.id, n]))
     const nodeColor = d => d.type==='symbol'?'#f97316':d.type==='shared_lib'?'#f59e0b':depthColor(d.depth||1)
     const nodeBg    = d => d.type==='symbol'?'#fff7ed':d.type==='shared_lib'?'#fffbeb':depthBg(d.depth||1)
+    const lid       = l => [(l.source.id||l.source),(l.target.id||l.target)]
+    let linkEl, nodeEl
 
-    const nodeEl = zoomLayer.append('g').selectAll('g').data(nodes).join('g')
-      .style('cursor','pointer')
-      .call(d3.drag()
-        .on('start', (event,d)=>{ if(!event.active) sim.alphaTarget(0.3).restart(); d.fx=d.x; d.fy=d.y })
-        .on('drag',  (event,d)=>{ d.fx=event.x; d.fy=event.y })
-        .on('end',   (event,d)=>{ if(!event.active) sim.alphaTarget(0); d.fx=null; d.fy=null }))
-
-    nodeEl.append('circle')
-      .attr('r',d=>d.r).attr('fill',d=>nodeBg(d))
-      .attr('stroke',d=>nodeColor(d)).attr('stroke-width',d=>d.type==='symbol'?2.5:1.5)
-
-    nodeEl.filter(d=>d.type==='symbol').append('text')
-      .attr('text-anchor','middle').attr('dominant-baseline','central')
-      .attr('font-size','10px').attr('fill','#f97316').text('ƒ')
-    nodeEl.filter(d=>d.type==='file').append('text')
-      .attr('text-anchor','middle').attr('dominant-baseline','central')
-      .attr('font-size','9px').attr('fill','#3b82f6').text('{ }')
-    nodeEl.filter(d=>d.type==='shared_lib').append('text')
-      .attr('text-anchor','middle').attr('dominant-baseline','central')
-      .attr('font-size','9px').attr('fill','#d97706').text('⚠')
-
-    // Label only the changed symbols + the handful of heaviest files. Every
-    // other node reveals its name on hover — this is what kills the hairball.
-    const labelCount = Math.max(...topFiles.map(f=>f.count||0), 1)
-    const showLabel = d => d.type === 'symbol' || (d.type === 'file' && (d.count >= 3 || d.count >= labelCount))
-    nodeEl.filter(showLabel).append('text')
-      .attr('dy',d=>d.r+12).attr('text-anchor','middle')
-      .attr('font-size',d=>d.type==='symbol'?'11px':'9.5px')
-      .attr('font-weight',d=>d.type==='symbol'?'700':'500')
-      .attr('fill',d=>nodeColor(d))
-      .attr('font-family',"'JetBrains Mono', monospace")
-      .style('paint-order','stroke').attr('stroke','#f7f8fa').attr('stroke-width','3px')
-      .text(d=>d.type==='symbol' ? d.label : (d.fullPath.replace(/\\/g,'/').split('/').pop()))
-
-    nodeEl.filter(d=>d.type==='file'&&d.count>1).append('text')
-      .attr('dy',d=>-d.r-3).attr('text-anchor','middle')
-      .attr('font-size','9px').attr('fill','#6b7280')
-      .text(d=>`×${d.count}`)
-
-    // Tooltip
-    const tooltip = d3.select(el).append('div')
-      .style('position','absolute').style('pointer-events','none')
-      .style('background','#1c2333').style('color','#e8f0ff')
-      .style('padding','8px 12px').style('border-radius','6px')
-      .style('font-size','12px').style('max-width','280px')
-      .style('line-height','1.5').style('opacity','0')
-      .style('transition','opacity .15s').style('z-index','100')
-      .style('font-family',"'JetBrains Mono', monospace")
-
-    nodeEl
-      .on('mouseenter', (event,d) => {
-        let html = `<div style="font-weight:700;color:${nodeColor(d)}">${d.fullLabel||d.fullPath||d.label}</div>`
-        if (d.type==='file')       html += `<div style="color:#9fadbf;font-size:11px">${d.count} reference${d.count!==1?'s':''}</div><div style="color:${depthColor(d.depth||1)};font-size:11px;margin-top:2px">${depthLabel(d.depth||1)}</div>`
-        if (d.type==='shared_lib') html += `<div style="color:#f59e0b;font-size:11px">⚠ Shared library — cross-project risk</div>`
-        if (d.type==='symbol')     html += `<div style="color:#9fadbf;font-size:11px">Changed symbol</div>`
-        tooltip.html(html).style('opacity','1')
-          .style('left',(event.offsetX+14)+'px').style('top',(event.offsetY-10)+'px')
+    if (mode === 'layered') {
+      links.forEach(l => { l.source = nodeById.get(l.source) || l.source; l.target = nodeById.get(l.target) || l.target })
+      // Columns: 0 = changed symbols, 1–4 = caller depth, 5 = shared libs.
+      const colOf = n => n.type==='symbol'?0 : n.type==='shared_lib'?5 : Math.min(n.depth||1,4)
+      const colsPresent = [...new Set(nodes.map(colOf))].sort((a,b)=>a-b)
+      const colIndex = new Map(colsPresent.map((c,i)=>[c,i]))
+      const nCols = colsPresent.length, padX = 84, padY = 28
+      const xFor = c => nCols<=1 ? W/2 : padX + (colIndex.get(c)/(nCols-1))*(W-2*padX)
+      const byCol = {}
+      nodes.forEach(n => { (byCol[colOf(n)] ||= []).push(n) })
+      Object.values(byCol).forEach(arr => arr.sort((a,b)=>(b.count||0)-(a.count||0)))
+      nodes.forEach(n => {
+        const c = colOf(n), arr = byCol[c], i = arr.indexOf(n), k = arr.length
+        n.x = xFor(c); n.y = k===1 ? H/2 : padY + i*(H-2*padY)/(k-1)
       })
-      .on('mousemove', event => tooltip.style('left',(event.offsetX+14)+'px').style('top',(event.offsetY-10)+'px'))
-      .on('mouseleave', () => tooltip.style('opacity','0'))
-
-    sim.on('tick', () => {
-      linkEl.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y)
-             .attr('x2',d=>d.target.x).attr('y2',d=>d.target.y)
-      nodeEl.attr('transform',d=>`translate(${d.x},${d.y})`)
-    })
-
-    // "+N more" note when files were capped (full list is in High-impact files below)
-    if (totalFiles > topFiles.length) {
-      svg.append('text').attr('x',12).attr('y',H-14)
-        .attr('font-size','11px').attr('fill','#9fadbf')
-        .attr('font-family',"'JetBrains Mono', monospace")
-        .text(`+${totalFiles - topFiles.length} more files — see High-impact files below`)
+      colsPresent.forEach(c => {
+        zoomLayer.append('text').attr('x',xFor(c)).attr('y',14).attr('text-anchor','middle')
+          .attr('font-size','10px').attr('font-weight','700').attr('fill','#9fadbf')
+          .attr('font-family',"'JetBrains Mono', monospace")
+          .text(c===0?'Changed':c===5?'Shared libs':depthLabel(c))
+      })
+      linkEl = zoomLayer.append('g').selectAll('path').data(links).join('path')
+        .attr('fill','none').attr('stroke', d=>d.shared?'#f59e0b':depthColor(d.depth||1))
+        .attr('stroke-width', d=>d.shared?1.4:1.1).attr('stroke-opacity', d=>d.shared?.7:.4)
+        .attr('marker-end','url(#refArrow)')
+        .attr('d', d=>{ const sx=d.source.x,sy=d.source.y,tx=d.target.x,ty=d.target.y,mx=(sx+tx)/2; return `M${sx},${sy} C${mx},${sy} ${mx},${ty} ${tx},${ty}` })
+      nodeEl = zoomLayer.append('g').selectAll('g').data(nodes).join('g')
+        .attr('transform', d=>`translate(${d.x},${d.y})`).style('cursor','pointer')
+    } else {
+      const maxR = Math.min(W, H) / 2 - 40
+      const ringR = d => d.type==='symbol'?0 : d.type==='shared_lib'?maxR : Math.min([0.34,0.60,0.82,0.95][Math.min(d.depth,4)-1]||0.95,1)*maxR
+      const sim = d3.forceSimulation(nodes)
+        .force('link', d3.forceLink(links).id(d=>d.id).distance(d=>d.shared?120:70).strength(0.12))
+        .force('charge', d3.forceManyBody().strength(d=>d.type==='symbol'?-700:-260))
+        .force('radial', d3.forceRadial(ringR, W/2, H/2).strength(d=>d.type==='symbol'?1:0.55))
+        .force('collision', d3.forceCollide().radius(d=>d.r+12).strength(0.9))
+      simRef.current = sim
+      linkEl = zoomLayer.append('g').selectAll('line').data(links).join('line')
+        .attr('stroke', d=>d.shared?'#f59e0b':depthColor(d.depth||1))
+        .attr('stroke-width', d=>d.shared?1.5:d.depth===1?1.5:1)
+        .attr('stroke-opacity', d=>d.shared?.8:d.depth===1?.6:.35)
+        .attr('marker-end','url(#refArrow)')
+      nodeEl = zoomLayer.append('g').selectAll('g').data(nodes).join('g').style('cursor','pointer')
+        .call(d3.drag()
+          .on('start',(e,d)=>{ if(!e.active) sim.alphaTarget(0.3).restart(); d.fx=d.x; d.fy=d.y })
+          .on('drag',(e,d)=>{ d.fx=e.x; d.fy=e.y })
+          .on('end',(e,d)=>{ if(!e.active) sim.alphaTarget(0); d.fx=null; d.fy=null }))
+      sim.on('tick', () => {
+        linkEl.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y).attr('x2',d=>d.target.x).attr('y2',d=>d.target.y)
+        nodeEl.attr('transform',d=>`translate(${d.x},${d.y})`)
+      })
     }
 
-    // Reset zoom button
-    svg.append('g').attr('transform',`translate(${W-58},${H-36})`).append('foreignObject')
-      .attr('width',52).attr('height',26)
-      .append('xhtml:button')
-      .style('font-size','10px').style('padding','2px 8px')
-      .style('background','#fff').style('border','1px solid #e8eaed')
-      .style('border-radius','5px').style('cursor','pointer').style('color','#4b5563')
-      .text('Reset view')
-      .on('click', () => svg.transition().duration(300).call(d3.zoom().transform, d3.zoomIdentity))
+    nodeEl.append('circle').attr('r',d=>d.r).attr('fill',d=>nodeBg(d))
+      .attr('stroke',d=>nodeColor(d)).attr('stroke-width',d=>d.type==='symbol'?2.5:1.5)
+    nodeEl.filter(d=>d.type==='symbol').append('text').attr('text-anchor','middle').attr('dominant-baseline','central').attr('font-size','10px').attr('fill','#f97316').text('ƒ')
+    nodeEl.filter(d=>d.type==='module').append('text').attr('text-anchor','middle').attr('dominant-baseline','central').attr('font-size','10px').attr('fill','#3b82f6').text('▣')
+    nodeEl.filter(d=>d.type==='file').append('text').attr('text-anchor','middle').attr('dominant-baseline','central').attr('font-size','9px').attr('fill','#3b82f6').text('{ }')
+    nodeEl.filter(d=>d.type==='shared_lib').append('text').attr('text-anchor','middle').attr('dominant-baseline','central').attr('font-size','9px').attr('fill','#d97706').text('⚠')
+
+    // Layered columns are well separated, so we can label every node; force mode
+    // labels only symbols + the heaviest nodes to avoid clutter.
+    const labelCount = Math.max(...topUnits.map(f=>f.count||0), 1)
+    const showLabel = d => mode==='layered' || d.type==='symbol' || d.type==='shared_lib' || d.count>=3 || d.count>=labelCount
+    nodeEl.filter(showLabel).append('text')
+      .attr('dy',d=>d.r+12).attr('text-anchor','middle')
+      .attr('font-size',d=>d.type==='symbol'?'11px':'9.5px').attr('font-weight',d=>d.type==='symbol'?'700':'500')
+      .attr('fill',d=>nodeColor(d)).attr('font-family',"'JetBrains Mono', monospace")
+      .style('paint-order','stroke').attr('stroke','#f7f8fa').attr('stroke-width','3px')
+      .text(d=> d.label || (d.fullPath||'').split('/').pop())
+    nodeEl.filter(d=>(d.type==='file'||d.type==='module')&&d.count>1).append('text')
+      .attr('dy',d=>-d.r-3).attr('text-anchor','middle').attr('font-size','9px').attr('fill','#6b7280').text(d=>`×${d.count}`)
+
+    const tooltip = d3.select(el).append('div')
+      .style('position','absolute').style('pointer-events','none').style('background','#1c2333').style('color','#e8f0ff')
+      .style('padding','8px 12px').style('border-radius','6px').style('font-size','12px').style('max-width','300px')
+      .style('line-height','1.5').style('opacity','0').style('transition','opacity .15s').style('z-index','100')
+      .style('font-family',"'JetBrains Mono', monospace")
+
+    const restoreLinks = () => linkEl.style('stroke-opacity', d=>d.shared?(mode==='layered'?.7:.8):(mode==='layered'?.4:(d.depth===1?.6:.35)))
+    nodeEl
+      .on('mouseenter', (event,d) => {
+        // Focus: keep the hovered node + its direct neighbours, fade the rest.
+        const keep = new Set([d.id])
+        links.forEach(l => { const [s,t]=lid(l); if(s===d.id) keep.add(t); if(t===d.id) keep.add(s) })
+        nodeEl.style('opacity', n=> keep.has(n.id)?1:0.12)
+        linkEl.style('stroke-opacity', l=>{ const [s,t]=lid(l); return (s===d.id||t===d.id)?0.95:0.04 })
+        let html = `<div style="font-weight:700;color:${nodeColor(d)}">${d.fullLabel||d.fullPath||d.label}</div>`
+        if (d.type==='module')          html += `<div style="color:#9fadbf;font-size:11px">${d.files.length} file(s) · ${d.count} reference(s)</div><div style="color:${depthColor(d.depth||1)};font-size:11px;margin-top:2px">${depthLabel(d.depth||1)}</div>`
+        else if (d.type==='file')       html += `<div style="color:#9fadbf;font-size:11px">${d.count} reference${d.count!==1?'s':''}</div><div style="color:${depthColor(d.depth||1)};font-size:11px;margin-top:2px">${depthLabel(d.depth||1)}</div>`
+        else if (d.type==='shared_lib') html += `<div style="color:#f59e0b;font-size:11px">⚠ Shared library — cross-project risk</div>`
+        else                            html += `<div style="color:#9fadbf;font-size:11px">Changed symbol</div>`
+        tooltip.html(html).style('opacity','1').style('left',(event.offsetX+14)+'px').style('top',(event.offsetY-10)+'px')
+      })
+      .on('mousemove', event => tooltip.style('left',(event.offsetX+14)+'px').style('top',(event.offsetY-10)+'px'))
+      .on('mouseleave', () => { tooltip.style('opacity','0'); nodeEl.style('opacity',1); restoreLinks() })
+
+    if (totalUnits > topUnits.length) {
+      svg.append('text').attr('x',12).attr('y',H-14).attr('font-size','11px').attr('fill','#9fadbf')
+        .attr('font-family',"'JetBrains Mono', monospace")
+        .text(`+${totalUnits - topUnits.length} more ${group?'folders':'files'} — see the list below`)
+    }
+    svg.append('g').attr('transform',`translate(${W-58},${H-36})`).append('foreignObject').attr('width',52).attr('height',26)
+      .append('xhtml:button').style('font-size','10px').style('padding','2px 8px').style('background','#fff')
+      .style('border','1px solid #e8eaed').style('border-radius','5px').style('cursor','pointer').style('color','#4b5563')
+      .text('Reset view').on('click', () => svg.transition().duration(300).call(d3.zoom().transform, d3.zoomIdentity))
   }
 
   return (
     <div>
-      <div style={{fontSize:11,color:'#9fadbf',marginBottom:6,display:'flex',alignItems:'center',gap:6}}>
-        <i className="ti ti-info-circle"/> Rings = call distance from the change (centre = changed symbols). Hover any node for its name · scroll to zoom · drag to rearrange.
+      <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:6,flexWrap:'wrap'}}>
+        <div style={{display:'inline-flex',border:'1px solid #e8eaed',borderRadius:7,overflow:'hidden'}}>
+          {[['layered','⬚ Layered'],['force','✺ Force']].map(([m,lbl])=>(
+            <button key={m} onClick={()=>setMode(m)} style={{padding:'4px 11px',fontSize:11,fontWeight:600,border:'none',cursor:'pointer',background:mode===m?'#1a6cf6':'#fff',color:mode===m?'#fff':'#4b5563'}}>{lbl}</button>
+          ))}
+        </div>
+        <label style={{fontSize:11,color:'#4b5563',display:'inline-flex',alignItems:'center',gap:5,cursor:'pointer'}}>
+          <input type="checkbox" checked={group} onChange={e=>setGroup(e.target.checked)} style={{cursor:'pointer'}}/> Group files by folder
+        </label>
+        <span style={{fontSize:11,color:'#9fadbf'}}><i className="ti ti-info-circle" style={{marginRight:3}}/>Hover a node to isolate its links · {mode==='layered'?'columns = call distance':'rings = call distance'} · scroll to zoom{mode==='force'?' · drag to rearrange':''}.</span>
       </div>
       <div ref={containerRef} style={{ position:'relative', width:'100%', height:540, borderRadius:8, overflow:'hidden', border:'1px solid #e8eaed', background:'#f7f8fa' }}>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100%', color:'#9fadbf', fontSize:12 }}>

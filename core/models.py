@@ -198,6 +198,9 @@ class DependencyResult(AgentResultBase):
     dependency_nodes:    list[DependencyNode] = []
     cve_hits:            list[str] = []
     changed_packages:    list[str] = []
+    # Plain-English rationale when there is nothing in this agent's remit, so an
+    # out-of-scope diff reads as an explanation rather than an empty object.
+    notes:               list[str] = []
 
 
 class TestGap(BaseModel):
@@ -213,8 +216,9 @@ class MethodTestCoverage(BaseModel):
     is_new:             bool          = False
     has_test:           bool          = False
     required_scenarios: list[str]     = []   # categories that apply to this method
-    covered_scenarios:  list[str]     = []   # categories evidenced in the PR's tests
+    covered_scenarios:  list[str]     = []   # categories evidenced in the tests
     missing_scenarios:  list[str]     = []   # required − covered
+    test_source:        str           = "none"   # pr | repo | none — where the test was found
 
 
 class TestCoverageResult(AgentResultBase):
@@ -239,6 +243,10 @@ class InterfaceResult(AgentResultBase):
     breaking_changes:   list[ContractBreak] = []
     schema_diffs:       list[str] = []
     affected_consumers: list[str] = []
+    # Non-breaking, but contract-relevant: fields added to serializable data
+    # models (DTO/entity/POJO). Surfaced for review (serialization, consumer
+    # backward-compat, docs) without counting as a breaking change.
+    additive_changes:   list[str] = []
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -284,6 +292,7 @@ class ConsumerImpact(BaseModel):
     symbol:        str  = ""      # the calling symbol/site
     failure_mode:  str  = ""      # e.g. "HTTP 404", "AttributeError", "type mismatch"
     severity:      str  = "high"
+    repo:          str  = ""      # empty = same repo; populated for cross-repo hits
 
 
 # ═════════════════════════════════════════════════════════════════════════════

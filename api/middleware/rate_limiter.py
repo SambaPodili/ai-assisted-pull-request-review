@@ -28,14 +28,16 @@ _WINDOW_S   = 60.0    # sliding window length in seconds
 
 
 class _SlidingWindow:
-    __slots__ = ("_dq", "_lock")
+    __slots__ = ("_dq", "_lock", "last_seen")
 
     def __init__(self) -> None:
         self._dq:   deque[float] = deque()
         self._lock: Lock         = Lock()
+        self.last_seen: float    = time.monotonic()
 
     def allow(self, rpm: int) -> bool:
         now = time.monotonic()
+        self.last_seen = now
         cutoff = now - _WINDOW_S
         with self._lock:
             while self._dq and self._dq[0] < cutoff:
@@ -55,8 +57,32 @@ class _SlidingWindow:
 _BUCKETS: dict[str, _SlidingWindow] = {}
 _BUCKETS_LOCK = Lock()
 
+# Idle-bucket eviction: without this, every distinct API key / client IP leaves a
+# permanent entry in _BUCKETS — an unbounded memory leak and a cheap DoS vector
+# (spoofed IPs / random keys). We sweep idle buckets periodically.
+_SWEEP_INTERVAL_S = 300.0    # at most one sweep every 5 min
+_IDLE_TTL_S       = 600.0    # drop buckets unused for 10 min (state is recreatable)
+_MAX_BUCKETS      = 50_000   # hard ceiling — force a sweep if exceeded
+_last_sweep       = time.monotonic()
+
+
+def _maybe_sweep(now: float) -> None:
+    global _last_sweep
+    if now - _last_sweep < _SWEEP_INTERVAL_S and len(_BUCKETS) < _MAX_BUCKETS:
+        return
+    with _BUCKETS_LOCK:
+        if now - _last_sweep < _SWEEP_INTERVAL_S and len(_BUCKETS) < _MAX_BUCKETS:
+            return
+        _last_sweep = now
+        stale = [k for k, b in _BUCKETS.items() if now - b.last_seen > _IDLE_TTL_S]
+        for k in stale:
+            _BUCKETS.pop(k, None)
+        if stale:
+            log.debug("Rate-limiter swept %d idle buckets (%d remain)", len(stale), len(_BUCKETS))
+
 
 def _get_bucket(key: str) -> _SlidingWindow:
+    _maybe_sweep(time.monotonic())
     with _BUCKETS_LOCK:
         if key not in _BUCKETS:
             _BUCKETS[key] = _SlidingWindow()

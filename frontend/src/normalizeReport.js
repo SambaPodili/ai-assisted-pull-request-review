@@ -58,6 +58,7 @@ export function normalizeReport(r) {
     affected_services: dep.affected_services || [],
     changed_packages: dep.changed_packages || [],
     cve_hits: dep.cve_hits || [],
+    notes: dep.notes || [],
   } : null;
 
   const tc = r.test_coverage || null;
@@ -79,6 +80,7 @@ export function normalizeReport(r) {
       required: m.required_scenarios || [],
       covered: m.covered_scenarios || [],
       missing: m.missing_scenarios || [],
+      test_source: m.test_source || 'none',
     })),
   } : null;
 
@@ -90,17 +92,26 @@ export function normalizeReport(r) {
       break_type: b.break_type || 'changed',
       severity: b.severity || 'high',
     })),
+    additive_changes: iface.additive_changes || [],
+    schema_diffs: iface.schema_diffs || [],
   } : null;
 
   const sc = r.schema_change || null;
   const scNorm = sc ? {
     has_destructive: sc.has_destructive || false,
     has_irreversible: sc.has_irreversible || false,
+    migration_files: sc.migration_files || [],
+    rollback_risk: sc.rollback_risk || '',
+    summary: sc.summary || '',
     changes: (sc.changes || []).map(c => ({
       change_type: c.change_type || 'alter',
       table: c.table_name || c.table || '',
-      severity: c.severity || 'medium',
+      column: c.column_name || c.column || '',
+      file: c.file_path || c.file || '',
+      severity: (c.severity || 'medium').toString().toLowerCase(),
       reversible: c.reversible !== false,
+      description: c.description || '',
+      rollback_sql: c.rollback_sql || '',
     })),
   } : null;
 

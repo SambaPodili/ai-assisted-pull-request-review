@@ -332,44 +332,49 @@ class ImpactAnalysisOrchestrator:
             ctx = state["context"].get(AgentName.SECURITY, {})
             return {"res_security": orch._sec.run(state["request"], state["budget"], ctx)}
 
+        # Advanced agents must also receive their per-request context slice so the
+        # UI's LLM override (custom endpoint/key) reaches them — not a bare {}.
+        def _actx(state, agent):
+            return state["context"].get(getattr(agent, "agent_name", None), {}) or {}
+
         def node_ast(state: PipelineState) -> dict:
-            return {"res_ast": orch._ast.run(state["request"], state["budget"], {})}
+            return {"res_ast": orch._ast.run(state["request"], state["budget"], _actx(state, orch._ast))}
 
         def node_entropy(state: PipelineState) -> dict:
-            return {"res_entropy": orch._entropy.run(state["request"], state["budget"], {})}
+            return {"res_entropy": orch._entropy.run(state["request"], state["budget"], _actx(state, orch._entropy))}
 
         def node_taint(state: PipelineState) -> dict:
-            return {"res_taint": orch._taint.run(state["request"], state["budget"], {})}
+            return {"res_taint": orch._taint.run(state["request"], state["budget"], _actx(state, orch._taint))}
 
         def node_iac(state: PipelineState) -> dict:
-            return {"res_iac": orch._iac.run(state["request"], state["budget"], {})}
+            return {"res_iac": orch._iac.run(state["request"], state["budget"], _actx(state, orch._iac))}
 
         def node_temporal(state: PipelineState) -> dict:
-            return {"res_temporal": orch._temporal.run(state["request"], state["budget"], {})}
+            return {"res_temporal": orch._temporal.run(state["request"], state["budget"], _actx(state, orch._temporal))}
 
         def node_schema(state: PipelineState) -> dict:
-            return {"res_schema": orch._schema.run(state["request"], state["budget"], {})}
+            return {"res_schema": orch._schema.run(state["request"], state["budget"], _actx(state, orch._schema))}
 
         def node_qa(state: PipelineState) -> dict:
-            return {"res_qa": orch._qa.run(state["request"], state["budget"], {})}
+            return {"res_qa": orch._qa.run(state["request"], state["budget"], _actx(state, orch._qa))}
 
         def node_ref(state: PipelineState) -> dict:
-            return {"res_ref": orch._ref.run(state["request"], state["budget"], {})}
+            return {"res_ref": orch._ref.run(state["request"], state["budget"], _actx(state, orch._ref))}
 
         def node_perf(state: PipelineState) -> dict:
-            return {"res_perf": orch._perf.run(state["request"], state["budget"], {})}
+            return {"res_perf": orch._perf.run(state["request"], state["budget"], _actx(state, orch._perf))}
 
         def node_privacy(state: PipelineState) -> dict:
-            return {"res_privacy": orch._privacy.run(state["request"], state["budget"], {})}
+            return {"res_privacy": orch._privacy.run(state["request"], state["budget"], _actx(state, orch._privacy))}
 
         def node_maint(state: PipelineState) -> dict:
-            return {"res_maint": orch._maint.run(state["request"], state["budget"], {})}
+            return {"res_maint": orch._maint.run(state["request"], state["budget"], _actx(state, orch._maint))}
 
         def node_license(state: PipelineState) -> dict:
-            return {"res_license": orch._license.run(state["request"], state["budget"], {})}
+            return {"res_license": orch._license.run(state["request"], state["budget"], _actx(state, orch._license))}
 
         def node_obs(state: PipelineState) -> dict:
-            return {"res_obs": orch._obs.run(state["request"], state["budget"], {})}
+            return {"res_obs": orch._obs.run(state["request"], state["budget"], _actx(state, orch._obs))}
 
         def node_dependency(state: PipelineState) -> dict:
             ctx = state["context"].get(AgentName.DEPENDENCY, {})
@@ -601,9 +606,22 @@ class ImpactAnalysisOrchestrator:
             "license":  self._license,
             "obs":      self._obs,
         }
+        # `ctx` is the per-agent map {AgentName: {...}}. Each agent must receive
+        # ITS OWN context slice — not the whole map — otherwise context.get(
+        # "model_config") is None and the agent silently ignores the per-request
+        # LLM override (custom endpoint/key), falling back to env settings. That
+        # was the cause of "code/security connect but the deep-scan agents fail".
+        def _agent_ctx(agent):
+            an = getattr(agent, "agent_name", None)
+            slice_ = ctx.get(an, {}) if isinstance(ctx, dict) else {}
+            # Tolerate a flat context (e.g. {"model_config": ...}) being passed in.
+            if not slice_ and isinstance(ctx, dict) and "model_config" in ctx:
+                slice_ = ctx
+            return slice_ or {}
+
         with ThreadPoolExecutor(max_workers=13) as pool:
             futures = {
-                pool.submit(agent.run, request, budget, ctx): name
+                pool.submit(agent.run, request, budget, _agent_ctx(agent)): name
                 for name, agent in agents_map.items()
             }
             for future in as_completed(futures):
@@ -683,6 +701,20 @@ class ImpactAnalysisOrchestrator:
             apply_suppressions(report, report.repo_url, get_feedback_store())
         except Exception as exc:
             log.debug("[%s] Suppression skipped: %s", report.request_id, exc)
+
+        # ── Derive blast radius from real impact signals when no service graph ──
+        # Without a configured dependency graph the graph-based score is 0, which
+        # is misleading when there ARE breaking changes / downstream call-sites.
+        # Fall back to reference-impact + interface signals so the metric reflects
+        # actual blast radius. Never lowers a real graph-derived score.
+        try:
+            from governance.blast_radius import derive_blast_radius
+            derived = derive_blast_radius(report)
+            if derived is not None:
+                report.dependency.blast_radius_score = derived
+                log.info("[%s] Blast radius derived from impact signals: %d", report.request_id, derived)
+        except Exception as exc:
+            log.debug("[%s] Blast-radius derivation skipped: %s", report.request_id, exc)
 
         # ── Deterministic gate enforcement (overrides the LLM proposal) ──────
         try:

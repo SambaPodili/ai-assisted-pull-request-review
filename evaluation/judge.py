@@ -90,6 +90,22 @@ Rules:
   - false_positives must describe specific agent findings that appear wrong
   - Both lists may be empty if not applicable
   - Do not invent issues that are not visible in the diff
+
+GROUNDING (avoid generic feedback):
+  - Every missed_issue MUST cite concrete evidence from THIS diff — the exact
+    file name, symbol/field/endpoint, and why it matters. Reject vague phrasing
+    like "may introduce technical debt" or "could have security risks" unless
+    tied to a specific changed line.
+  - key_insight and reasoning must reference what actually changed in this diff,
+    not boilerplate that could apply to any change.
+
+SCOPE AWARENESS (do not punish correct silence):
+  - Each agent has a narrow remit (e.g. the dependency agent analyses dependency
+    MANIFESTS; the interface agent analyses API/data CONTRACTS; temporal_risk
+    needs change HISTORY). If the diff contains nothing in an agent's remit, an
+    empty or "no impact" output is CORRECT — score it PASS/PARTIAL, not FAIL, and
+    say so in reasoning. Only fail an agent for missing issues that genuinely fall
+    INSIDE its remit and are present in this diff.
 """
 
 

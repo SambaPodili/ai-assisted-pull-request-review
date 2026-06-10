@@ -62,6 +62,10 @@ class InterfaceAnalysisAgent(BaseAgent[InterfaceResult]):
         t0 = time.monotonic()
         ctx = context or {}
         structural_breaks = self.detect_structural_breaks(request)
+        # Data-model field additions + serialization-config edits are contract
+        # changes even with no API spec file — the gap that left this agent silent
+        # on POJO-only diffs and on JSON exclusion/annotation edits.
+        additive = _detect_data_model_changes(request) + _detect_serialization_changes(request)
 
         has_iface_files = any(
             _is_openapi(h.file_path) or _is_proto(h.file_path) or _is_asyncapi(h.file_path)
@@ -69,13 +73,15 @@ class InterfaceAnalysisAgent(BaseAgent[InterfaceResult]):
         )
 
         if not has_iface_files:
-            # No interface files changed — skip LLM entirely
+            # No interface spec files — skip the LLM, but still report structural
+            # breaks and additive data-model changes from the source diff.
             dur = round(time.monotonic() - t0, 3)
             self.report_static_progress(request, dur)
             return InterfaceResult(
                 breaking_changes=structural_breaks,
                 schema_diffs=[],
                 affected_consumers=[],
+                additive_changes=additive,
                 duration_s=dur,
             )
 
@@ -89,6 +95,8 @@ class InterfaceAnalysisAgent(BaseAgent[InterfaceResult]):
             if (b.path, b.break_type) not in seen
         ]
         llm_result.breaking_changes = merged
+        if additive and not llm_result.additive_changes:
+            llm_result.additive_changes = additive
         return llm_result
 
     def build_user_prompt(self, request: AnalysisRequest, context: dict[str, Any]) -> str:
@@ -117,7 +125,125 @@ class InterfaceAnalysisAgent(BaseAgent[InterfaceResult]):
                 for h in request.hunks if _is_openapi(h.file_path)
             ],
             affected_consumers=[],
+            additive_changes=_detect_data_model_changes(request) + _detect_serialization_changes(request),
         )
+
+
+# ── Data-model field-addition detector (additive contract changes) ────────────
+# Adding a field to a serializable class (DTO/entity/POJO/record) is not breaking,
+# but it IS contract-relevant: the field appears in JSON/API output, consumers and
+# deserializers must tolerate it, and docs/backward-compat should be checked.
+# Detected deterministically so the interface agent is never silent on POJO edits.
+
+_DATA_FILE_HINT = re.compile(
+    r'(?i)(model|dto|entity|domain|pojo|bean|record|schema|payload|'
+    r'request|response|resource|vo|contract|wrapper|mapper|application|details)'
+)
+# Java/Kotlin/C#/Scala field: optional annotations/modifiers, Capitalized type, name, ; or =
+_JAVA_FIELD = re.compile(
+    r'^\s*(?:@\w+(?:\([^)]*\))?\s+)*'
+    r'(?:public|private|protected|internal)?\s*'
+    r'(?:static\s+|final\s+|val\s+|var\s+|transient\s+|volatile\s+|readonly\s+)*'
+    r'([A-Z][A-Za-z0-9_]*(?:<[^>]+>)?(?:\[\])?)\s+'      # Type (Capitalized)
+    r'([a-z_][A-Za-z0-9_]*)\s*[;=]'                       # fieldName then ; or =
+)
+# TypeScript/Kotlin style:  fieldName: Type
+_TS_FIELD = re.compile(r'^\s*(?:readonly\s+)?([a-z_][A-Za-z0-9_]*)\s*[?!]?\s*:\s*[A-Za-z]')
+_FIELD_SKIP = {"return", "if", "for", "while", "new", "import", "package", "throw",
+               "else", "case", "switch", "assert", "public", "private", "catch"}
+_DATA_LANGS = {"java", "kotlin", "csharp", "c#", "cs", "scala", "groovy", "typescript", "ts"}
+
+
+def _detect_data_model_changes(request: AnalysisRequest, cap: int = 30) -> list[str]:
+    """Return human-readable notes for fields added to data-model classes."""
+    notes: list[str] = []
+    seen: set[tuple] = set()
+    for hunk in request.hunks:
+        lang = (getattr(hunk, "language", "") or "").lower()
+        path = hunk.file_path
+        base = path.replace("\\", "/").split("/")[-1]
+        data_ish = lang in _DATA_LANGS or bool(_DATA_FILE_HINT.search(base))
+        if not data_ish:
+            continue
+        for raw in hunk.content.splitlines():
+            if not raw.startswith("+") or raw.startswith("+++"):
+                continue
+            line = raw[1:]
+            field = None
+            m = _JAVA_FIELD.match(line)
+            if m and m.group(1).split("<")[0] not in _FIELD_SKIP and m.group(2) not in _FIELD_SKIP:
+                field = m.group(2)
+            elif lang in ("typescript", "ts", "kotlin"):
+                m2 = _TS_FIELD.match(line)
+                if m2 and m2.group(1) not in _FIELD_SKIP:
+                    field = m2.group(1)
+            if not field:
+                continue
+            key = (base, field)
+            if key in seen:
+                continue
+            seen.add(key)
+            notes.append(
+                f"Field '{field}' added to {base} — appears in serialized output; "
+                f"verify consumer/deserializer backward-compatibility and update API docs."
+            )
+            if len(notes) >= cap:
+                return notes
+    return notes
+
+
+# Serialization config: edits to field exclusion/inclusion maps or @Json* annotations
+# change what appears in JSON output — a contract concern (e.g. adding a field to an
+# OBJECT_FIELD_EXCLUSIONS map hides it from consumers that may rely on it).
+_SERIAL_TOKEN = re.compile(
+    r'(?i)(exclusion|excluded|fieldfilter|field_filter|hidden_?fields?|'
+    r'ignoredfields?|@jsonignore|@jsonproperty|@jsoninclude|@jsonignoreproperties)'
+)
+_QUOTED = re.compile(r'["\']([A-Za-z_]\w+)["\']')
+
+
+def _detect_serialization_changes(request: AnalysisRequest, cap: int = 20) -> list[str]:
+    """Notes for edits to serialization config (exclusion maps, @Json* annotations)."""
+    notes: list[str] = []
+    seen: set[tuple] = set()
+    for hunk in request.hunks:
+        base = hunk.file_path.replace("\\", "/").split("/")[-1]
+        for raw in hunk.content.splitlines():
+            if not raw.startswith("+") or raw.startswith("+++"):
+                continue
+            line = raw[1:]
+            if not _SERIAL_TOKEN.search(line):
+                continue
+            low = line.lower()
+            fields = _QUOTED.findall(line)
+            excluding = any(t in low for t in ("exclu", "ignore", "hidden", "filter"))
+            for f in fields:
+                key = (base, f)
+                if key in seen:
+                    continue
+                seen.add(key)
+                if excluding:
+                    notes.append(
+                        f"{base}: '{f}' added to a serialization exclusion list — it will be "
+                        f"hidden from JSON output; confirm no consumer depends on it (potential "
+                        f"contract change) and that this is intended (e.g. masking sensitive data)."
+                    )
+                else:
+                    notes.append(
+                        f"{base}: serialization mapping changed for '{f}' — verify the JSON "
+                        f"contract and downstream consumers."
+                    )
+                if len(notes) >= cap:
+                    return notes
+            if not fields and ("@jsonignore" in low or "@jsonignoreproperties" in low):
+                key = (base, "@JsonIgnore")
+                if key not in seen:
+                    seen.add(key)
+                    notes.append(
+                        f"{base}: a field/class is now @JsonIgnore — it will no longer appear in "
+                        f"serialized output; consumers relying on it will stop receiving it."
+                    )
+    return notes
 
 
 # ── Structural parsers ────────────────────────────────────────────────────────

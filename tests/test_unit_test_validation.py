@@ -59,6 +59,26 @@ def test_no_test_file_means_all_missing():
     assert HAPPY in m.missing_scenarios
 
 
+def test_existing_repo_tests_count_as_covered():
+    """A method with no test in the PR but an existing repo test (passed via
+    metadata.existing_tests) is marked covered, source='repo'."""
+    src = DiffHunk(file_path="src/main/java/Pay.java", language="java", additions=2, deletions=0,
+                   content="+    public int charge(int a) { return a; }")
+    req = AnalysisRequest(request_id="t", change_type=ChangeType.PR, repo_url="r",
+                          source_ref="f", target_ref="main", hunks=[src],
+                          metadata={"existing_tests": [
+                              {"path": "src/test/java/PayTest.java",
+                               "text": "@Test void charge_ok(){ assertEquals(5, svc.charge(5)); }"}]})
+    m = validate(req)[0][0]
+    assert m.has_test is True and m.test_source == "repo"
+    assert HAPPY in m.covered_scenarios
+
+    # Same change with NO existing tests → uncovered, source 'none'
+    m2 = validate(AnalysisRequest(request_id="t", change_type=ChangeType.PR, repo_url="r",
+                                  source_ref="f", target_ref="main", hunks=[src]))[0][0]
+    assert m2.has_test is False and m2.test_source == "none"
+
+
 def test_no_methods_returns_empty():
     doc = DiffHunk(file_path="README.md", language="markdown", additions=1, deletions=0,
                    content="+Some docs change")

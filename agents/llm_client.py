@@ -16,6 +16,7 @@ Supported providers:
 """
 from __future__ import annotations
 import logging
+import threading
 from dataclasses import dataclass, field
 
 try:
@@ -28,6 +29,40 @@ except ImportError:
     _HAS_TENACITY = False
 
 log = logging.getLogger(__name__)
+
+
+# ── Global LLM concurrency limiter ────────────────────────────────────────────
+# Bounds how many LLM requests are in flight at once across the whole process.
+# The pipeline fans out ~13 agents in parallel; a self-hosted/custom endpoint may
+# not accept that many simultaneous connections. Sized once from
+# LLM_MAX_CONCURRENCY (0 = unlimited). Holding the slot across retries also acts
+# as back-pressure so a struggling endpoint isn't hammered.
+_LLM_SEM: "threading.Semaphore | None" = None
+_LLM_SEM_LOCK = threading.Lock()
+_LLM_SEM_N = -1
+
+
+class _NullCtx:
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+
+def _llm_gate():
+    """Return a context manager that bounds concurrent LLM calls (or a no-op)."""
+    global _LLM_SEM, _LLM_SEM_N
+    try:
+        from config.settings import get_settings
+        n = int(getattr(get_settings(), "llm_max_concurrency", 8) or 0)
+    except Exception:
+        n = 8
+    if n <= 0:
+        return _NullCtx()
+    if _LLM_SEM is None or _LLM_SEM_N != n:
+        with _LLM_SEM_LOCK:
+            if _LLM_SEM is None or _LLM_SEM_N != n:
+                _LLM_SEM = threading.Semaphore(n)
+                _LLM_SEM_N = n
+    return _LLM_SEM
 
 
 def _make_retry(max_attempts: int, max_wait: int, is_retryable):
@@ -52,6 +87,35 @@ def _make_retry(max_attempts: int, max_wait: int, is_retryable):
 
 
 # ── Model config ──────────────────────────────────────────────────────────────
+
+def _normalize_base_url(url: str) -> str:
+    """Make a user-supplied endpoint URL usable by the HTTP client.
+
+    The #1 custom-LLM misconfig is omitting the scheme — entering
+    `my-gateway/v1` or `10.0.0.5:8000/v1` instead of `https://my-gateway/v1`.
+    The OpenAI SDK then dies with `UnsupportedProtocol: Request URL is missing an
+    'http://' or 'https://' protocol`. We add a sensible scheme (http for
+    localhost / private hosts, https otherwise) and trim trailing slashes.
+    """
+    u = (url or "").strip().rstrip("/")
+    if not u:
+        return ""
+    if u.startswith(("http://", "https://")):
+        return u
+    if u.startswith("//"):                       # protocol-relative
+        u = u[2:]
+    host = u.split("/")[0].split(":")[0].lower()
+    local = (host in ("localhost", "127.0.0.1", "0.0.0.0", "::1")
+             or host.endswith(".local")
+             or host.startswith(("10.", "192.168.", "172.16.", "172.17.", "172.18.",
+                                 "172.19.", "172.2", "172.30.", "172.31.")))
+    scheme = "http://" if local else "https://"
+    fixed = scheme + u
+    log.warning("[LLM] base_url '%s' had no scheme — using '%s'. "
+                "Set LLM_BASE_URL / the UI Base URL with an explicit http(s):// to silence this.",
+                url, fixed)
+    return fixed
+
 
 @dataclass
 class ModelConfig:
@@ -83,7 +147,7 @@ class ModelConfig:
             model=_s("model",          "claude-sonnet-4-6"),
             # api_key intentionally NOT defaulted — blank means "fall back to env"
             api_key=(d.get("api_key") or "").strip(),
-            base_url=(d.get("base_url") or "").strip(),
+            base_url=_normalize_base_url(d.get("base_url") or ""),
             api_version=_s("api_version", "2024-08-01-preview"),
         )
 
@@ -109,7 +173,7 @@ class ModelConfig:
             provider=provider,
             model=model,
             api_key=key,
-            base_url=getattr(cfg, "llm_base_url", ""),
+            base_url=_normalize_base_url(getattr(cfg, "llm_base_url", "")),
             api_version=getattr(cfg, "llm_api_version", "2024-08-01-preview"),
         )
 
@@ -162,12 +226,14 @@ class UnifiedLLMClient:
             )
 
         try:
-            if p == "anthropic":
-                return self._call_anthropic(system, user, max_tokens)
-            elif p in ("openai", "azure_openai", "ollama", "custom"):
-                return self._call_openai_compat(system, user, max_tokens)
-            else:
-                raise ValueError(f"Unsupported provider: {p}")
+            # Bound concurrent in-flight LLM requests (protects custom/local servers).
+            with _llm_gate():
+                if p == "anthropic":
+                    return self._call_anthropic(system, user, max_tokens)
+                elif p in ("openai", "azure_openai", "ollama", "custom"):
+                    return self._call_openai_compat(system, user, max_tokens)
+                else:
+                    raise ValueError(f"Unsupported provider: {p}")
         except Exception as exc:
             log.error("[LLM] %s call failed: %s", self.model_name, exc, exc_info=True)
             raise
@@ -334,14 +400,27 @@ class UnifiedLLMClient:
         cfg = get_settings()
 
         resp = None
-        for attempt in _make_retry(cfg.llm_retry_attempts, cfg.llm_retry_max_wait_s, _is_retryable_openai):
-            with attempt:
-                resp = client.chat.completions.create(
-                    model=self._cfg.model,
-                    max_tokens=max_tokens,
-                    temperature=float(getattr(cfg, "llm_temperature", 0.0)),
-                    messages=messages,
-                )
+        try:
+            for attempt in _make_retry(cfg.llm_retry_attempts, cfg.llm_retry_max_wait_s, _is_retryable_openai):
+                with attempt:
+                    resp = client.chat.completions.create(
+                        model=self._cfg.model,
+                        max_tokens=max_tokens,
+                        temperature=float(getattr(cfg, "llm_temperature", 0.0)),
+                        messages=messages,
+                    )
+        except Exception as exc:
+            # Surface the actual endpoint so connection failures are diagnosable
+            # (wrong/unreachable base_url, proxy/TLS, scheme) instead of a bare
+            # "Connection error.".
+            shown = self._cfg.base_url or ("https://api.openai.com/v1" if p == "openai" else "(provider default)")
+            if _is_retryable_openai(exc) and "Connection" in type(exc).__name__:
+                raise ConnectionError(
+                    f"Could not reach LLM endpoint '{shown}' (model '{self._cfg.model}'). "
+                    f"Check the Base URL includes http(s):// and ends in /v1, the host is "
+                    f"reachable from this machine, and any proxy/TLS is configured. ({exc})"
+                ) from exc
+            raise
 
         usage = resp.usage
         return LLMResponse(

@@ -90,12 +90,19 @@ def create_app(settings=None) -> FastAPI:
 
     # ── Middleware (outermost first — last applied to request) ────────────────
     cors_origins = getattr(cfg, "cors_origins", ["*"])
+    # A wildcard origin with credentials is rejected by browsers and forbidden by
+    # the CORS spec. Auth uses the X-API-Key header (not cookies), so credentials
+    # are only enabled when explicit origins are configured.
+    wildcard = "*" in cors_origins
+    if wildcard:
+        cors_origins = ["*"]
+        log.warning("CORS allow_origins is '*' — set CORS_ORIGINS to your UI origin(s) for production.")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["*"],
-        allow_credentials=True,
+        allow_credentials=not wildcard,
     )
     app.add_middleware(RequestLoggingMiddleware)
     app.add_middleware(
@@ -125,6 +132,22 @@ def create_app(settings=None) -> FastAPI:
         body, ct = prometheus_metrics_response()
         return Response(content=body, media_type=ct)
 
+    # ── Global error handling ─────────────────────────────────────────────────
+    # Any unhandled exception is logged with the request-id and returned as a
+    # sanitized JSON envelope — never a stack trace to the client.
+    from fastapi import Request as _Request
+    from fastapi.responses import JSONResponse as _JSONResponse
+
+    @app.exception_handler(Exception)
+    async def _unhandled_exception(request: _Request, exc: Exception):
+        rid = getattr(request.state, "request_id", "-")
+        log.exception("Unhandled error rid=%s %s %s: %s",
+                      rid, request.method, request.url.path, exc)
+        return _JSONResponse(
+            status_code=500,
+            content={"error": "Internal server error", "request_id": rid},
+        )
+
     # ── Daily email digest scheduler (optional) ───────────────────────────────
     if getattr(cfg, "digest_enabled", False):
         _start_digest_scheduler(cfg)
@@ -146,7 +169,7 @@ def _start_digest_scheduler(cfg) -> None:
     The DIGEST_SEND_HOUR env (0-23 UTC) controls the target hour; default 8.
     """
     import threading, time as _time
-    from datetime import datetime as _dt
+    from datetime import datetime as _dt, timezone as _tz
 
     send_hour = getattr(cfg, "digest_send_hour", 8)
 
@@ -154,7 +177,7 @@ def _start_digest_scheduler(cfg) -> None:
         # Send once shortly after startup if we're already at/after send_hour today,
         # otherwise wait until the next send_hour.
         while True:
-            now = _dt.utcnow()
+            now = _dt.now(_tz.utc)
             target = now.replace(hour=send_hour, minute=0, second=0, microsecond=0)
             if target <= now:
                 from datetime import timedelta as _td

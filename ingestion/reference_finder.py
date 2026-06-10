@@ -264,6 +264,73 @@ def _auto_clone_and_grep(
             pass
 
 
+# ── Provider-agnostic clone + grep (cross-repo fallback) ──────────────────────
+
+def clone_and_grep(
+    clone_url:  str,
+    symbols:    list[str],
+    ref:        str = "",
+    repo_label: str = "",
+    secret:     str = "",
+    timeout_s:  int = 60,
+) -> list[SymbolReference]:
+    """Shallow-clone *any* repo URL (already auth-injected) and grep for symbols.
+
+    Provider-agnostic alternative to code-search APIs: works even when the git
+    server's search index is disabled (common on older Bitbucket Server), and
+    yields accurate line numbers + context via ripgrep. Each returned reference
+    is stamped with ``repo_label``. ``secret`` (if given) is masked from logs.
+    Returns [] on any failure — callers degrade gracefully. The clone is always
+    deleted afterwards.
+    """
+    if not _has_git() or not symbols or not clone_url:
+        return []
+    tmp_dir = tempfile.mkdtemp(prefix="ciaa_xref_")
+    try:
+        cmd = ["git", "clone", "--depth", "1", "--single-branch"]
+        if ref:
+            cmd += ["--branch", ref]
+        cmd += ["--", clone_url, tmp_dir]
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout_s,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+        if result.returncode != 0:
+            err = result.stderr
+            if secret:
+                err = err.replace(secret, "***")
+            log.warning("xref clone failed for %s (rc=%d): %s",
+                        repo_label or "repo", result.returncode, err[:200])
+            # The branch may not exist in this dependent repo — retry on default.
+            if ref:
+                return clone_and_grep(clone_url, symbols, ref="",
+                                      repo_label=repo_label, secret=secret, timeout_s=timeout_s)
+            return []
+
+        refs: list[SymbolReference] = []
+        with ThreadPoolExecutor(max_workers=min(len(symbols), _GREP_WORKERS)) as pool:
+            futures = {pool.submit(_grep_local, sym, tmp_dir): sym for sym in symbols}
+            try:
+                for future in as_completed(futures, timeout=_GREP_WALL_CLOCK_S):
+                    try:
+                        refs.extend(future.result())
+                    except Exception as exc:
+                        log.debug("xref grep worker failed: %s", exc)
+            except FuturesTimeout:
+                log.warning("xref grep hit wall-clock limit for %s — partial", repo_label)
+        for r in refs:
+            r.repo = repo_label
+        return refs
+    except subprocess.TimeoutExpired:
+        log.warning("xref clone timed out (%ds) for %s", timeout_s, repo_label or "repo")
+        return []
+    except Exception as exc:
+        log.warning("xref clone error for %s: %s", repo_label or "repo", exc)
+        return []
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 # ── Backend: diff-internal scan ───────────────────────────────────────────────
 
 def find_references_in_diff(

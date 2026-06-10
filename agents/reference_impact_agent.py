@@ -64,6 +64,40 @@ def _detect_shared_lib_breaks(request: AnalysisRequest) -> list[str]:
     ]
 
 
+def _external_references(request: AnalysisRequest, symbols: list[str]) -> tuple[list[SymbolReference], set[str]]:
+    """Build SymbolReference objects from metadata.external_references.
+
+    The frontend fetches these by running the git provider's code-search API
+    over the reviewer-declared dependent repos (see /api/v1/git/xref). Each item
+    is a dict: {symbol, file_path, line, context, repo}. Returns (refs, repo_set).
+    Defensive: tolerates missing keys and caps the total to avoid runaway lists.
+    """
+    raw = (getattr(request, "metadata", None) or {}).get("external_references") or []
+    sym_set = {s.lower() for s in symbols}
+    out: list[SymbolReference] = []
+    repos: set[str] = set()
+    for item in raw[:500]:
+        if not isinstance(item, dict):
+            continue
+        sym = str(item.get("symbol") or "").strip()
+        path = str(item.get("file_path") or item.get("path") or "").strip()
+        if not path:
+            continue
+        # Keep only hits for symbols we actually changed (the search can be fuzzy).
+        if sym and sym_set and sym.lower() not in sym_set:
+            continue
+        repo = str(item.get("repo") or "").strip()
+        out.append(SymbolReference(
+            symbol=sym, file_path=path,
+            line=int(item.get("line") or 0),
+            context=str(item.get("context") or "")[:300],
+            repo=repo, depth=1,
+        ))
+        if repo:
+            repos.add(repo)
+    return out, repos
+
+
 # ── Risk scoring ──────────────────────────────────────────────────────────────
 
 def _score_risk(
@@ -104,12 +138,22 @@ def _static_analysis(request: AnalysisRequest) -> ReferenceImpactResult:
         source_ref=request.source_ref,
     )
 
+    # Fold in cross-repo references the frontend fetched from declared dependent
+    # repos via the git provider's code-search API (metadata.external_references).
+    # These are real call-sites in OTHER repos that CIAA can't clone/grep locally.
+    ext_refs, ext_repos = _external_references(request, symbols)
+    if ext_refs:
+        refs = refs + ext_refs
+        backend = f"{backend}+provider_search" if backend not in ("", "none") else "provider_search"
+
     shared_breaks = _detect_shared_lib_breaks(request)
     hi_files      = _high_impact_files(refs, threshold=3)
     risk          = _score_risk(len(refs), len(shared_breaks), len(symbols))
 
     # Build plain-text summary for fallback
     lines = [f"{len(symbols)} symbols changed; {len(refs)} references found via {backend}."]
+    if ext_refs:
+        lines.append(f"{len(ext_refs)} cross-repo call-site(s) in {len(ext_repos)} dependent repo(s): {', '.join(sorted(ext_repos)[:5])}.")
     if shared_breaks:
         lines.append(f"⚠ Shared/common paths modified: {', '.join(shared_breaks[:5])}")
     if hi_files:
