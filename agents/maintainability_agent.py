@@ -42,6 +42,10 @@ _FUNC_DEF       = re.compile(r'^\+\s*(async\s+)?def\s+\w+\s*\(')
 _BARE_EXCEPT    = re.compile(r'^\+\s*except\s*:\s*$')
 _EXCEPT_EXC     = re.compile(r'^\+\s*except\s+Exception\s*:\s*$')
 _EXCEPT_START   = re.compile(r'^\+\s*except[\s(:]')
+# Java/C#/JS: empty catch block — `catch (...) {}` one-line, or `catch (...) {`
+# whose next added line is just `}` (exception silently swallowed)
+_EMPTY_CATCH_ONE = re.compile(r'catch\s*\([^)]*\)\s*\{\s*\}')
+_CATCH_OPEN      = re.compile(r'catch\s*\([^)]*\)\s*\{?\s*$')
 _MAGIC_INT      = re.compile(r'(?<!\w)(-?\d+)(?!\w)')
 _SAFE_MAGIC     = {0, 1, 2, -1}
 _TODO_FIXME     = re.compile(r'\b(TODO|FIXME)\b')
@@ -168,6 +172,28 @@ def _run_static(request: AnalysisRequest) -> list[MaintainabilityIssue]:
                             ))
                         break
 
+        # ── Java/C#/JS empty catch block (exception silently swallowed) ────────
+        if is_added:
+            code_j = line[1:]
+            hit = bool(_EMPTY_CATCH_ONE.search(code_j))
+            if not hit and _CATCH_OPEN.search(code_j):
+                # opening catch — does the next added non-blank line close it empty?
+                for j in range(idx + 1, min(idx + 3, len(lines))):
+                    nxt = lines[j]
+                    if nxt.startswith("+") and not nxt.startswith("+++"):
+                        if nxt[1:].strip() in ("}", "{}", "{ }"):
+                            hit = True
+                        break
+            if hit:
+                issues.append(MaintainabilityIssue(
+                    kind="swallowed_exception",
+                    severity="high",
+                    description="Empty catch block silently swallows the exception.",
+                    file_path=file_path,
+                    line=_ln(idx),
+                    suggestion="Log the exception (with context) or rethrow; never catch-and-ignore.",
+                ))
+
         # ── Swallowed exceptions (except block with only pass/continue) ────────
         if is_added and _EXCEPT_START.match(line):
             in_except        = True
@@ -222,7 +248,12 @@ def _run_static(request: AnalysisRequest) -> list[MaintainabilityIssue]:
 
         # ── Dead code after return/raise/break ────────────────────────────────
         if is_added:
-            if prev_was_control and _INDENTED_CODE.match(line):
+            stripped = line[1:].strip()
+            # Brace-language structure after `return` is NOT dead code: the line
+            # `} catch (…) {` / `} finally {` / bare `}` closes the block — and
+            # code after it (e.g. `return -1;` after the catch) is reachable.
+            is_structural = stripped.startswith("}") or stripped in ("{", "});", ");")
+            if prev_was_control and _INDENTED_CODE.match(line) and not is_structural:
                 issues.append(MaintainabilityIssue(
                     kind="dead_code",
                     severity="medium",
@@ -231,7 +262,10 @@ def _run_static(request: AnalysisRequest) -> list[MaintainabilityIssue]:
                     line=_ln(idx),
                     suggestion="Remove unreachable code.",
                 ))
-            prev_was_control = bool(_CONTROL_FLOW.match(line))
+            if is_structural:
+                prev_was_control = False    # left the block — reachability resets
+            else:
+                prev_was_control = bool(_CONTROL_FLOW.match(line))
         else:
             prev_was_control = False
 

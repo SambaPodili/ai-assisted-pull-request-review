@@ -50,7 +50,7 @@ from evaluation.metrics import AgentMetrics, CaseMetrics, EvalMetrics
 log = logging.getLogger(__name__)
 
 # Ordered list of attribute names to try when extracting findings from a result
-_FINDING_ATTRS = ("findings", "taint_paths", "breaking_changes", "changes")
+_FINDING_ATTRS = ("findings", "taint_paths", "breaking_changes", "changes", "issues", "pii_findings")
 
 _DEFAULT_LOG = Path(__file__).parent / "data" / "metrics_log.jsonl"
 

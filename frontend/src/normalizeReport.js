@@ -130,7 +130,7 @@ export function normalizeReport(r) {
 
   const se = r.secrets_entropy || null;
   const seNorm = se ? {
-    findings: (se.findings||[]).map(f=>({ variable:f.variable||'', value:f.value||'', kind:f.kind||'', entropy:f.entropy||0, severity:(f.severity||'low').toLowerCase(), line:f.line||0, file:f.file_path||'' })),
+    findings: (se.findings||[]).map(f=>({ variable:f.variable||'', value:f.value||'', kind:f.kind||'', entropy:f.entropy||0, severity:(f.severity||'low').toLowerCase(), line:f.line||0, file:f.file_path||'', unverified:f.unverified||false })),
     high_entropy_count: se.high_entropy_count||0,
     known_prefix_count: se.known_prefix_count||0,
     overall_severity: (se.overall_severity||'low').toLowerCase(),
@@ -155,7 +155,7 @@ export function normalizeReport(r) {
 
   const iac = r.iac_analysis || null;
   const iacNorm = iac ? {
-    findings: (iac.findings||[]).map(f=>({ resource:f.resource||'', kind:f.kind||'', severity:(f.severity||'medium').toLowerCase(), description:f.description||'', cis_ref:f.cis_ref||'', file:f.file_path||'', line:f.line||0 })),
+    findings: (iac.findings||[]).map(f=>({ resource:f.resource||'', kind:f.kind||'', severity:(f.severity||'medium').toLowerCase(), description:f.description||'', cis_ref:f.cis_ref||'', file:f.file_path||'', line:f.line||0, unverified:f.unverified||false })),
     overall_severity: (iac.overall_severity||'low').toLowerCase(),
   } : null;
 
@@ -183,7 +183,7 @@ export function normalizeReport(r) {
     overall_severity: perf.overall_severity || 'low',
     regression_risk: perf.has_complexity_regression || perf.regression_risk || false,
     has_db_risk: perf.has_db_risk || false,
-    findings: (perf.findings||[]).map(f=>({ kind:f.category||f.kind||'', severity:(f.severity||'low').toLowerCase(), description:f.description||'', file:f.file_path||f.file||'', line:f.line||0, suggestion:f.suggestion||'' })),
+    findings: (perf.findings||[]).map(f=>({ kind:f.category||f.kind||'', severity:(f.severity||'low').toLowerCase(), description:f.description||'', file:f.file_path||f.file||'', line:f.line||0, suggestion:f.suggestion||'', unverified:f.unverified||false })),
   } : null;
 
   const priv = r.data_privacy || null;
@@ -192,14 +192,14 @@ export function normalizeReport(r) {
     pii_detected: (priv.pii_findings||priv.findings||[]).length > 0 || (priv.unencrypted_pii_count||0) > 0,
     compliance_violations: priv.logging_violations || priv.compliance_violations || [],
     unencrypted_pii_count: priv.unencrypted_pii_count || 0,
-    findings: (priv.pii_findings||priv.findings||[]).map(f=>({ pii_type:f.pii_type||f.kind||'', severity:(f.risk_level||f.severity||'medium').toLowerCase(), description:f.description||'', file:f.file_path||f.file||'', line:f.line||0, recommendation:f.recommendation||'' })),
+    findings: (priv.pii_findings||priv.findings||[]).map(f=>({ pii_type:f.pii_type||f.kind||'', severity:(f.risk_level||f.severity||'medium').toLowerCase(), description:f.description||'', file:f.file_path||f.file||'', line:f.line||0, recommendation:f.recommendation||'', unverified:f.unverified||false })),
   } : null;
 
   const maint = r.maintainability || null;
   const maintNorm = maint ? {
     score: maint.maintainability_score ?? maint.score ?? 100,
     summary: maint.summary || '',
-    issues: (maint.issues||[]).map(i=>({ kind:i.kind||'', severity:(i.severity||'low').toLowerCase(), description:i.description||'', file:i.file_path||i.file||'', line:i.line||0, suggestion:i.suggestion||'' })),
+    issues: (maint.issues||[]).map(i=>({ kind:i.kind||'', severity:(i.severity||'low').toLowerCase(), description:i.description||'', file:i.file_path||i.file||'', line:i.line||0, suggestion:i.suggestion||'', unverified:i.unverified||false })),
   } : null;
 
   const lic = r.license_compliance || null;
@@ -216,7 +216,7 @@ export function normalizeReport(r) {
     logs_removed: obs.logs_removed || 0,
     metrics_removed: obs.metrics_removed || 0,
     summary: obs.summary || '',
-    findings: (obs.findings||[]).map(f=>({ kind:f.kind||'', severity:(f.severity||'low').toLowerCase(), description:f.description||'', file:f.file_path||f.file||'', line:f.line||0, suggestion:f.suggestion||'' })),
+    findings: (obs.findings||[]).map(f=>({ kind:f.kind||'', severity:(f.severity||'low').toLowerCase(), description:f.description||'', file:f.file_path||f.file||'', line:f.line||0, suggestion:f.suggestion||'', unverified:f.unverified||false })),
   } : null;
 
   const qar = r.qa_scenarios || null;

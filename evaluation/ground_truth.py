@@ -166,6 +166,55 @@ CLEAN_REFACTOR_DIFF = """\
 
 # ── Canonical ground-truth cases ──────────────────────────────────────────────
 
+JAVA_SQLI_DIFF = """\
+--- a/src/main/java/dao/AccountDao.java
++++ b/src/main/java/dao/AccountDao.java
+@@ -10,4 +10,8 @@
++    public List<Account> findByName(String name) {
++        String sql = "SELECT * FROM accounts WHERE name = '" + name + "'";
++        return jdbcTemplate.query(sql, rowMapper);
++    }
+"""
+
+JAVA_N_PLUS_1_DIFF = """\
+--- a/src/main/java/svc/OrderService.java
++++ b/src/main/java/svc/OrderService.java
+@@ -20,4 +20,10 @@
++    public List<OrderDto> getOrders(List<Long> ids) {
++        List<OrderDto> result = new ArrayList<>();
++        for (Long id : ids) {
++            Order o = orderRepository.findById(id);
++            result.add(map(o));
++        }
++        return result;
++    }
+"""
+
+JAVA_TAINT_DIFF = """\
+--- a/src/main/java/api/SearchController.java
++++ b/src/main/java/api/SearchController.java
+@@ -15,4 +15,9 @@
++    @GetMapping("/search")
++    public List<Row> search(@RequestParam String q) {
++        String sql = "SELECT * FROM t WHERE c LIKE '%" + q + "%'";
++        return jdbc.query(sql, mapper);
++    }
+"""
+
+JAVA_EMPTY_CATCH_DIFF = """\
+--- a/src/main/java/svc/FeeService.java
++++ b/src/main/java/svc/FeeService.java
+@@ -30,4 +30,9 @@
++    public int calc(int amount) {
++        try {
++            return compute(amount);
++        } catch (Exception e) {
++        }
++        return -1;
++    }
+"""
+
+
 GOLDEN_CASES: list[GroundTruthCase] = [
 
     GroundTruthCase(
@@ -178,6 +227,13 @@ GOLDEN_CASES: list[GroundTruthCase] = [
                 category="hardcoded_aws_key",
                 # kind="known_prefix" and value starts with "AKIAZ3"
                 match_hints=["known_prefix"],
+            ),
+            GroundTruthFinding(
+                agent="secrets_entropy",
+                category="hardcoded_aws_secret",
+                # the AWS *secret access key* one line below — caught by entropy;
+                # variable name 'aws_secret_access_key' appears in the finding
+                match_hints=["high_entropy", "aws_secret"],
             ),
         ],
     ),
@@ -268,6 +324,59 @@ GOLDEN_CASES: list[GroundTruthCase] = [
         diff_text=CLEAN_REFACTOR_DIFF,
         expected_findings=[],
         expected_clean=True,
+    ),
+
+    # ── Java cases (the primary enterprise stack) ──────────────────────────────
+    GroundTruthCase(
+        case_id="java_sql_injection",
+        description="Java: SQL built via string concat, executed through JdbcTemplate",
+        diff_text=JAVA_SQLI_DIFF,
+        expected_findings=[
+            GroundTruthFinding(
+                agent="security",
+                category="sql_injection_concat",
+                match_hints=["cwe-89", "concat"],
+            ),
+        ],
+    ),
+
+    GroundTruthCase(
+        case_id="java_n_plus_1",
+        description="Java: repository.findById inside a for-loop (N+1 query)",
+        diff_text=JAVA_N_PLUS_1_DIFF,
+        expected_findings=[
+            GroundTruthFinding(
+                agent="performance_impact",
+                category="n_plus_1_query",
+                match_hints=["n_plus_1"],
+            ),
+        ],
+    ),
+
+    GroundTruthCase(
+        case_id="java_taint_flow",
+        description="Java: @RequestParam flows into jdbc.query via concatenated SQL",
+        diff_text=JAVA_TAINT_DIFF,
+        expected_findings=[
+            GroundTruthFinding(
+                agent="taint_analysis",
+                category="request_to_sql",
+                match_hints=["request_param", "sql_query"],
+            ),
+        ],
+    ),
+
+    GroundTruthCase(
+        case_id="java_swallowed_exception",
+        description="Java: empty catch block silently swallows the exception",
+        diff_text=JAVA_EMPTY_CATCH_DIFF,
+        expected_findings=[
+            GroundTruthFinding(
+                agent="maintainability",
+                category="swallowed_exception",
+                match_hints=["swallowed_exception"],
+            ),
+        ],
     ),
 ]
 

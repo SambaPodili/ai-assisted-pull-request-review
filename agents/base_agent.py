@@ -118,6 +118,26 @@ def format_hunks_for_prompt(
     return "\n\n".join(parts)
 
 
+# Shared quality rubric appended to every agent's system prompt (see _call_llm).
+_QUALITY_DIRECTIVE = (
+    "\n\n"
+    "━━ GROUNDING & QUALITY RULES (apply to every finding) ━━\n"
+    "1. Only report issues you can tie to a SPECIFIC line in the provided diff. "
+    "Put the real file path in `file_path` and the changed line in `line`.\n"
+    "2. Do NOT invent files, symbols, endpoints or issues that are not visible in "
+    "the diff. If you are not sure it is real, omit it.\n"
+    "3. Precision over recall: a few well-grounded findings beat many speculative "
+    "ones. Quote or reference the exact changed code your finding is about.\n"
+    "4. Severity calibration — use consistently:\n"
+    "   • CRITICAL = exploitable now / data loss / guaranteed production break\n"
+    "   • HIGH     = likely incident, breaking change, or sensitive-data exposure\n"
+    "   • MEDIUM   = a real issue that needs follow-up but isn't urgent\n"
+    "   • LOW      = minor, stylistic, or defensive-improvement\n"
+    "5. If nothing in YOUR domain applies to this diff, return an empty findings "
+    "list — do not pad the response with generic best-practice advice.\n"
+)
+
+
 class BaseAgent(ABC, Generic[T]):
 
     agent_name:    AgentName
@@ -210,7 +230,13 @@ class BaseAgent(ABC, Generic[T]):
             f"Respond ONLY with a valid JSON object matching this schema "
             f"(no markdown fences, no preamble):\n{schema_hint}"
         )
-        response = client.create(system=self.system_prompt, user=full_user, max_tokens=max_output)
+        # Append a shared grounding + severity rubric to EVERY agent's system
+        # prompt. This lifts output quality uniformly: findings must tie to a real
+        # changed line (no hallucinated files), severity is calibrated the same way
+        # across agents, and agents stop padding with generic advice when nothing
+        # in their domain applies.
+        system = self.system_prompt + _QUALITY_DIRECTIVE
+        response = client.create(system=system, user=full_user, max_tokens=max_output)
         raw      = _strip_fences(response.text.strip())
         tokens   = response.total_tokens
 

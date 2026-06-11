@@ -41,12 +41,16 @@ except AttributeError:
 # ORM / DB call patterns
 _DB_CALL_RE = re.compile(
     r'\.objects\.|\.query\s*\(|\.find\s*\(|\.execute\s*\(|\.fetch\s*\(|'
-    r'cursor\.execute|session\.query',
+    r'cursor\.execute|session\.query|'
+    # Java / Spring Data: repository.findById(…) / findByOrderId(…) / getOne(…),
+    # jdbcTemplate.queryForObject(…), entityManager calls, getResultList()
+    r'\.find[A-Z]\w*\s*\(|\.getOne\s*\(|\.getById\s*\(|'
+    r'jdbc\w*\.|entityManager\.|\.queryFor\w+\s*\(|\.getResultList\s*\(',
     re.IGNORECASE,
 )
 
-# Loop keywords (for/while in added code)
-_LOOP_RE = re.compile(r'^\s*(?:for|while)\s+', re.IGNORECASE)
+# Loop keywords (for/while in added code; Java enhanced-for uses 'for (')
+_LOOP_RE = re.compile(r'^\s*(?:for|while)\s*[\s(]', re.IGNORECASE)
 
 # SELECT * pattern
 _SELECT_STAR_RE = re.compile(r'SELECT\s+\*|\.all\(\)', re.IGNORECASE)

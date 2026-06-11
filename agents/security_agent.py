@@ -64,6 +64,16 @@ _INJECTION_PATTERNS: list[tuple[str, str, str, re.Pattern]] = [
         re.compile(r'(?i)(execute|executeQuery|createQuery|nativeQuery|rawQuery|cursor\.execute)\s*\([^)]*\+'),
     ),
     (
+        # Java idiom: the query is BUILT on its own line ("SELECT … '" + name + "'")
+        # and only the variable is passed to jdbcTemplate/Statement — the pattern
+        # above (concat inside the call) never fires for this.
+        "SQL string built via concatenation with a variable",
+        "CWE-89", "A03:2021",
+        # Two alternatives so an embedded quote of the other kind (…name = '" + x)
+        # doesn't break the match: "…SELECT…" + var   |   '…SELECT…' + var
+        re.compile(r'(?i)(?:"[^"]*\b(?:select|insert|update|delete)\b[^"]*"|\'[^\']*\b(?:select|insert|update|delete)\b[^\']*\')\s*\+\s*\w+'),
+    ),
+    (
         "Possible LDAP injection",
         "CWE-90", "A03:2021",
         re.compile(r'(?i)ldap.*search.*\+'),

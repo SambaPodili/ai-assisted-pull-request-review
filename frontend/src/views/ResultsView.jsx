@@ -463,6 +463,15 @@ function SevChip({sev}) {
   return <span style={{background:m[0],color:m[1],borderRadius:4,padding:'1px 7px',fontSize:10,fontWeight:700,whiteSpace:'nowrap'}}>{m[2]} {sev}</span>
 }
 
+// "Location unverified" badge — the generalised evidence guard flagged this
+// finding because its cited file isn't in the diff (likely hallucinated location).
+function UnvBadge({ f }) {
+  if (!f?.unverified) return null
+  return <span title="The cited file isn't in this diff — shown for awareness; verify before acting."
+    style={{marginLeft:6,fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:10,background:'#fff7ed',color:'#9a3412',border:'1px solid #fed7aa',whiteSpace:'nowrap'}}>
+    <i className="ti ti-map-pin-off" style={{fontSize:11,marginRight:3}}/>location unverified</span>
+}
+
 // Reviewer feedback control — mark a finding as false positive / valid.
 // Feeds the feedback loop so noisy checks surface in Insights over time.
 // Rendered as two clearly-visible pill buttons so reviewers can triage at a glance.
@@ -798,13 +807,13 @@ function AdvancedTab({r, snipCache}) {
         </div>
       )}
       {agentSection('ti-binary-tree','#8b5cf6','AST Analysis', !ast?emptyRow('Agent did not run'):(ast.findings||[]).length===0?emptyRow(`No AST issues — max complexity: ${ast.max_complexity||0}`):
-        <div>{(ast.findings||[]).map((f,i)=><div key={i} className="finding"><span className={`sev sev-${f.severity}`}>{f.severity}</span><div className="finding-body"><div className="finding-desc"><code>{f.kind||''}</code> in <code>{f.function||''}</code></div><div className="finding-file">{f.description||''}{f.suggestion?` — ${f.suggestion}`:''}{f.line?` · line ${f.line}`:''}</div>{getCodeSnippetJSX(f.file,f.line,snipCache,3)}</div></div>)}</div>
+        <div>{(ast.findings||[]).map((f,i)=><div key={i} className="finding"><span className={`sev sev-${f.severity}`}>{f.severity}</span><div className="finding-body"><div className="finding-desc"><code>{f.kind||''}</code> in <code>{f.function||''}</code><UnvBadge f={f}/></div><div className="finding-file">{f.description||''}{f.suggestion?` — ${f.suggestion}`:''}{f.line?` · line ${f.line}`:''}</div>{getCodeSnippetJSX(f.file,f.line,snipCache,3)}</div></div>)}</div>
       )}
       {agentSection('ti-arrows-diff','#f97316','Taint Analysis', !ta?emptyRow('Agent did not run'):(ta.taint_paths||[]).length===0?emptyRow(`No taint paths — ${ta.sources_found||0} sources, ${ta.sinks_found||0} sinks scanned`):
         <div>{(ta.taint_paths||[]).map((p,i)=><div key={i} className="finding"><span className={`sev sev-${p.severity}`}>{p.severity}</span><div className="finding-body"><div className="finding-desc">{p.cwe&&<code>{p.cwe} </code>}{p.description||`${p.source_var||'input'} → ${p.sink_kind||'sink'}`}</div><div className="finding-file">source: <code>{p.source_var||'?'} ({p.source_kind||'?'})</code> → sink: <code>{p.sink_var||'?'} ({p.sink_kind||'?'})</code></div></div></div>)}</div>
       )}
       {agentSection('ti-server','#14b8a6','IaC Security', !iac?emptyRow('Agent did not run'):(iac.findings||[]).length===0?emptyRow('No IaC issues found'):
-        <div>{(iac.findings||[]).map((f,i)=><div key={i} className="finding"><span className={`sev sev-${f.severity}`}>{f.severity}</span><div className="finding-body"><div className="finding-desc"><code>{f.kind||''}</code> — {f.description||''}</div><div className="finding-file">resource: <code>{f.resource||''}</code>{f.cis_ref?` · CIS ${f.cis_ref}`:''}{ f.line?` · line ${f.line}`:''}</div>{getCodeSnippetJSX(f.file,f.line,snipCache,3)}</div></div>)}</div>
+        <div>{(iac.findings||[]).map((f,i)=><div key={i} className="finding"><span className={`sev sev-${f.severity}`}>{f.severity}</span><div className="finding-body"><div className="finding-desc"><code>{f.kind||''}</code> — {f.description||''}<UnvBadge f={f}/></div><div className="finding-file">resource: <code>{f.resource||''}</code>{f.cis_ref?` · CIS ${f.cis_ref}`:''}{ f.line?` · line ${f.line}`:''}</div>{getCodeSnippetJSX(f.file,f.line,snipCache,3)}</div></div>)}</div>
       )}
       {agentSection('ti-clock-record','#a855f7','Temporal Risk', !tr?emptyRow('Agent did not run'):
         <div>
@@ -1375,7 +1384,7 @@ function PerformanceTab({r, snipCache}) {
         </div>
       </div>
       {findings.length===0?<div className="empty-state"><i className="ti ti-circle-check"/>No performance issues found</div>
-        :findings.map((f,i)=><div key={i} className="finding"><span className={`sev sev-${(f.severity||'low').toLowerCase()}`}>{f.severity||'low'}</span><div className="finding-body"><div className="finding-desc"><code>{f.kind||''}</code> — {f.description||''}</div><div className="finding-file">{f.file||''}{f.line?` · line ${f.line}`:''}</div>{f.suggestion&&<div style={{fontSize:11,color:'#0c7c4b',marginTop:4}}><i className="ti ti-bulb" style={{marginRight:3}}/>{f.suggestion}</div>}{getCodeSnippetJSX(f.file,f.line,snipCache,3)}</div></div>)}
+        :findings.map((f,i)=><div key={i} className="finding"><span className={`sev sev-${(f.severity||'low').toLowerCase()}`}>{f.severity||'low'}</span><div className="finding-body"><div className="finding-desc"><code>{f.kind||''}</code> — {f.description||''}<UnvBadge f={f}/></div><div className="finding-file">{f.file||''}{f.line?` · line ${f.line}`:''}</div>{f.suggestion&&<div style={{fontSize:11,color:'#0c7c4b',marginTop:4}}><i className="ti ti-bulb" style={{marginRight:3}}/>{f.suggestion}</div>}{getCodeSnippetJSX(f.file,f.line,snipCache,3)}</div></div>)}
     </div>
   )
 }
@@ -1395,7 +1404,7 @@ function PrivacyTab({r, snipCache}) {
       </div>
       {violations.length>0&&<div style={{marginBottom:14}}><div style={{fontSize:11,fontWeight:600,textTransform:'uppercase',letterSpacing:.06,color:'#9fadbf',marginBottom:6}}>Compliance frameworks affected</div><div style={{display:'flex',flexWrap:'wrap',gap:6}}>{violations.map(v=><span key={v} className="badge badge-red">{v}</span>)}</div></div>}
       {findings.length===0?<div className="empty-state"><i className="ti ti-shield-check"/>No PII or privacy violations found</div>
-        :findings.map((f,i)=><div key={i} className="finding"><span className={`sev sev-${(f.severity||'medium').toLowerCase()}`}>{f.severity||'medium'}</span><div className="finding-body"><div className="finding-desc"><code>{f.pii_type||f.kind||''}</code> — {f.description||''}</div><div className="finding-file">{f.file||''}{f.line?` · line ${f.line}`:''}</div>{f.recommendation&&<div style={{fontSize:11,color:'#0c7c4b',marginTop:4}}><i className="ti ti-bulb" style={{marginRight:3}}/>{f.recommendation}</div>}{getCodeSnippetJSX(f.file,f.line,snipCache,3)}</div></div>)}
+        :findings.map((f,i)=><div key={i} className="finding"><span className={`sev sev-${(f.severity||'medium').toLowerCase()}`}>{f.severity||'medium'}</span><div className="finding-body"><div className="finding-desc"><code>{f.pii_type||f.kind||''}</code> — {f.description||''}<UnvBadge f={f}/></div><div className="finding-file">{f.file||''}{f.line?` · line ${f.line}`:''}</div>{f.recommendation&&<div style={{fontSize:11,color:'#0c7c4b',marginTop:4}}><i className="ti ti-bulb" style={{marginRight:3}}/>{f.recommendation}</div>}{getCodeSnippetJSX(f.file,f.line,snipCache,3)}</div></div>)}
     </div>
   )
 }
@@ -1406,7 +1415,7 @@ function QualityTab({r, snipCache}) {
   const agentSection=(icon,color,title,body)=>(<div key={title} style={{marginBottom:20,paddingBottom:20,borderBottom:'1px solid #e8eaed'}}><div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}><i className={`ti ${icon}`} style={{fontSize:16,color}}/><span style={{fontSize:13,fontWeight:600,color:'#0d1117'}}>{title}</span></div>{body}</div>)
   const maintBody=!maint?emptyRow('Agent did not run'):(() => {
     const issues=maint.issues||[]; const score=maint.score??100; const scoreColor=score>=80?'#0c7c4b':score>=60?'#8a5200':'#b81c1c'
-    return <div><div style={{display:'flex',gap:16,alignItems:'center',marginBottom:12}}><div style={{textAlign:'center'}}><div style={{fontSize:28,fontWeight:700,color:scoreColor}}>{score}</div><div style={{fontSize:10,color:'#9fadbf',textTransform:'uppercase',letterSpacing:.06}}>score /100</div></div><div style={{flex:1}}><div className="score-bar"><div className="score-fill" style={{width:`${score}%`,background:scoreColor}}/></div></div></div>{issues.length===0?emptyRow('No maintainability issues'):issues.map((i2,idx)=><div key={idx} className="finding"><span className={`sev sev-${(i2.severity||'low').toLowerCase()}`}>{i2.severity||'low'}</span><div className="finding-body"><div className="finding-desc"><code>{i2.kind||''}</code> — {i2.description||''}</div><div className="finding-file">{i2.file||''}{i2.line?` · line ${i2.line}`:''}</div>{i2.suggestion&&<div style={{fontSize:11,color:'#0c7c4b',marginTop:4}}><i className="ti ti-bulb" style={{marginRight:3}}/>{i2.suggestion}</div>}</div></div>)}</div>
+    return <div><div style={{display:'flex',gap:16,alignItems:'center',marginBottom:12}}><div style={{textAlign:'center'}}><div style={{fontSize:28,fontWeight:700,color:scoreColor}}>{score}</div><div style={{fontSize:10,color:'#9fadbf',textTransform:'uppercase',letterSpacing:.06}}>score /100</div></div><div style={{flex:1}}><div className="score-bar"><div className="score-fill" style={{width:`${score}%`,background:scoreColor}}/></div></div></div>{issues.length===0?emptyRow('No maintainability issues'):issues.map((i2,idx)=><div key={idx} className="finding"><span className={`sev sev-${(i2.severity||'low').toLowerCase()}`}>{i2.severity||'low'}</span><div className="finding-body"><div className="finding-desc"><code>{i2.kind||''}</code> — {i2.description||''}<UnvBadge f={i2}/></div><div className="finding-file">{i2.file||''}{i2.line?` · line ${i2.line}`:''}</div>{i2.suggestion&&<div style={{fontSize:11,color:'#0c7c4b',marginTop:4}}><i className="ti ti-bulb" style={{marginRight:3}}/>{i2.suggestion}</div>}</div></div>)}</div>
   })()
   const licenseBody=!license?emptyRow('Agent did not run'):(() => {
     const findings=license.findings||[]
@@ -1414,7 +1423,7 @@ function QualityTab({r, snipCache}) {
   })()
   const obsBody=!obs?emptyRow('Agent did not run'):(() => {
     const findings=obs.findings||[]; const score=obs.observability_score??100; const scoreColor=score>=80?'#0c7c4b':score>=60?'#8a5200':'#b81c1c'
-    return <div><div style={{display:'flex',gap:16,alignItems:'center',marginBottom:12}}><div style={{textAlign:'center'}}><div style={{fontSize:28,fontWeight:700,color:scoreColor}}>{score}</div><div style={{fontSize:10,color:'#9fadbf',textTransform:'uppercase',letterSpacing:.06}}>obs score /100</div></div><div style={{flex:1}}><div className="score-bar"><div className="score-fill" style={{width:`${score}%`,background:scoreColor}}/></div></div></div>{findings.length===0?emptyRow('No observability gaps'):findings.map((f,i)=><div key={i} className="finding"><span className={`sev sev-${(f.severity||'low').toLowerCase()}`}>{f.severity||'low'}</span><div className="finding-body"><div className="finding-desc"><code>{f.kind||''}</code> — {f.description||''}</div><div className="finding-file">{f.file||''}{f.line?` · line ${f.line}`:''}</div>{f.suggestion&&<div style={{fontSize:11,color:'#0c7c4b',marginTop:4}}><i className="ti ti-bulb" style={{marginRight:3}}/>{f.suggestion}</div>}{getCodeSnippetJSX(f.file,f.line,snipCache,3)}</div></div>)}</div>
+    return <div><div style={{display:'flex',gap:16,alignItems:'center',marginBottom:12}}><div style={{textAlign:'center'}}><div style={{fontSize:28,fontWeight:700,color:scoreColor}}>{score}</div><div style={{fontSize:10,color:'#9fadbf',textTransform:'uppercase',letterSpacing:.06}}>obs score /100</div></div><div style={{flex:1}}><div className="score-bar"><div className="score-fill" style={{width:`${score}%`,background:scoreColor}}/></div></div></div>{findings.length===0?emptyRow('No observability gaps'):findings.map((f,i)=><div key={i} className="finding"><span className={`sev sev-${(f.severity||'low').toLowerCase()}`}>{f.severity||'low'}</span><div className="finding-body"><div className="finding-desc"><code>{f.kind||''}</code> — {f.description||''}<UnvBadge f={f}/></div><div className="finding-file">{f.file||''}{f.line?` · line ${f.line}`:''}</div>{f.suggestion&&<div style={{fontSize:11,color:'#0c7c4b',marginTop:4}}><i className="ti ti-bulb" style={{marginRight:3}}/>{f.suggestion}</div>}{getCodeSnippetJSX(f.file,f.line,snipCache,3)}</div></div>)}</div>
   })()
   return <div className="card">{agentSection('ti-tool','#6366f1','Maintainability',maintBody)}{agentSection('ti-license','#10b981','License Compliance',licenseBody)}{agentSection('ti-eye','#0ea5e9','Observability',obsBody)}</div>
 }

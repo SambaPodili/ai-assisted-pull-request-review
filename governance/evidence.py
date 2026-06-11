@@ -68,3 +68,54 @@ def filter_unsubstantiated(report: AnalysisReport, changed_files: set[str]) -> i
         report.suppressed_notes = (report.suppressed_notes or []) + [note]
         log.info("[%s] %s", report.request_id, note)
     return flagged
+
+
+def _flag_list(findings, changed: set[str], changed_bases: set[str]) -> int:
+    """Mark each finding.unverified if its cited file isn't in the diff. Returns flagged count."""
+    flagged = 0
+    for f in findings or []:
+        if not hasattr(f, "unverified"):
+            continue
+        ok = _matches(getattr(f, "file_path", ""), changed, changed_bases)
+        f.unverified = not ok
+        if not ok:
+            flagged += 1
+    return flagged
+
+
+def filter_all_unsubstantiated(report: AnalysisReport, changed_files: set[str]) -> int:
+    """Generalised hallucination guard across EVERY agent's findings.
+
+    The same principle as the security guard, applied framework-wide: any finding
+    that cites a file not present in this diff is almost certainly a model
+    hallucination. We flag (never delete) it as `unverified` so reviewers still see
+    it but know its location couldn't be confirmed. Findings with no path are kept
+    (they may be repo-level observations). Returns total flagged across all agents.
+    """
+    if not changed_files:
+        return 0
+    changed = {c.strip().lstrip("./").lower() for c in changed_files if c}
+    changed_bases = {c.rsplit("/", 1)[-1] for c in changed}
+
+    total = 0
+    targets = [
+        ("code_analysis",      "findings"),
+        ("ast_analysis",       "findings"),
+        ("iac_analysis",       "findings"),
+        ("performance_impact", "findings"),
+        ("data_privacy",       "pii_findings"),
+        ("maintainability",    "issues"),
+        ("observability",      "findings"),
+    ]
+    for res_attr, find_attr in targets:
+        res = getattr(report, res_attr, None)
+        if res is None:
+            continue
+        total += _flag_list(getattr(res, find_attr, None), changed, changed_bases)
+
+    if total:
+        note = (f"{total} cross-agent finding(s) cite files not in this diff — kept and "
+                "shown, but marked 'location unverified'.")
+        report.suppressed_notes = (report.suppressed_notes or []) + [note]
+        log.info("[%s] %s", report.request_id, note)
+    return total

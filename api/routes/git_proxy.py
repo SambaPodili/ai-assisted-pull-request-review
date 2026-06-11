@@ -60,6 +60,42 @@ def _get_text(url: str, headers: dict) -> str:
     r.raise_for_status()
     return r.text
 
+def _bb_server_whoami(cfg: GitConfig, h: dict) -> str:
+    """Discover the authenticated user's slug on Bitbucket Server / Data Center.
+
+    There is no `/user` (current user) REST endpoint, so with token-only auth
+    (no username typed in the UI) we identify the caller via:
+      1. The `X-AUSERNAME` response header — set on every authenticated REST
+         response (may be URL-encoded).
+      2. The `/plugins/servlet/applinks/whoami` servlet — returns the plain
+         username slug.
+    Returns "" if neither works (e.g. anonymous access).
+    """
+    from urllib.parse import unquote
+    root = cfg.base_url.rstrip("/")
+
+    def _fetch(url: str):
+        try:
+            return requests.get(url, headers=h, timeout=TIMEOUT, verify=True)
+        except requests.exceptions.SSLError:
+            return requests.get(url, headers=h, timeout=TIMEOUT, verify=False)
+        except requests.exceptions.RequestException:
+            return None
+
+    r = _fetch(f"{root}/rest/api/1.0/application-properties")
+    if r is not None:
+        who = unquote(r.headers.get("X-AUSERNAME", "") or "").strip()
+        if who and who.lower() != "anonymous":
+            return who
+
+    r = _fetch(f"{root}/plugins/servlet/applinks/whoami")
+    if r is not None and r.status_code == 200:
+        who = (r.text or "").strip().splitlines()[0].strip() if (r.text or "").strip() else ""
+        if who and who.lower() != "anonymous" and len(who) <= 100 and "<" not in who:
+            return who
+    return ""
+
+
 @router.post("/verify")
 async def verify_credentials(cfg: GitConfig):
     h = _headers(cfg)
@@ -68,13 +104,16 @@ async def verify_credentials(cfg: GitConfig):
         return {"ok": True, "login": d.get("login",""), "name": d.get("name",""), "avatar": d.get("avatar_url","")}
     elif cfg.provider == "bitbucket_server":
         base = _bb_server_base(cfg)
-        login = cfg.username or ""
-        name  = cfg.username or ""
+        login = (cfg.username or "").strip()
+        # Token-only auth: no username typed — ask the server who we are.
+        if not login:
+            login = _bb_server_whoami(cfg, h)
+        name  = login
         email = ""
         # Fetch the real user profile so we show the display name, not the slug.
         try:
-            if cfg.username:
-                d = _get(f"{base}/users/{cfg.username}", h)
+            if login:
+                d = _get(f"{base}/users/{login}", h)
                 login = d.get("slug") or d.get("name") or login
                 name  = d.get("displayName") or d.get("name") or login
                 email = d.get("emailAddress", "")

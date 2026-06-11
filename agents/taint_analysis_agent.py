@@ -47,6 +47,11 @@ _SOURCES: list[tuple[re.Pattern, str]] = [
     (re.compile(r'(\w+)\s*=\s*request\.(?:getParameter|get|args\.get|form\.get|json\.get|data\.get)\s*\('),  'request_param'),
     (re.compile(r'(\w+)\s*=\s*req\.(?:body|params|query|headers)\b'),                                        'request_param'),
     (re.compile(r'(\w+)\s*=\s*@(?:PathVariable|RequestParam|RequestBody|RequestHeader)'),                    'request_param'),
+    # Java/Spring controller signatures: @RequestParam String q / @PathVariable("id") Long id —
+    # the parameter NAME is what's tainted, declared in the method signature (no assignment).
+    (re.compile(r'@(?:PathVariable|RequestParam|RequestBody|RequestHeader)(?:\([^)]*\))?\s+(?:final\s+)?(?:[A-Z]\w*(?:<[^>]+>)?\s+)?(\w+)\s*[,)]'), 'request_param'),
+    # Servlet API with a typed declaration: String q = request.getParameter("q")
+    (re.compile(r'(\w+)\s*=\s*\w*[rR]equest\.getParameter\s*\('),                                            'request_param'),
 
     # Environment / config
     (re.compile(r'(\w+)\s*=\s*(?:os\.environ(?:\.get)?\s*[\[(]|os\.getenv\s*\(|System\.getenv\s*\()'),  'env_var'),
@@ -71,6 +76,9 @@ _SINKS: list[tuple[re.Pattern, str, str, RiskLevel]] = [
     # SQL injection sinks — match the function call; variable detection done separately
     (re.compile(r'(?:execute|executeQuery|executeUpdate|createQuery|nativeQuery|rawQuery|cursor\.execute)\s*\([^)]*\+'), 'sql_query', 'CWE-89', RiskLevel.CRITICAL),
     (re.compile(r'(?:db|conn|session)\.(?:query|execute|run)\s*\([^)]*\+'),                                             'sql_query', 'CWE-89', RiskLevel.CRITICAL),
+    # Java: jdbcTemplate.query(sql, …) / stmt.executeQuery(sql) — the SQL is built on a
+    # PRIOR line (typed declaration + concat), so no '+' appears inside the call itself.
+    (re.compile(r'(?:\w*[jJ]dbc\w*|\w*[tT]emplate|stmt|statement|entityManager|em)\.(?:query\w*|execute\w*|update|batchUpdate)\s*\('),  'sql_query', 'CWE-89', RiskLevel.CRITICAL),
     (re.compile(r'f["\'].*(?:SELECT|INSERT|UPDATE|DELETE|WHERE).*\{(\w+)\}'),                                           'sql_query', 'CWE-89', RiskLevel.CRITICAL),
 
     # Command injection sinks
@@ -96,9 +104,10 @@ _SINKS: list[tuple[re.Pattern, str, str, RiskLevel]] = [
 
 # ── Propagation pattern ───────────────────────────────────────────────────────
 
-# Matches: target_var = ... (assignment pattern)
-# Use lookahead so RHS isn't consumed
-_PROPAGATION = re.compile(r'(\w+)\s*=\s*(?!=)')
+# Matches: target_var = ... (assignment pattern), including Java/TS typed
+# declarations like `String sql = ...` / `final List<Row> rows = ...`.
+# Use lookahead so RHS isn't consumed.
+_PROPAGATION = re.compile(r'(?:(?:final\s+|const\s+|let\s+|var\s+)?[A-Za-z_][\w.<>\[\],\s]*?\s+)?(\w+)\s*=\s*(?!=)')
 
 
 class TaintAnalysisAgent(BaseAgent[TaintAnalysisResult]):

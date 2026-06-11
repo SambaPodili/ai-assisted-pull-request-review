@@ -442,8 +442,10 @@ class TestPersistence:
 
 class TestGroundTruthCatalogue:
 
-    def test_golden_cases_has_eight_entries(self):
-        assert len(GOLDEN_CASES) == 8
+    def test_golden_cases_minimum_corpus_size(self):
+        # 8 original + 4 Java cases (security, performance, taint, maintainability).
+        # Growing the corpus is fine; shrinking it silently is not.
+        assert len(GOLDEN_CASES) >= 12
 
     def test_all_case_ids_are_unique(self):
         ids = [c.case_id for c in GOLDEN_CASES]

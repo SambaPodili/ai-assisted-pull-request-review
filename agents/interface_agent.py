@@ -246,17 +246,29 @@ def _detect_serialization_changes(request: AnalysisRequest, cap: int = 20) -> li
     return notes
 
 
+# OpenAPI structural keywords — spec scaffolding, not contract fields.
+_OPENAPI_STRUCTURAL = {
+    "get", "post", "put", "delete", "patch", "head", "options", "trace",
+    "summary", "description", "operationid", "parameters", "responses",
+    "requestbody", "tags", "deprecated", "security", "servers", "content",
+    "schema", "name", "in", "required",
+}
+
+
 # ── Structural parsers ────────────────────────────────────────────────────────
 
 def _parse_openapi_diff(diff: str, file_path: str) -> list[ContractBreak]:
     breaks: list[ContractBreak] = []
+    in_removed_path = False
     for line in diff.splitlines():
         if not line.startswith("-") or line.startswith("---"):
+            in_removed_path = False
             continue
         content = line[1:].strip()
 
         # Removed API path
         if re.match(r"/([\w{}/.-]+):", content):
+            in_removed_path = True
             breaks.append(ContractBreak(
                 interface_type="REST",
                 path=f"{file_path}: {content.rstrip(':')}",
@@ -265,6 +277,12 @@ def _parse_openapi_diff(diff: str, file_path: str) -> list[ContractBreak]:
             ))
         # Removed field from schema object (indented property key)
         elif re.match(r"[a-zA-Z_][a-zA-Z0-9_]*:", content) and not content.startswith("type:"):
+            key = content.split(":")[0].lower()
+            # Children of an already-reported removed path, and OpenAPI structural
+            # keywords (verbs / metadata), are not contract fields — reporting them
+            # individually is pure noise on top of the path-removal finding.
+            if in_removed_path or key in _OPENAPI_STRUCTURAL:
+                continue
             breaks.append(ContractBreak(
                 interface_type="REST",
                 path=f"{file_path}: field '{content.split(':')[0]}'",

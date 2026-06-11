@@ -151,6 +151,7 @@ class CodeFinding(BaseModel):
     category:    str       # complexity | smell | logic | dead_code | anti_pattern
     description: str
     suggestion:  str = ""
+    unverified:  bool = False   # set by the evidence guard if file isn't in the diff
 
 
 class CodeAnalysisResult(AgentResultBase):
@@ -283,6 +284,25 @@ class RemediationResult(AgentResultBase):
     executive_summary:    str = ""
 
 
+class CorrelatedIssue(BaseModel):
+    """One deduplicated, ranked issue — possibly corroborated by several agents.
+
+    Built in governance/correlation.py from all agents' findings: overlapping
+    findings on the same location merge into one issue, agreement across agents
+    raises confidence, and `unverified` locations are penalised in ranking.
+    """
+    title:        str
+    file_path:    str  = ""
+    line:         int  = 0
+    severity:     str  = "medium"        # worst severity across corroborating findings
+    confidence:   str  = "medium"        # high | medium | low
+    score:        float = 0.0            # ranking score (higher = more important)
+    agents:       list[str] = []         # corroborating agents, e.g. ["security","taint_analysis"]
+    categories:   list[str] = []         # cwe / kind / category labels from sources
+    descriptions: list[str] = []         # one description per source finding
+    unverified:   bool = False           # any source finding had an unverified location
+
+
 class ConsumerImpact(BaseModel):
     """A downstream call-site that a breaking change will affect, with failure mode."""
     change:        str  = ""      # what changed (endpoint/field/symbol)
@@ -323,6 +343,7 @@ class ASTFinding(BaseModel):
     severity:     RiskLevel
     description:  str
     suggestion:   str = ""
+    unverified:   bool = False
 
 class FunctionProfile(BaseModel):
     name:           str
@@ -380,6 +401,7 @@ class IaCFinding(BaseModel):
     description: str
     cis_ref:    str = "" # CIS benchmark reference
     fix:        str = ""
+    unverified: bool = False
 
 class IaCAnalysisResult(AgentResultBase):
     findings:          list[IaCFinding] = []
@@ -492,6 +514,7 @@ class PerformanceFinding(BaseModel):
     file_path:   str  = ""
     line:        int  = 0
     suggestion:  str  = ""
+    unverified:  bool = False
 
 class PerformanceImpactResult(AgentResultBase):
     findings:                  list[PerformanceFinding] = []
@@ -512,6 +535,7 @@ class PIIFinding(BaseModel):
     is_logged:    bool = False
     is_encrypted: bool = False
     risk_level:   str  = "medium"
+    unverified:   bool = False
 
 class DataPrivacyResult(AgentResultBase):
     pii_findings:        list[PIIFinding] = []
@@ -531,6 +555,7 @@ class MaintainabilityIssue(BaseModel):
     file_path:   str  = ""
     line:        int  = 0
     suggestion:  str  = ""
+    unverified:  bool = False
 
 class MaintainabilityResult(AgentResultBase):
     issues:               list[MaintainabilityIssue] = []
@@ -568,6 +593,7 @@ class ObservabilityFinding(BaseModel):
     file_path:   str  = ""
     line:        int  = 0
     suggestion:  str  = ""
+    unverified:  bool = False
 
 class ObservabilityResult(AgentResultBase):
     findings:             list[ObservabilityFinding] = []
@@ -645,6 +671,7 @@ class AnalysisReport(BaseModel):
     # (agent, category) a false positive for this repo (transparency, not hiding).
     suppressed_count:        int = 0
     suppressed_notes:        list[str] = []
+    top_issues:              list[CorrelatedIssue] = []
 
     # Compliance mapping (OWASP Top 10 / PCI-DSS / CWE Top 25) — pass/fail per item.
     compliance:              dict = {}

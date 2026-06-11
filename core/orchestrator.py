@@ -247,7 +247,7 @@ class ImpactAnalysisOrchestrator:
         self._record_advanced_usage(report, p1b)
 
         if self.phase < 2:
-            return self._finalize(report, budget)
+            return self._finalize(report, budget, {h.file_path for h in request.hunks})
 
         # ── Phase 2: dependency + test_coverage + interface (parallel) ────────
         p2 = self._run_parallel({
@@ -269,14 +269,14 @@ class ImpactAnalysisOrchestrator:
         self._record_single(report, report.risk, AgentName.RISK)
 
         if self.phase < 3:
-            return self._finalize(report, budget)
+            return self._finalize(report, budget, {h.file_path for h in request.hunks})
 
         # ── Phase 3: remediation (always last) ───────────────────────────────
         rem_ctx = build_full_report_context(report)
         report.remediation = self._rem.run(request, budget, rem_ctx)
         self._record_single(report, report.remediation, AgentName.REMEDIATION)
 
-        return self._finalize(report, budget)
+        return self._finalize(report, budget, {h.file_path for h in request.hunks})
 
     # ═════════════════════════════════════════════════════════════════════════
     #  LangGraph pipeline — complete implementation with all agents
@@ -580,7 +580,7 @@ class ImpactAnalysisOrchestrator:
                     duration_s=getattr(result, "duration_s", 0.0),
                 ))
 
-        return self._finalize(report, budget)
+        return self._finalize(report, budget, {h.file_path for h in request.hunks})
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -689,9 +689,20 @@ class ImpactAnalysisOrchestrator:
                     results[name] = fb
         return results
 
-    def _finalize(self, report: AnalysisReport, budget: TokenBudgetManager) -> AnalysisReport:
+    def _finalize(self, report: AnalysisReport, budget: TokenBudgetManager,
+                  changed_files: set[str] | None = None) -> AnalysisReport:
         summary = budget.summary()
         report.token_budget = summary["total_allocated"]
+
+        # ── Generalised evidence guard: flag any agent finding (code, AST, perf,
+        # privacy, IaC, maintainability, observability) that cites a file not in
+        # this diff — almost always a hallucination. Flagged, never deleted.
+        try:
+            from governance.evidence import filter_all_unsubstantiated
+            if changed_files:
+                filter_all_unsubstantiated(report, changed_files)
+        except Exception as exc:
+            log.debug("[%s] Cross-agent evidence guard skipped: %s", report.request_id, exc)
 
         # ── Auto-suppress known false positives (reviewer feedback loop) ─────
         # Runs BEFORE the gate so a repeatedly-dismissed check can't block merges.

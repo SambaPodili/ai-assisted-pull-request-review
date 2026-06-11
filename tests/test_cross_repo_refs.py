@@ -84,3 +84,66 @@ def test_xref_clone_fallback_when_search_empty(monkeypatch):
     d = r.json()
     assert d["backend"] == "clone_grep" and len(d["references"]) == 1
     assert d["references"][0]["repo"] == "billing"
+
+
+def test_bb_server_verify_with_token_only(monkeypatch):
+    """Token-only auth (no username typed) must still resolve and display the
+    user's name: discover the slug via X-AUSERNAME / whoami, then fetch profile."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    import api.routes.git_proxy as gp
+
+    class FakeResp:
+        def __init__(self, headers=None, text="", status_code=200):
+            self.headers = headers or {}
+            self.text = text
+            self.status_code = status_code
+
+    # X-AUSERNAME header path (URL-encoded slug)
+    monkeypatch.setattr(gp.requests, "get",
+        lambda url, **kw: FakeResp(headers={"X-AUSERNAME": "unc"}) )
+    monkeypatch.setattr(gp, "_get",
+        lambda url, h, params=None: {"slug": "unc", "name": "unc",
+                                     "displayName": "Sa", "emailAddress": "Sa@uobgroup.com"})
+    app = FastAPI(); app.include_router(gp.router)
+    r = TestClient(app).post("/api/v1/git/verify", json={
+        "provider": "bitbucket_server", "base_url": "https://bb.x.com",
+        "auth_mode": "token", "token": "TKN"})
+    d = r.json()
+    assert d["ok"] is True
+    assert d["name"] == "Sa" and d["display_name"] == "Sa"
+    assert d["login"] == "unc"
+
+
+def test_bb_server_whoami_servlet_fallback(monkeypatch):
+    """When X-AUSERNAME is absent, the whoami servlet's plain-text slug is used."""
+    import api.routes.git_proxy as gp
+
+    class FakeResp:
+        def __init__(self, headers=None, text="", status_code=200):
+            self.headers = headers or {}
+            self.text = text
+            self.status_code = status_code
+
+    calls = []
+    def fake_get(url, **kw):
+        calls.append(url)
+        if "application-properties" in url:
+            return FakeResp(headers={})              # no X-AUSERNAME
+        return FakeResp(text="unc\n")                 # whoami servlet
+    monkeypatch.setattr(gp.requests, "get", fake_get)
+    cfg = gp.GitConfig(provider="bitbucket_server", base_url="https://bb.x.com", token="T")
+    assert gp._bb_server_whoami(cfg, {}) == "unc"
+    assert any("whoami" in u for u in calls)
+
+
+def test_bb_server_whoami_anonymous_returns_empty(monkeypatch):
+    import api.routes.git_proxy as gp
+
+    class FakeResp:
+        def __init__(self, headers=None, text="", status_code=200):
+            self.headers = headers or {}; self.text = text; self.status_code = status_code
+    monkeypatch.setattr(gp.requests, "get",
+        lambda url, **kw: FakeResp(headers={"X-AUSERNAME": "anonymous"}, text="anonymous"))
+    cfg = gp.GitConfig(provider="bitbucket_server", base_url="https://bb.x.com", token="T")
+    assert gp._bb_server_whoami(cfg, {}) == ""

@@ -36,6 +36,10 @@ _CASE_MAP: dict[str, tuple[str | None, str, str]] = {
     "high_complexity":  ("ast_analysis",    "src/payments/processor.py",           "python"),
     "taint_flow":       ("taint_analysis",  "src/api/search.py",                   "python"),
     "clean_refactor":   (None,              "src/payments/formatter.py",           "python"),
+    "java_sql_injection":      ("security",           "src/main/java/dao/AccountDao.java",      "java"),
+    "java_n_plus_1":           ("performance_impact", "src/main/java/svc/OrderService.java",    "java"),
+    "java_taint_flow":         ("taint_analysis",     "src/main/java/api/SearchController.java", "java"),
+    "java_swallowed_exception": ("maintainability",   "src/main/java/svc/FeeService.java",      "java"),
 }
 
 # For the clean-refactor case, run these agents to test for false positives
@@ -85,6 +89,12 @@ def _run_agent(agent_name: str, req: Any) -> Any:
     if agent_name == "taint_analysis":
         from agents.taint_analysis_agent import TaintAnalysisAgent
         return TaintAnalysisAgent().fallback_result(req)
+    if agent_name == "performance_impact":
+        from agents.performance_impact_agent import PerformanceImpactAgent
+        return PerformanceImpactAgent().fallback_result(req)
+    if agent_name == "maintainability":
+        from agents.maintainability_agent import MaintainabilityAgent
+        return MaintainabilityAgent().fallback_result(req)
     return None
 
 

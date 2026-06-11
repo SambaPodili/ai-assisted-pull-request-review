@@ -195,6 +195,7 @@ class SecretsEntropyAgent(BaseAgent[SecretsEntropyResult]):
             src_line = src_map[line_no - 1] if line_no - 1 < len(src_map) else line_no
 
             # ── Layer 1: Known key prefixes ───────────────────────────────────
+            prefix_hits: list[str] = []   # values already reported on this line
             for pattern, description, severity in _KNOWN_PREFIXES:
                 for m in re.finditer(pattern, content):
                     matched = m.group()
@@ -211,6 +212,7 @@ class SecretsEntropyAgent(BaseAgent[SecretsEntropyResult]):
                         variable=_extract_variable(content),
                     ))
                     known_prefix_count += 1
+                    prefix_hits.append(matched)
 
             # ── Layer 2: Shannon entropy on string literals ───────────────────
             for m in _STRING_LITERAL.finditer(content):
@@ -218,6 +220,10 @@ class SecretsEntropyAgent(BaseAgent[SecretsEntropyResult]):
                 if len(s) < MIN_SECRET_LENGTH:
                     continue
                 if _SAFE_PATTERNS.search(s):
+                    continue
+                # Already reported by Layer 1 (known prefix) — a second
+                # high_entropy finding for the same value is duplicate noise.
+                if any(p in s or s in p for p in prefix_hits):
                     continue
                 e = shannon_entropy(s)
                 if e < ENTROPY_THRESHOLD:
