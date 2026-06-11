@@ -250,6 +250,7 @@ export function normalizeReport(r) {
     ai_proposed_gate:          r.ai_proposed_gate || '',
     capabilities_affected:     r.capabilities_affected || [],
     consumer_impacts:          r.consumer_impacts || [],
+    top_issues:                r.top_issues || [],
     suppressed_count:          r.suppressed_count || 0,
     suppressed_notes:          r.suppressed_notes || [],
     compliance:                r.compliance || null,

@@ -43,6 +43,23 @@ def _is_critical(sev) -> bool:
     return str(s).lower() == "critical"
 
 
+def _is_confirmed_high(report, finding) -> bool:
+    """True when a high/critical security finding is CONFIRMED: its location maps
+    to a correlated Top Issue with high confidence (deterministic detection rule
+    or ≥2 agents agreeing on the same spot). Used by the optional
+    GATE_REQUIRE_CONFIRMED_HIGHS mode to keep single-source uncorroborated LLM
+    findings from holding a merge (they remain visible in the report)."""
+    fp = (getattr(finding, "file_path", "") or "").replace("\\", "/").strip().lstrip("./").lower()
+    if not fp:
+        return False
+    for issue in getattr(report, "top_issues", None) or []:
+        ip = (issue.file_path or "").lower()
+        if ip and (ip == fp or ip.endswith(fp) or fp.endswith(ip)):
+            if "security" in (issue.agents or []) and issue.confidence == "high":
+                return True
+    return False
+
+
 def _has_content(f) -> bool:
     """A finding counts toward the gate only if it carries real content AND is
     not 'unverified' (cites a file not in the diff). Guards against phantom
@@ -145,7 +162,13 @@ def evaluate_policy(report: AnalysisReport, settings=None) -> PolicyResult:
     if sec:
         high_sec = [f for f in (sec.findings or [])
                     if _is_high_or_critical(getattr(f, "severity", "")) and _has_content(f)]
-        if high_sec and not block_reasons:
+        if high_sec and getattr(cfg, "gate_require_confirmed_highs", False):
+            # Confidence-weighted mode: only CONFIRMED highs hold the merge
+            # (verified location + high confidence per the correlation engine).
+            confirmed = [f for f in high_sec if _is_confirmed_high(report, f)]
+            if confirmed and not block_reasons:
+                hold_reasons.append(f"{len(confirmed)} confirmed high-severity security finding(s)")
+        elif high_sec and not block_reasons:
             hold_reasons.append(f"{len(high_sec)} high-severity security finding(s)")
 
     iface = report.interface

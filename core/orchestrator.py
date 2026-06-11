@@ -637,16 +637,39 @@ class ImpactAnalysisOrchestrator:
         if request.model_config_:
             base["model_config"] = request.model_config_
 
+        # Function-context expansion: when a local checkout is available, give the
+        # deep-review LLM agents the ENCLOSING FUNCTIONS around each change, not
+        # just ±3 diff lines — review accuracy follows reviewer-grade context.
+        fn_ctx_block = ""
+        try:
+            from config.settings import get_settings
+            repo_path = getattr(get_settings(), "repo_local_path", "")
+            if repo_path and request.hunks:
+                from ingestion.context_expander import expand_function_context, format_context_block
+                fn_ctx_block = format_context_block(expand_function_context(request.hunks, repo_path))
+                if fn_ctx_block:
+                    log.info("[%s] Function-context expansion: %d file(s) enriched",
+                             request.request_id, fn_ctx_block.count("--- "))
+        except Exception as exc:
+            log.debug("[%s] Function-context expansion skipped: %s", request.request_id, exc)
+
         if self._ctx_engine:
             per_agent = self._ctx_engine.build_all(request)
             if base:
                 for k in per_agent:
                     per_agent[k].update(base)
+            if fn_ctx_block:
+                for agent in (AgentName.CODE_ANALYSIS, AgentName.SECURITY):
+                    per_agent.setdefault(agent, {})["function_context"] = fn_ctx_block
             return per_agent
 
-        if base:
+        if base or fn_ctx_block:
             from core.models import AgentName as AN
-            return {agent: dict(base) for agent in AN}
+            per_agent = {agent: dict(base) for agent in AN}
+            if fn_ctx_block:
+                per_agent[AN.CODE_ANALYSIS]["function_context"] = fn_ctx_block
+                per_agent[AN.SECURITY]["function_context"] = fn_ctx_block
+            return per_agent
         return {}
 
     def _run_parallel(
@@ -712,6 +735,15 @@ class ImpactAnalysisOrchestrator:
             apply_suppressions(report, report.repo_url, get_feedback_store())
         except Exception as exc:
             log.debug("[%s] Suppression skipped: %s", report.request_id, exc)
+
+        # ── Cross-agent correlation: dedupe + corroborate + rank into Top Issues ─
+        # Runs after the evidence guard (unverified flags set) and suppression, so
+        # the ranked list reflects only what the reviewer should actually act on.
+        try:
+            from governance.correlation import correlate_findings
+            report.top_issues = correlate_findings(report)
+        except Exception as exc:
+            log.debug("[%s] Correlation skipped: %s", report.request_id, exc)
 
         # ── Derive blast radius from real impact signals when no service graph ──
         # Without a configured dependency graph the graph-based score is 0, which

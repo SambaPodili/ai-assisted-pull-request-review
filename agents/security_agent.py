@@ -136,12 +136,14 @@ class SecurityReviewAgent(BaseAgent[SecurityResult]):
             lang_block = "Language-specific risks to check:\n" + "\n".join(lang_concerns) + "\n\n"
 
         diff_block = format_hunks_for_prompt(request.hunks, max_chars_per_hunk=3000, focus="security")
+        fn_ctx = context.get("function_context", "")
         return (
             f"Repository: {request.repo_url}\n"
             f"Compliance scope: {', '.join(frameworks)}\n"
             f"Languages detected: {', '.join(sorted(seen_langs))}\n\n"
             f"{lang_block}"
             f"DIFF:\n{diff_block}"
+            + (f"\n\n{fn_ctx}" if fn_ctx else "")
         )
 
     def fallback_result(self, request: AnalysisRequest) -> SecurityResult:

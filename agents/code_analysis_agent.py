@@ -37,11 +37,13 @@ class CodeAnalysisAgent(BaseAgent[CodeAnalysisResult]):
     def build_user_prompt(self, request: AnalysisRequest, context: dict[str, Any]) -> str:
         languages = sorted({lang_meta(h.language).display for h in request.hunks})
         diff_block = format_hunks_for_prompt(request.hunks, max_chars_per_hunk=2000, focus="general")
+        fn_ctx = context.get("function_context", "")
         return (
             f"Repository: {request.repo_url}\n"
             f"Comparison: {request.source_ref} → {request.target_ref}\n"
             f"Languages: {', '.join(languages)}\n\n"
             f"DIFF:\n{diff_block}"
+            + (f"\n\n{fn_ctx}" if fn_ctx else "")
         )
 
     def fallback_result(self, request: AnalysisRequest) -> CodeAnalysisResult:

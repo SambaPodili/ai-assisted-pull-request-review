@@ -185,21 +185,37 @@ class ASTAnalysisAgent(BaseAgent[ASTAnalysisResult]):
                     except SyntaxError:
                         pass
 
-        # Non-Python: use regex-based AST-lite for Java, TypeScript, Go
+        # Non-Python: tree-sitter (real parse, accurate per-function McCabe) when
+        # available; the regex AST-lite still supplies pattern checks (null
+        # comparisons, empty catch) but its line-level complexity guess is
+        # skipped for files tree-sitter measured properly.
+        from ingestion import ts_parser
         for hunk in request.hunks:
             ext = _get_ext(hunk.file_path)
-            if ext in ('.java', '.ts', '.tsx', '.js', '.jsx', '.go', '.kt'):
-                findings.extend(_ast_lite_scan(hunk))
+            if ext in ('.java', '.ts', '.tsx', '.js', '.jsx', '.go', '.kt', '.cs'):
+                ts_handled = ts_parser.supported(hunk.language or ext)
+                if ts_handled:
+                    findings.extend(_treesitter_findings(hunk))
+                findings.extend(_ast_lite_scan(hunk, skip_complexity=ts_handled))
 
         return findings
 
     # ── Call graph builder ────────────────────────────────────────────────────
 
     def _build_call_graph(self, request: AnalysisRequest) -> list[FunctionProfile]:
+        from ingestion import ts_parser
         profiles: list[FunctionProfile] = []
         for hunk in request.hunks:
             if hunk.file_path.endswith(".py"):
                 profiles.extend(_python_call_graph(hunk))
+            elif ts_parser.supported(hunk.language or _get_ext(hunk.file_path)):
+                # Real parse → accurate cyclomatic per function (drives max_complexity)
+                src = _hunk_source(hunk)
+                for m in ts_parser.analyze_functions(src, hunk.language or _get_ext(hunk.file_path)):
+                    profiles.append(FunctionProfile(
+                        name=m.name, file_path=hunk.file_path, line=m.start_line,
+                        cyclomatic=m.complexity, param_count=m.param_count,
+                    ))
             else:
                 profiles.extend(_generic_call_graph(hunk))
         return profiles
@@ -320,8 +336,68 @@ _TS_NULLISH    = re.compile(r'(\w+)\s*\?\.\s*\w+')  # optional chaining
 _TS_ANY        = re.compile(r':\s*any\b')            # TypeScript any type
 
 
-def _ast_lite_scan(hunk) -> list[ASTFinding]:
-    """Regex-based AST-lite for non-Python languages."""
+def _hunk_source(hunk) -> str:
+    """Reconstruct the post-change source fragment from a diff hunk: keep added
+    and context lines, drop removed lines and diff headers. Tree-sitter is
+    error-tolerant, so this fragment parses well enough for function metrics."""
+    out = []
+    for raw in hunk.content.splitlines():
+        if raw.startswith(("+++", "---", "@@")):
+            continue
+        if raw.startswith("+"):
+            out.append(raw[1:])
+        elif raw.startswith("-"):
+            continue
+        elif raw.startswith(" "):
+            out.append(raw[1:])
+        else:
+            out.append(raw)
+    return "\n".join(out)
+
+
+# Same thresholds as the Python AST visitor, so complexity findings are
+# calibrated identically across languages.
+_TS_CX_HIGH   = 15
+_TS_CX_MEDIUM = 8
+_TS_NEST_DEEP = 5
+
+
+def _treesitter_findings(hunk) -> list[ASTFinding]:
+    """Accurate per-function findings via tree-sitter (Java/Kotlin/C#/JS/TS/Go)."""
+    from ingestion import ts_parser
+    src = _hunk_source(hunk)
+    findings: list[ASTFinding] = []
+    for m in ts_parser.analyze_functions(src, hunk.language or _get_ext(hunk.file_path)):
+        if m.complexity > _TS_CX_HIGH:
+            findings.append(ASTFinding(
+                file_path=hunk.file_path, line=m.start_line, function=f"{m.name}()",
+                kind="complexity_spike", severity=RiskLevel.HIGH,
+                description=f"Cyclomatic complexity = {m.complexity} (threshold: {_TS_CX_HIGH}). "
+                            f"High risk of defects in banking logic.",
+                suggestion="Split into smaller single-responsibility methods.",
+            ))
+        elif m.complexity > _TS_CX_MEDIUM:
+            findings.append(ASTFinding(
+                file_path=hunk.file_path, line=m.start_line, function=f"{m.name}()",
+                kind="complexity_spike", severity=RiskLevel.MEDIUM,
+                description=f"Cyclomatic complexity = {m.complexity} — moderately complex.",
+            ))
+        if m.max_nesting >= _TS_NEST_DEEP:
+            findings.append(ASTFinding(
+                file_path=hunk.file_path, line=m.start_line, function=f"{m.name}()",
+                kind="complexity_spike", severity=RiskLevel.MEDIUM,
+                description=f"Nesting depth {m.max_nesting} in {m.name}() — hard to reason about.",
+                suggestion="Use early returns / extract helpers to flatten the logic.",
+            ))
+    return findings
+
+
+def _ast_lite_scan(hunk, skip_complexity: bool = False) -> list[ASTFinding]:
+    """Regex-based AST-lite for non-Python languages.
+
+    skip_complexity=True when tree-sitter already measured this file — the
+    line-level branch-density guess would only duplicate (worse) information.
+    """
     findings: list[ASTFinding] = []
     ext = _get_ext(hunk.file_path)
     lines = hunk.content.splitlines()
@@ -333,7 +409,7 @@ def _ast_lite_scan(hunk) -> list[ASTFinding]:
 
         if ext == '.java':
             # Complexity check
-            cx_hits = len(_JAVA_COMPLEXITY.findall(content))
+            cx_hits = 0 if skip_complexity else len(_JAVA_COMPLEXITY.findall(content))
             if cx_hits >= 4:
                 findings.append(ASTFinding(
                     file_path=hunk.file_path, line=i,

@@ -578,7 +578,52 @@ function SummaryTab({r, snipCache}) {
           <span><strong>{r.suppressed_count} finding(s) auto-suppressed</strong> — repeatedly marked false positive by reviewers for this repo. Hover for details.</span>
         </div>
       )}
+      <TopIssues r={r}/>
       {effectivePersona==='developer' ? <DeveloperView r={r} findings={findings} blockers={blockers} fixes={fixes} scenarios={scenarios} covDelta={covDelta}/> : <ReviewerView r={r} findings={findings}/>}
+    </div>
+  )
+}
+
+// Ranked, cross-agent-deduplicated "what must I look at" list. One row per real
+// issue: findings from several agents on the same location are merged, agreement
+// raises confidence, unverified locations are penalised in rank.
+function TopIssues({ r }) {
+  const issues = r.top_issues || []
+  if (!issues.length) return null
+  const sevC  = {critical:'#991b1b',high:'#b91c1c',medium:'#92400e',low:'#1e40af'}
+  const confC = {high:'#16a34a',medium:'#d97706',low:'#9ca3af'}
+  const agentLabel = a => (AGENT_META[a]?.label) || a.replace(/_/g,' ')
+  return (
+    <div className="card" style={{marginBottom:14}}>
+      <div className="section-heading"><i className="ti ti-target-arrow"/>Top issues to review ({issues.length})</div>
+      <div style={{fontSize:11.5,color:'#9fadbf',marginBottom:10}}>
+        Deduplicated across all agents and ranked by severity, cross-agent agreement and location confidence — start here.
+      </div>
+      {issues.map((it,i)=>(
+        <div key={i} className="finding" style={{alignItems:'flex-start',gap:10}}>
+          <span style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,color:'#9fadbf',minWidth:22,textAlign:'right',marginTop:2}}>{i+1}</span>
+          <span style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:10,textTransform:'uppercase',whiteSpace:'nowrap',flexShrink:0,marginTop:2,
+            background:`${sevC[it.severity]||'#7a8494'}1a`,color:sevC[it.severity]||'#7a8494',border:`1px solid ${sevC[it.severity]||'#7a8494'}55`}}>{it.severity}</span>
+          <div className="finding-body">
+            <div className="finding-desc">{it.title}{it.unverified && <UnvBadge f={it}/>}</div>
+            <div className="finding-file" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',marginTop:3}}>
+              {it.file_path && <span style={{fontFamily:'var(--mono)'}}>{it.file_path}{it.line?`:${it.line}`:''}</span>}
+              <span title={`Location confidence: ${it.confidence}`} style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:10,color:confC[it.confidence]||'#9ca3af',fontWeight:700}}>
+                <span style={{width:7,height:7,borderRadius:4,background:confC[it.confidence]||'#9ca3af',display:'inline-block'}}/>{it.confidence} confidence
+              </span>
+              {(it.agents||[]).map(a=>(
+                <span key={a} style={{fontSize:10,fontWeight:600,padding:'1px 7px',borderRadius:9,background:'#f0f4fa',color:'#3a4452',border:'1px solid #dde5f0'}}>{agentLabel(a)}</span>
+              ))}
+              {(it.agents||[]).length>1 && <span style={{fontSize:10,color:'#16a34a',fontWeight:700}}>✓ {(it.agents||[]).length} agents agree</span>}
+            </div>
+            {(it.descriptions||[]).length>1 && (
+              <div style={{fontSize:11,color:'#7a8494',marginTop:4,lineHeight:1.45}}>
+                {(it.descriptions||[]).slice(1,3).map((d,j)=><div key={j}>· {d}</div>)}
+              </div>
+            )}
+          </div>
+        </div>
+      ))}
     </div>
   )
 }
@@ -2549,6 +2594,20 @@ function ReviewSummaryPanel({ r, onClose }) {
       `**Risk:** ${(r.overall_risk||'').toUpperCase()}  |  **Score:** ${r.risk_score||0}/100  |  **Tokens:** ${(r.token_usage||0).toLocaleString()}`,
       '',`> ${r.rationale||''}`, '',
     ]
+    // Lead with the ranked, deduplicated Top Issues so reviewers see "what
+    // must I look at" first — per-agent sections follow as supporting detail.
+    const topIssues = (r.top_issues||[]).slice(0,5)
+    if (topIssues.length) {
+      const sevIcon = {critical:'🚨',high:'🔴',medium:'🟡',low:'🔵'}
+      lines.push('### 🎯 Top issues to review')
+      topIssues.forEach((it,i)=>{
+        const loc = it.file_path ? ` — \`${it.file_path}${it.line?':'+it.line:''}\`` : ''
+        const agree = (it.agents||[]).length>1 ? ` *(✓ ${it.agents.length} agents agree)*` : ''
+        const unv = it.unverified ? ' ⚠️ *location unverified*' : ''
+        lines.push(`${i+1}. ${sevIcon[it.severity]||'ℹ️'} **${(it.severity||'').toUpperCase()}** — ${it.title}${loc}${agree}${unv}`)
+      })
+      lines.push('')
+    }
     const push = (title, items, fmt) => {
       if (!items.length) return
       lines.push(`### ${title}`)

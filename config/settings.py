@@ -152,6 +152,12 @@ class Settings(BaseSettings):
     gate_coverage_hold_pct:  float = Field(default=-5.0,  alias="GATE_COVERAGE_HOLD_PCT")   # ≤ this → HOLD
     gate_coverage_block_pct: float = Field(default=-15.0, alias="GATE_COVERAGE_BLOCK_PCT")  # ≤ this → BLOCK
     gate_blast_radius_block: int   = Field(default=70,    alias="GATE_BLAST_RADIUS_BLOCK")  # > this → HOLD
+    # When true, the "high-severity security finding" HOLD only fires for
+    # CONFIRMED findings — location verified AND high confidence (deterministic
+    # rule or corroborated by ≥2 agents per the correlation engine). Single-source
+    # uncorroborated LLM highs still appear in the report but don't hold the merge.
+    # Default OFF: conservative banking posture (any verified high holds).
+    gate_require_confirmed_highs: bool = Field(default=False, alias="GATE_REQUIRE_CONFIRMED_HIGHS")
     capability_map_path:     str   = Field(default="config/capability_map.json", alias="CAPABILITY_MAP_PATH")
     feedback_db_path:        str   = Field(default="data/feedback.db", alias="FEEDBACK_DB_PATH")
 

@@ -213,6 +213,8 @@ async function icon(Comp, color = "#0E1A33", size = 256) {
     { text: " (temperature 0 — same diff, same verdict)     •     ", options: { color: C.muted } },
     { text: "Evidence-guarded", options: { bold: true, color: C.ink } },
     { text: " (findings cite file:line in the diff)     •     ", options: { color: C.muted } },
+    { text: "Correlated", options: { bold: true, color: C.ink } },
+    { text: " (cross-agent dedupe → ranked Top Issues)     •     ", options: { color: C.muted } },
     { text: "Self-improving", options: { bold: true, color: C.ink } },
     { text: " (reviewer feedback suppresses repeat false positives)", options: { color: C.muted } },
   ], { x: MX, y: 5.95, w: W - 2 * MX, h: 0.6, fontFace: BF, fontSize: 12, align: "center", margin: 0 });
@@ -254,7 +256,7 @@ async function icon(Comp, color = "#0E1A33", size = 256) {
   eyebrow(s, "Techniques & terminology", C.teal);
   title(s, "The analysis techniques, in plain English");
   const terms = [
-    [I.code, "AST Analysis", C.blue, "Reads the Abstract Syntax Tree to flag dead code, null-dereference risk, type confusion and complexity — without running the code."],
+    [I.code, "AST Analysis", C.blue, "Parses real syntax trees (tree-sitter: Java, Kotlin, C#, JS/TS, Go + Python) to measure exact complexity and flag dead code, null risk and type confusion — without running the code."],
     [I.server, "IaC Scanning", C.teal, "Checks infrastructure-as-code (Terraform, Kubernetes, Docker) for security misconfigurations before deploy."],
     [I.lock, "Entropy / Secrets", C.red, "Shannon-entropy scoring plus known key prefixes to catch hardcoded credentials, API keys and tokens."],
     [I.bug, "SCA — Composition Analysis", C.amber, "Scans third-party dependencies against the OSV database for known CVEs (vulnerable versions)."],
@@ -276,7 +278,7 @@ async function icon(Comp, color = "#0E1A33", size = 256) {
   s.addText([
     { text: "Also: ", options: { bold: true, color: C.ink } },
     { text: "Reference-impact", options: { bold: true, color: C.ink } }, { text: " (cross-repo call-site tracing)  ·  ", options: { color: C.muted } },
-    { text: "RAG context", options: { bold: true, color: C.ink } }, { text: " (embeddings ground each agent)  ·  ", options: { color: C.muted } },
+    { text: "Cross-agent correlation", options: { bold: true, color: C.ink } }, { text: " (agreement boosts confidence, dedupes to Top Issues)  ·  ", options: { color: C.muted } },
     { text: "Deterministic temp-0", options: { bold: true, color: C.ink } }, { text: " inference  ·  ", options: { color: C.muted } },
     { text: "Circuit breakers", options: { bold: true, color: C.ink } }, { text: " (auto-isolate a failing agent)", options: { color: C.muted } },
   ], { x: MX, y: 6.95, w: W - 2 * MX, h: 0.45, fontFace: BF, fontSize: 10.5, align: "center", margin: 0 });
@@ -302,7 +304,7 @@ async function icon(Comp, color = "#0E1A33", size = 256) {
   eyebrow(s, "Deep dive · Technique", C.blue);
   title(s, "AST Analysis — understanding code structure");
   leftCol(s, C.blue,
-    "The parser turns source into an Abstract Syntax Tree — a structured view of branches, calls and scopes that CIAA walks without executing the code.",
+    "Tree-sitter parses source into a real syntax tree (Java, Kotlin, C#, JS/TS, Go — plus Python via stdlib ast), which CIAA walks to measure exact complexity without executing the code.",
     ["Unreachable / dead code", "Null-dereference & none-type risk", "Type confusion / unsafe casts", "Complexity & deep-nesting hot-spots"],
     "Catches latent bugs a regex linter can't see, because it reasons over structure — not just text.");
   dpanel(s);
@@ -506,7 +508,7 @@ async function icon(Comp, color = "#0E1A33", size = 256) {
   s = mkSlide(); s.background = { color: C.navy };
   eyebrow(s, "Enterprise-grade", C.teal);
   s.addText("Production-ready, on-premises, and trustworthy", { x: MX, y: 0.85, w: W - 2 * MX, h: 0.8, fontFace: HF, fontSize: 28, bold: true, color: C.light, margin: 0 });
-  const bigstats = [["20+", "specialist agents"], ["519", "automated tests"], ["0", "temperature — deterministic"], ["5", "LLM providers supported"]];
+  const bigstats = [["20+", "specialist agents"], ["538", "automated tests"], ["0", "temperature — deterministic"], ["5", "LLM providers supported"]];
   const bw = (W - 2 * MX - 3 * 0.35) / 4;
   bigstats.forEach(([n, l], i) => {
     const x = MX + i * (bw + 0.35);
@@ -518,7 +520,7 @@ async function icon(Comp, color = "#0E1A33", size = 256) {
     [I.lock, "Access & audit", "RBAC + API keys, structured audit log, HMAC-verified webhooks."],
     [I.bolt, "Resilience", "Admission control, LLM concurrency limiter, circuit breakers, sanitized errors."],
     [I.server, "Operations", "Health / readiness probes, rate limiting, Prometheus metrics, Docker."],
-    [I.eye, "Quality assurance", "Built-in LLM-as-judge panel scores every agent's output for completeness & precision."],
+    [I.eye, "Quality assurance", "LLM-as-judge panel scores every agent; a golden-case quality gate fails CI on any detection regression."],
   ];
   const fw = (W - 2 * MX - 0.4) / 2;
   feats.forEach(([ic, h2, b], i) => {
@@ -551,7 +553,7 @@ async function icon(Comp, color = "#0E1A33", size = 256) {
     ]],
     [I.shield, "Security & SCA", C.red, [
       ["OSV.dev API", "known-CVE lookup for dependencies"],
-      ["AST · taint · entropy scanners", "code, injection & secret detection"],
+      ["tree-sitter AST · taint · entropy", "precise 6-language parsing & detection"],
       ["Maven pom.xml parser", "direct-dependency vulnerability scan"],
     ]],
     [I.sitemap, "Frontend & visualization", C.indigo, [
@@ -561,7 +563,7 @@ async function icon(Comp, color = "#0E1A33", size = 256) {
     [I.server, "Data, reliability & ops", C.green, [
       ["SQLite · Redis · ChromaDB", "report store · cache · semantic search"],
       ["tenacity · OpenTelemetry · Prometheus", "retries · tracing · metrics"],
-      ["Docker · OpenShift · pytest", "containers · deploy · 519 tests"],
+      ["Docker · OpenShift · pytest", "containers · deploy · 538 tests"],
     ]],
   ];
   const tcw = (W - 2 * MX - 0.4) / 2, tch = 1.7, tgy = 0.18, tY = 1.72;
@@ -579,6 +581,97 @@ async function icon(Comp, color = "#0E1A33", size = 256) {
     });
     s.addText(body, { x: x + 0.26, y: y + 0.78, w: tcw - 0.5, h: tch - 0.9, fontFace: BF, fontSize: 10.5, margin: 0, lineSpacingMultiple: 1.02, paraSpaceAfter: 4 });
   });
+
+  // ════════════════ SLIDE — ROADMAP ════════════════
+  s = mkSlide(); s.background = { color: C.light };
+  eyebrow(s, "Roadmap", C.teal);
+  title(s, "Where CIAA goes next");
+  s.addText("Detection quality is production-grade today — the roadmap scales it to an organisation-wide platform.",
+    { x: MX, y: 1.38, w: W - 2 * MX, h: 0.4, fontFace: BF, fontSize: 13, color: C.muted, margin: 0 });
+
+  const phases = [
+    [I.bolt, "1", "Scale-out", C.blue, [
+      "Redis-backed job queue + autoscaling analysis workers",
+      "PostgreSQL report store (replaces SQLite)",
+      "Cluster-wide rate & LLM concurrency limits",
+    ], "Many teams, many PRs, zero queue contention"],
+    [I.lock, "2", "Enterprise access", C.indigo, [
+      "SSO / OIDC login with team-scoped RBAC",
+      "Vault / KMS secret management",
+      "SARIF export + required PR status checks",
+    ], "Enforced merge gate, org-grade security"],
+    [I.search, "3", "Deeper detection", C.teal, [
+      "Transitive SCA (full dependency tree CVEs)",
+      "Compiler-index (LSIF/SCIP) cross-repo references",
+      "Golden corpus grown from real reviewed PRs",
+    ], "Higher recall with measured precision"],
+    [I.gauge, "4", "Operate at scale", C.green, [
+      "Policy-as-code gate thresholds (OPA), per team",
+      "Grafana SLOs, alerting & cost dashboards",
+      "Helm + canary deploys, load & chaos testing",
+    ], "Run it like any tier-1 internal platform"],
+  ];
+  const rw = (W - 2 * MX - 3 * 0.35) / 4, rY = 2.0, rH = 4.35;
+  phases.forEach(([ic, num, name, ac, items, outcome], i) => {
+    const x = MX + i * (rw + 0.35);
+    s.addShape(p.shapes.ROUNDED_RECTANGLE, { x, y: rY, w: rw, h: rH, rectRadius: 0.09, fill: { color: C.card }, line: { color: C.border, width: 1 } });
+    s.addShape(p.shapes.RECTANGLE, { x, y: rY, w: rw, h: 0.1, fill: { color: ac } });
+    iconChip(s, ic, x + 0.24, rY + 0.3, 0.56, ac);
+    s.addText(`PHASE ${num}`, { x: x + 0.95, y: rY + 0.3, w: rw - 1.1, h: 0.26, fontFace: BF, fontSize: 9.5, bold: true, color: ac, charSpacing: 2, margin: 0 });
+    s.addText(name, { x: x + 0.95, y: rY + 0.55, w: rw - 1.1, h: 0.36, fontFace: HF, fontSize: 15, bold: true, color: C.ink, margin: 0 });
+    s.addText(items.map(t => ({ text: t, options: { bullet: { indent: 10 }, breakLine: true } })),
+      { x: x + 0.26, y: rY + 1.12, w: rw - 0.5, h: 2.45, fontFace: BF, fontSize: 10.5, color: C.ink, margin: 0, lineSpacingMultiple: 1.04, paraSpaceAfter: 7 });
+    s.addShape(p.shapes.LINE, { x: x + 0.26, y: rY + rH - 0.78, w: rw - 0.52, h: 0, line: { color: C.border, width: 1 } });
+    s.addText(outcome, { x: x + 0.26, y: rY + rH - 0.68, w: rw - 0.5, h: 0.56, fontFace: BF, fontSize: 9.5, italic: true, color: ac, margin: 0, lineSpacingMultiple: 1.0 });
+    if (i < phases.length - 1)
+      s.addText("›", { x: x + rw - 0.02, y: rY + rH / 2 - 0.3, w: 0.4, h: 0.6, fontFace: HF, fontSize: 22, bold: true, color: "C9D4E8", align: "center", valign: "middle", margin: 0 });
+  });
+  s.addText([
+    { text: "Already shipped: ", options: { bold: true, color: C.ink } },
+    { text: "tree-sitter ASTs · cross-agent correlation & Top Issues · CI quality gate · function-context prompts · confidence-weighted gate · warm repo mirror · LLM concurrency control", options: { color: C.muted } },
+  ], { x: MX, y: 6.55, w: W - 2 * MX, h: 0.45, fontFace: BF, fontSize: 10.5, align: "center", margin: 0 });
+
+  // ════════════════ SLIDE — ROADMAP TASK LIST (TABLE) ════════════════
+  s = mkSlide(); s.background = { color: C.light };
+  eyebrow(s, "Roadmap · Task list", C.teal);
+  title(s, "Planned tasks");
+  const themeColor = {
+    "Functional intelligence": C.indigo,
+    "Scale":     C.blue,
+    "Access":    C.red,
+    "Workflow":  C.amber,
+    "Detection": C.teal,
+    "Operations": C.green,
+  };
+  const tasks = [
+    ["1", "FSD tracking & code-vs-spec validation", "Link each PR to its Functional Specification Document; flag changes that contradict or miss the spec (builds on today's functional-doc upload)", "Functional intelligence"],
+    ["2", "Functional impact analysis", "Combine FSD + code change + dependent repos to report which business functions are affected and where to regression-test", "Functional intelligence"],
+    ["3", "Job queue + autoscaling workers", "Redis-backed analysis queue; API stays responsive under many concurrent PRs", "Scale"],
+    ["4", "PostgreSQL report store", "Replace SQLite for multi-instance deployments, retention policies", "Scale"],
+    ["5", "Cluster-wide rate & LLM limits", "Shared Redis counters so limits hold across replicas", "Scale"],
+    ["6", "SSO / OIDC with team RBAC", "IdP login, team-scoped data, per-team gate thresholds", "Access"],
+    ["7", "Vault / KMS secret management", "No provider keys on disk; automatic rotation", "Access"],
+    ["8", "SARIF export + PR status checks", "Findings into code-scanning dashboards; gate enforced as a required check", "Workflow"],
+    ["9", "Transitive SCA", "Full dependency-tree CVE scan (mvn dependency:tree / lockfiles)", "Detection"],
+    ["10", "Compiler-index cross-repo refs", "LSIF/SCIP for exact call-site resolution beyond grep", "Detection"],
+    ["11", "Golden corpus from real PRs", "Grow the CI quality gate with anonymised production diffs", "Detection"],
+    ["12", "OPA gate policies · SLO dashboards · Helm/canary", "Policy-as-code per team, Grafana SLOs, progressive deploys", "Operations"],
+  ];
+  const hdrC = (t, align = "left") => ({ text: t, options: { bold: true, color: C.light, fontFace: HF, fontSize: 12.5, fill: { color: C.navy }, align, valign: "middle" } });
+  const tbl = [[hdrC("#", "center"), hdrC("Roadmap task"), hdrC("What it delivers"), hdrC("Theme", "center")]];
+  tasks.forEach((row, i) => {
+    const fill = i % 2 ? "EEF2F8" : "FFFFFF";
+    const tc = themeColor[row[3]] || C.muted;
+    tbl.push([
+      { text: row[0], options: { color: "94A3B8", bold: true, fontFace: BF, fontSize: 10.5, align: "center", valign: "middle", fill: { color: fill } } },
+      { text: row[1], options: { color: C.ink, bold: true, fontFace: BF, fontSize: 10.5, align: "left", valign: "middle", fill: { color: fill }, margin: [2, 4, 2, 6] } },
+      { text: row[2], options: { color: C.muted, fontFace: BF, fontSize: 9.5, align: "left", valign: "middle", fill: { color: fill }, margin: [2, 4, 2, 6] } },
+      { text: row[3], options: { color: tc, bold: true, fontFace: BF, fontSize: 9, align: "center", valign: "middle", fill: { color: fill } } },
+    ]);
+  });
+  s.addTable(tbl, { x: MX, y: 1.62, w: W - 2 * MX, colW: [0.5, 3.5, 6.03, 2.0],
+                    rowH: [0.34, ...tasks.map(() => 0.405)],
+                    border: { type: "solid", pt: 0.75, color: C.border }, valign: "middle" });
 
   // ════════════════ SLIDE 11 — CLOSING ════════════════
   s = mkSlide(); s.background = { color: C.navy };

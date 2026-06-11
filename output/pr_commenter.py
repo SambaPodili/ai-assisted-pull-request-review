@@ -170,6 +170,19 @@ class PRCommenter:
             f"{_BOT_TAG}",
             f"## {icon} Impact Analysis — **{gate.value}**",
             f"> Risk Level: **{risk.value.upper()}** | Tokens used: {report.total_tokens}",
+        ]
+
+        # Lead with the ranked, cross-agent-deduplicated Top Issues — the
+        # "what must I look at" list — before any metric tables.
+        try:
+            from governance.correlation import top_issues_markdown
+            top_md = top_issues_markdown(report)
+            if top_md:
+                sections.append(top_md)
+        except Exception:
+            pass
+
+        sections += [
             f"| Metric | Value |",
             f"|--------|-------|",
         ]
@@ -392,6 +405,15 @@ def _render_pr_summary_comment(report: AnalysisReport, file_groups: dict[str, li
     # Risk rationale
     if report.risk and report.risk.rationale:
         lines += [f"> {report.risk.rationale}", ""]
+
+    # Ranked Top Issues lead the summary — the rest is supporting detail.
+    try:
+        from governance.correlation import top_issues_markdown
+        top_md = top_issues_markdown(report)
+        if top_md:
+            lines += [top_md]
+    except Exception:
+        pass
 
     # Per-file summary table
     if file_groups:

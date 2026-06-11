@@ -31,6 +31,15 @@ def to_markdown(report: AnalysisReport) -> str:
         f"",
     ]
 
+    # Ranked, cross-agent-deduplicated Top Issues lead the report.
+    try:
+        from governance.correlation import top_issues_markdown
+        top_md = top_issues_markdown(report)
+        if top_md:
+            lines += ["---", top_md]
+    except Exception:
+        pass
+
     # ── Code Analysis ──────────────────────────────────────────────────────────
     if report.code_analysis:
         ca = report.code_analysis
