@@ -192,3 +192,11 @@ export function canOverrideGate(state) {
   if (!state.ciaaPerms) return true;
   return !!state.ciaaPerms.can_override;
 }
+
+// Admin / Super Admin only — drives visibility of the user-management screen.
+// Permissive when the role is unknown (skip_auth / not connected); the backend
+// still enforces the user:manage permission + role hierarchy on every call.
+export function canManageUsers(state) {
+  if (!state.ciaaPerms) return true;
+  return (state.ciaaPerms.permissions || []).includes('user:manage');
+}

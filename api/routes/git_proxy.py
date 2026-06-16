@@ -125,6 +125,48 @@ async def verify_credentials(cfg: GitConfig):
         d = _get("https://api.bitbucket.org/2.0/user", h)
         return {"ok": True, "login": d.get("username", d.get("nickname","")), "name": d.get("display_name","")}
 
+class UserLookupRequest(BaseModel):
+    cfg:      GitConfig
+    username: str          # the username / slug to look up
+
+
+@router.post("/user")
+async def lookup_user(body: UserLookupRequest):
+    """Look up a git user by username/slug → {found, slug, display_name, email}.
+
+    Maps the provider's profile to the fields the user-management screen stores:
+    `name` ← displayName, external `user_id` ← slug. Bitbucket Server is the
+    primary target (GET /users/{slug}); GitHub and Bitbucket Cloud are supported
+    best-effort.
+    """
+    cfg, h = body.cfg, _headers(body.cfg)
+    u = (body.username or "").strip()
+    if not u:
+        return {"found": False}
+    try:
+        if cfg.provider in ("github", "github_enterprise"):
+            d = _get(f"{_github_base(cfg)}/users/{quote(u, safe='')}", h)
+            return {"found": True, "slug": d.get("login", u),
+                    "display_name": d.get("name") or d.get("login", u),
+                    "email": d.get("email", "") or ""}
+        if cfg.provider == "bitbucket_server":
+            d = _get(f"{_bb_server_base(cfg)}/users/{quote(u, safe='')}", h)
+            return {"found": True,
+                    "slug": d.get("slug") or d.get("name") or u,
+                    "display_name": d.get("displayName") or d.get("name") or u,
+                    "email": d.get("emailAddress", "")}
+        # Bitbucket Cloud — workspace member lookup (best effort)
+        ws = cfg.workspace or ""
+        d = _get(f"https://api.bitbucket.org/2.0/workspaces/{ws}/members/{quote(u, safe='')}", h)
+        usr = d.get("user", d)
+        return {"found": True,
+                "slug": usr.get("nickname") or usr.get("account_id") or u,
+                "display_name": usr.get("display_name") or u, "email": ""}
+    except Exception as exc:
+        log.debug("user lookup failed for %s: %s", u, exc)
+        return {"found": False}
+
+
 # ── Bitbucket Server helpers ─────────────────────────────────────────────────
 
 def _bb_list_all_projects(base: str, h: dict) -> list[dict]:

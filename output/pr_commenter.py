@@ -109,6 +109,21 @@ class PRCommenter:
             log.error("Failed to post PR comment: %s", exc)
             return False
 
+    def post_text(self, body: str, pr_id: str | int, repo_slug: str = "") -> bool:
+        """Post an arbitrary Markdown body as a single PR-level comment (used by
+        the review workflow to post the reviewer-validated 'real issues')."""
+        if not pr_id or not body:
+            return False
+        try:
+            if self._provider in ("bitbucket", "bitbucket_cloud"):
+                return self._bb_post(repo_slug, pr_id, body)
+            elif self._provider == "bitbucket_server":
+                return self._bb_server_post(repo_slug, pr_id, body)
+            return self._gh_post(repo_slug, pr_id, body)
+        except Exception as exc:
+            log.error("post_text failed: %s", exc)
+            return False
+
     # ── Bitbucket Cloud ───────────────────────────────────────────────────────
 
     def _bb_post(self, repo_slug: str, pr_id: int | str, body: str) -> bool:
@@ -217,7 +232,7 @@ class PRCommenter:
 
         if report.test_coverage:
             tc = report.test_coverage
-            sections.append(f"| Coverage delta | {tc.coverage_delta:+.1f}% |")
+            sections.append(f"| Test gaps (changed files w/o tests) | {len(tc.uncovered_paths)} |")
             sections.append(f"| Regression risk | {tc.regression_risk.value} |")
 
         if report.risk:

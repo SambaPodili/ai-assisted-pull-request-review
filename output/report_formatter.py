@@ -120,9 +120,8 @@ def to_markdown(report: AnalysisReport) -> str:
         lines += [
             "---",
             "## 🧪 Test Coverage",
-            f"- **Coverage delta:** {tc.coverage_delta:+.1f}%",
+            f"- **Test gaps (changed files without tests):** {len(tc.uncovered_paths)}",
             f"- **Regression risk:** {tc.regression_risk.value}",
-            f"- **Uncovered paths:** {len(tc.uncovered_paths)}",
         ]
         if tc.generated_stubs:
             lines.append("\n**Generated Test Stubs:**")

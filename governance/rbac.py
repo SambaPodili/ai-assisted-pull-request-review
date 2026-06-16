@@ -32,20 +32,32 @@ class Permission(str, Enum):
     GATE_OVERRIDE   = "gate:override"     # approve / block a PR
     PR_COMMENT      = "pr:comment"        # post findings to GitHub / Bitbucket PR
     ADMIN_CONFIG    = "admin:config"
+    USER_MANAGE     = "user:manage"       # create/revoke users (hierarchy-limited)
     AUDIT_READ      = "audit:read"
     METRICS_READ    = "metrics:read"
 
 
 class Role(str, Enum):
+    SUPER_ADMIN = "super_admin"   # top tier — manages admins
     ADMIN     = "admin"
     ANALYST   = "analyst"
-    REVIEWER  = "reviewer"    # ← new: code reviewers who approve PRs
+    REVIEWER  = "reviewer"    # ← code reviewers who approve PRs
     DEVELOPER = "developer"
     AUDITOR   = "auditor"
     CI_SYSTEM = "ci_system"
 
 
+# Which roles each role is allowed to CREATE/MANAGE. A manager can never mint a
+# peer or higher role — so an Admin physically cannot create another Admin.
+MANAGEABLE_ROLES: dict[Role, set[Role]] = {
+    Role.SUPER_ADMIN: {Role.ADMIN, Role.ANALYST, Role.REVIEWER, Role.DEVELOPER,
+                       Role.AUDITOR, Role.CI_SYSTEM},
+    Role.ADMIN:       {Role.REVIEWER, Role.DEVELOPER, Role.AUDITOR, Role.CI_SYSTEM},
+}
+
+
 _ROLE_PERMISSIONS: dict[Role, set[Permission]] = {
+    Role.SUPER_ADMIN: set(Permission),  # all permissions
     Role.ADMIN: set(Permission),  # all permissions
 
     Role.ANALYST: {
@@ -91,9 +103,16 @@ _ROLE_PERMISSIONS: dict[Role, set[Permission]] = {
 # ── Human-readable role metadata (used by /me endpoint and UI) ───────────────
 
 ROLE_META: dict[Role, dict] = {
+    Role.SUPER_ADMIN: {
+        "label":       "Super Admin",
+        "description": "Top tier — manages admins and everyone below",
+        "color":       "#4c1d95",
+        "can_comment": True,
+        "can_override": True,
+    },
     Role.ADMIN: {
         "label":       "Admin",
-        "description": "Full access — config, overrides, all reports",
+        "description": "Full access — manages developers/reviewers, config, overrides",
         "color":       "#7c3aed",
         "can_comment": True,
         "can_override": True,
@@ -159,6 +178,19 @@ class Subject:
                 status_code=403,
                 detail=f"Permission denied: '{perm.value}' required.",
             )
+
+    def manageable_roles(self) -> set[Role]:
+        """The set of roles this subject may create/assign to others."""
+        out: set[Role] = set()
+        for role in self.roles:
+            out |= MANAGEABLE_ROLES.get(role, set())
+        return out
+
+    def can_manage(self, roles) -> bool:
+        """True only if EVERY target role is within this subject's tier."""
+        allowed = self.manageable_roles()
+        targets = roles if isinstance(roles, (list, set, tuple)) else [roles]
+        return bool(targets) and all(r in allowed for r in targets)
 
 
 @dataclass
@@ -245,7 +277,14 @@ class APIKeyRegistry:
 
     def resolve(self, key: str) -> Subject | None:
         entry = self._entries.get(key)
-        return entry.subject if entry else None
+        if entry:
+            return entry.subject
+        # Fall through to the UI-managed user store (hashed keys in SQLite).
+        try:
+            from governance.user_store import get_user_store
+            return get_user_store().resolve(key)
+        except Exception:
+            return None
 
     def list_subjects(self) -> list[dict]:
         """Return a redacted summary of all loaded keys (for admin UI)."""

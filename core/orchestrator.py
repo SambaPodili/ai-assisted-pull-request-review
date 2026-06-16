@@ -206,7 +206,9 @@ class ImpactAnalysisOrchestrator:
         # ── Phase 1: code_analysis + security ─────────────────────────────────
         from config.settings import get_settings as _gs
         _cfg = _gs()
-        if getattr(request, "deep_scan", False) and len(request.hunks) >= getattr(_cfg, "deep_scan_min_files", 8):
+        _deep_scan_used = bool(getattr(request, "deep_scan", False)
+                               and len(request.hunks) >= getattr(_cfg, "deep_scan_min_files", 8))
+        if _deep_scan_used:
             # Full-coverage: run code + security over ALL files in batches.
             from core.deep_scan import run_batched, merge_code, merge_security
             mc = getattr(_cfg, "deep_scan_batch_chars", 12000)
@@ -224,6 +226,8 @@ class ImpactAnalysisOrchestrator:
             report.code_analysis = p1.get(AgentName.CODE_ANALYSIS)
             report.security      = p1.get(AgentName.SECURITY)
             self._record_usage(report, p1, AgentName.CODE_ANALYSIS, AgentName.SECURITY)
+
+        report.llm_coverage = self._llm_coverage(request, _deep_scan_used)
 
         # ── Evidence guard: drop security findings citing files not in the diff
         try:
@@ -572,6 +576,7 @@ class ImpactAnalysisOrchestrator:
             risk=final.get("res_risk"),
             remediation=final.get("res_rem"),
         )
+        report.llm_coverage = self._llm_coverage(request, False)  # langgraph path: no deep-scan
 
         slot_names = [
             (AgentName.CODE_ANALYSIS,   "res_code"),
@@ -751,6 +756,29 @@ class ImpactAnalysisOrchestrator:
         return out
 
     @staticmethod
+    def _llm_coverage(request, deep_scan_used: bool) -> dict:
+        """How thoroughly the LLM agents reviewed a (possibly large) PR.
+
+        mode: 'batched'  → deep-scan ran every file through the model in batches;
+              'full'      → all changed (signal) files fit the default LLM budget;
+              'partial'   → large PR: only the highest-churn files fit the LLM
+                            budget (the rest still got the deterministic checks)."""
+        from agents.base_agent import count_files_in_llm_budget
+        c = count_files_in_llm_budget(request.hunks)
+        if deep_scan_used:
+            mode, reviewed = "batched", c["total"]
+        else:
+            reviewed = c["reviewed"]
+            mode = "full" if reviewed >= c["signal"] else "partial"
+        return {
+            "total_files":     c["total"],
+            "reviewed_by_llm": reviewed,
+            "skipped_noise":   c["skipped_noise"],
+            "deep_scan":       bool(deep_scan_used),
+            "mode":            mode,
+        }
+
+    @staticmethod
     def _source_lines(request) -> dict:
         """{normalised_file_path: [(source_line_no, text), …]} for ALL new-file
         lines (added + context). Used by the false-positive guard to verify
@@ -840,6 +868,22 @@ class ImpactAnalysisOrchestrator:
                 log.info("[%s] Blast radius derived from impact signals: %d", report.request_id, derived)
         except Exception as exc:
             log.debug("[%s] Blast-radius derivation skipped: %s", report.request_id, exc)
+
+        # ── Reconcile the displayed rationale with the FINAL metrics ──────────
+        # The risk agent's LLM rationale is written mid-pipeline (before blast
+        # radius is derived, and referencing the now-dropped coverage delta), so
+        # it can contradict the headline tiles. Replace it with a deterministic,
+        # accurate summary built from the final values.
+        try:
+            from governance.rationale import build_rationale
+            if report.risk is not None:
+                # Preserve the LLM's narrative as a secondary line; make the
+                # headline the deterministic, metrics-accurate summary.
+                if not report.risk.ai_rationale:
+                    report.risk.ai_rationale = report.risk.rationale
+                report.risk.rationale = build_rationale(report)
+        except Exception as exc:
+            log.debug("[%s] Rationale reconciliation skipped: %s", report.request_id, exc)
 
         # ── Deterministic gate enforcement (overrides the LLM proposal) ──────
         try:

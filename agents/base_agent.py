@@ -118,6 +118,37 @@ def format_hunks_for_prompt(
     return "\n\n".join(parts)
 
 
+def count_files_in_llm_budget(hunks, max_chars_per_hunk: int = 3000,
+                              max_total_chars: int = 40_000, focus: str = "general") -> dict:
+    """How many changed files the default LLM prompt budget can include — mirrors
+    format_hunks_for_prompt's ranking + packing so the coverage figure is exact.
+    Returns {total, signal, reviewed, skipped_noise}."""
+    from ingestion.diff_parser import is_low_signal_path
+    if not hunks:
+        return {"total": 0, "signal": 0, "reviewed": 0, "skipped_noise": 0}
+    total = len(hunks)
+    signal = [h for h in hunks if not is_low_signal_path(h.file_path)]
+    skipped_noise = total - len(signal)
+    pool = signal or hunks
+
+    def _score(h):
+        s = (h.additions or 0) + (h.deletions or 0)
+        fp = (h.file_path or "").lower()
+        if focus == "security" and any(k in fp for k in (
+                "auth", "crypt", "secret", "password", "token", "jwt", "oauth", "key", "cert", "ssl", "tls")):
+            s += 500
+        return s
+
+    used, reviewed = 0, 0
+    for h in sorted(pool, key=_score, reverse=True):
+        budget = min(max_chars_per_hunk, max_total_chars - used)
+        if budget <= 0:
+            break
+        reviewed += 1
+        used += min(len(h.content or ""), budget)
+    return {"total": total, "signal": len(pool), "reviewed": reviewed, "skipped_noise": skipped_noise}
+
+
 # Shared quality rubric appended to every agent's system prompt (see _call_llm).
 _QUALITY_DIRECTIVE = (
     "\n\n"

@@ -18,9 +18,10 @@ import SettingsView from './views/SettingsView'
 import QualityView from './views/QualityView'
 import InsightsView from './views/InsightsView'
 import AgentsView from './views/AgentsView'
+import AdminView from './views/AdminView'
 
 const STEP_VIEWS = ['configure', 'repos', 'target', 'results']
-const ALL_VIEWS   = ['configure', 'repos', 'target', 'results', 'history', 'quality', 'insights', 'agents', 'settings']
+const ALL_VIEWS   = ['configure', 'repos', 'target', 'results', 'history', 'quality', 'insights', 'agents', 'settings', 'admin']
 
 const PAGE_TITLES = {
   configure: 'Configure provider',
@@ -168,6 +169,7 @@ function AppShell() {
             {v === 'quality'   && <QualityView   active={view === 'quality'}   {...viewProps} />}
             {v === 'insights'  && <InsightsView  active={view === 'insights'}  {...viewProps} />}
             {v === 'agents'    && <AgentsView    active={view === 'agents'}    {...viewProps} />}
+            {v === 'admin'     && <AdminView     active={view === 'admin'}     {...viewProps} />}
           </div>
         ))}
 

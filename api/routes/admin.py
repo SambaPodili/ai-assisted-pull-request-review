@@ -148,15 +148,108 @@ def preview_digest(days: int = 1,
 @router.get("/users")
 def list_users(subject: Subject = require_permission(Permission.ADMIN_CONFIG)):
     """
-    List all configured API key holders with their roles and permissions.
-    Keys are redacted — only the first 10 characters are shown.
-    Requires admin role.
+    List API key holders — file/bootstrap keys (from keys.json) AND UI-managed
+    users (SQLite, hashed keys). Keys are always redacted.
     """
     from governance.rbac import get_registry
+    from governance.user_store import get_user_store
+    file_users = [{**u, "source": "file"} for u in get_registry().list_subjects()]
+    managed    = [{**u, "source": "managed"} for u in get_user_store().list_users()]
+    # what roles THIS admin may create (drives the UI's role dropdown)
+    creatable = sorted(r.value for r in subject.manageable_roles())
     return {
-        "users":   get_registry().list_subjects(),
-        "total":   len(get_registry().list_subjects()),
+        "users":      file_users + managed,
+        "total":      len(file_users) + len(managed),
+        "creatable_roles": creatable,
     }
+
+
+class CreateUserBody(BaseModel):
+    name:    str = ""             # display name (e.g. Bitbucket displayName)
+    team:    str = ""
+    roles:   list[str] = ["developer"]
+    user_id: str = ""            # external identity (e.g. Bitbucket slug)
+
+
+class UpdateUserBody(BaseModel):
+    name:    str | None = None
+    team:    str | None = None
+    roles:   list[str] | None = None
+    user_id: str | None = None
+
+
+def _parse_roles_or_400(role_strs: list[str]) -> list[Role]:
+    try:
+        return [Role(r) for r in (role_strs or [])]
+    except ValueError as exc:
+        raise HTTPException(400, f"Invalid role: {exc}")
+
+
+@router.post("/users")
+def create_user(body: CreateUserBody,
+                subject: Subject = require_permission(Permission.USER_MANAGE)):
+    """Create a UI-managed user. The role(s) must be within the caller's tier
+    (a Super Admin can mint Admins; an Admin can mint Developers/Reviewers — never
+    a peer/higher role). Returns the new API key ONCE."""
+    roles = _parse_roles_or_400(body.roles)
+    if not subject.can_manage(roles):
+        raise HTTPException(403, detail=(
+            f"You may only create users with roles: "
+            f"{sorted(r.value for r in subject.manageable_roles())}."))
+    from governance.user_store import get_user_store
+    store = get_user_store()
+    key, record = store.create_user(body.name, body.team, roles, _actor(subject), user_id=body.user_id)
+    store.record_event("created", _actor(subject), record["id"], record["name"], roles)
+    log.warning("Admin user-create by %s — %s roles=%s", _actor(subject), record["id"], record["roles"])
+    return {"ok": True, "user": record, "api_key": key,
+            "message": "Copy this API key now — it is shown only once and cannot be recovered."}
+
+
+@router.patch("/users/{user_id}")
+def update_user(user_id: str, body: UpdateUserBody,
+                subject: Subject = require_permission(Permission.USER_MANAGE)):
+    from governance.user_store import get_user_store
+    store = get_user_store()
+    existing = store.get(user_id)
+    if not existing:
+        raise HTTPException(404, "User not found")
+    # Must be able to manage BOTH the current and the new roles.
+    if not subject.can_manage(_parse_roles_or_400(existing["roles"])):
+        raise HTTPException(403, "This user is outside your management tier.")
+    new_roles = _parse_roles_or_400(body.roles) if body.roles is not None else None
+    if new_roles is not None and not subject.can_manage(new_roles):
+        raise HTTPException(403, "You cannot assign one or more of those roles.")
+    record = store.update(user_id, name=body.name, team=body.team, roles=new_roles, user_id=body.user_id)
+    store.record_event("updated", _actor(subject), user_id, (record or {}).get("name", ""),
+                       new_roles or [], detail="role/profile update")
+    log.warning("Admin user-update by %s — %s", _actor(subject), user_id)
+    return {"ok": True, "user": record}
+
+
+@router.delete("/users/{user_id}")
+def revoke_user(user_id: str,
+                subject: Subject = require_permission(Permission.USER_MANAGE)):
+    from governance.user_store import get_user_store
+    store = get_user_store()
+    existing = store.get(user_id)
+    if not existing:
+        raise HTTPException(404, "User not found")
+    if not subject.can_manage(_parse_roles_or_400(existing["roles"])):
+        raise HTTPException(403, "This user is outside your management tier.")
+    ok = store.revoke(user_id)
+    if ok:
+        store.record_event("revoked", _actor(subject), user_id, existing.get("name", ""),
+                           _parse_roles_or_400(existing["roles"]))
+    log.warning("Admin user-revoke by %s — %s (%s)", _actor(subject), user_id, existing.get("name"))
+    return {"ok": ok, "message": "User revoked." if ok else "Nothing to revoke."}
+
+
+@router.get("/users/audit")
+def user_audit(limit: int = 100,
+               subject: Subject = require_permission(Permission.USER_MANAGE)):
+    """Audit trail of user-management actions (who created/updated/revoked whom)."""
+    from governance.user_store import get_user_store
+    return {"events": get_user_store().list_audit(limit=min(max(limit, 1), 500))}
 
 
 @router.post("/users/reload")

@@ -262,7 +262,8 @@ class RiskResult(AgentResultBase):
     deployment_guidance:   str = ""
     rollback_feasibility:  str = ""      # easy | moderate | complex | infeasible
     gate_decision:         GateDecision = GateDecision.HOLD
-    rationale:             str = ""
+    rationale:             str = ""       # deterministic, reconciled with final metrics
+    ai_rationale:          str = ""       # the LLM's original narrative (shown as secondary)
 
 
 class CodeFix(BaseModel):
@@ -755,6 +756,10 @@ class AnalysisReport(BaseModel):
 
     # Reviewer triage: which files must be fixed / need a human / are auto-approvable
     review_plan:             ReviewPlan | None = None
+
+    # LLM review coverage for large PRs: how many changed files the model actually
+    # reviewed (full | partial[budget-capped] | batched[deep-scan]).
+    llm_coverage:            dict = {}
 
     # Findings auto-suppressed because reviewers repeatedly marked this
     # (agent, category) a false positive for this repo (transparency, not hiding).

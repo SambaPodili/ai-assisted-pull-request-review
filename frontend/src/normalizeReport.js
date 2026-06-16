@@ -12,6 +12,7 @@ export function normalizeReport(r) {
   const isFull = r.code_analysis !== undefined || r.security !== undefined || r.errors !== undefined;
 
   let gate_decision, overall_risk, risk_score, rationale, riskObj, remObj;
+  const ai_rationale = (r.risk && r.risk.ai_rationale) || r.ai_rationale || '';
 
   if (isFull) {
     const rr = r.risk || {};
@@ -58,6 +59,7 @@ export function normalizeReport(r) {
       description: f.description || '',
       file: f.file_path || f.file || '',
       line_range: f.line_range || '',
+      unverified: f.unverified || false,
     })),
   } : null;
 
@@ -238,7 +240,7 @@ export function normalizeReport(r) {
   } : null;
 
   return {
-    gate_decision, overall_risk, risk_score, rationale,
+    gate_decision, overall_risk, risk_score, rationale, ai_rationale,
     code_analysis: caNorm, security: secNorm,
     secrets_entropy: seNorm, ast_analysis: astNorm, taint_analysis: taNorm,
     iac_analysis: iacNorm, temporal_risk: trNorm,
@@ -288,6 +290,7 @@ export function normalizeReport(r) {
     ai_proposed_gate:          r.ai_proposed_gate || '',
     capabilities_affected:     r.capabilities_affected || [],
     consumer_impacts:          r.consumer_impacts || [],
+    llm_coverage:              r.llm_coverage || null,
     review_plan:               r.review_plan ? {
       must_fix:        (r.review_plan.must_fix||[]).map(_rvf),
       needs_review:    (r.review_plan.needs_review||[]).map(_rvf),

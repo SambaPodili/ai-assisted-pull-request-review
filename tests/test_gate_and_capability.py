@@ -11,6 +11,7 @@ from core.models import (
     AnalysisReport, ChangeType, GateDecision, RiskLevel,
     RiskResult, SecurityResult, SecurityFinding, DependencyResult,
     InterfaceResult, ContractBreak, TestCoverageResult, ReferenceImpactResult, SymbolReference,
+    CodeAnalysisResult, CodeFinding,
 )
 from governance.gate_policy import evaluate_policy
 from governance.capability_map import map_paths, capabilities_for_report
@@ -50,6 +51,43 @@ def test_critical_security_forces_block():
         ),
     )
     assert evaluate_policy(r).gate == GateDecision.BLOCK
+
+
+def _code(**kw):
+    base = dict(file_path="agents/code_agent.py", line_range="184", severity=RiskLevel.CRITICAL,
+                category="broken_reference",
+                description="_ext_to_lang(fp) called but its module-level def was deleted -> NameError",
+                suggestion="restore the helper")
+    base.update(kw)
+    return CodeFinding(**base)
+
+
+def test_confirmed_critical_code_finding_holds_even_if_ai_approves():
+    # A real broken-reference bug must not silently APPROVE — it holds for review,
+    # so the gate agrees with the Review Plan / Top Issues.
+    r = _report(risk=_risk(GateDecision.APPROVE),
+                code_analysis=CodeAnalysisResult(summary="x", change_type="refactor", findings=[_code()]))
+    res = evaluate_policy(r)
+    assert res.gate == GateDecision.HOLD
+    assert res.overrode_llm is True
+    assert any("critical code finding" in reason.lower() for reason in res.reasons)
+
+
+def test_unverified_critical_code_finding_does_not_hold():
+    # A hallucinated/unverified critical code finding must NOT drive the gate.
+    r = _report(risk=_risk(GateDecision.APPROVE),
+                code_analysis=CodeAnalysisResult(summary="x", change_type="refactor",
+                                                 findings=[_code(unverified=True)]))
+    res = evaluate_policy(r)
+    assert res.gate == GateDecision.APPROVE
+    assert not any("critical code finding" in reason.lower() for reason in res.reasons)
+
+
+def test_non_critical_code_finding_does_not_hold():
+    r = _report(risk=_risk(GateDecision.APPROVE),
+                code_analysis=CodeAnalysisResult(summary="x", change_type="refactor",
+                                                 findings=[_code(severity=RiskLevel.MEDIUM)]))
+    assert evaluate_policy(r).gate == GateDecision.APPROVE
 
 
 def test_breaking_api_forces_at_least_hold():

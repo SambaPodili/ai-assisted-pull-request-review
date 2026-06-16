@@ -27,6 +27,7 @@ from api.routes.health    import router as health_router
 from api.routes.evaluate  import router as evaluate_router
 from api.routes.quality   import router as quality_router
 from api.routes.insights  import router as insights_router
+from api.routes.review_session import router as review_router
 
 log = logging.getLogger(__name__)
 
@@ -126,6 +127,7 @@ def create_app(settings=None) -> FastAPI:
     app.include_router(gate_router)
     app.include_router(git_proxy_router)
     app.include_router(insights_router)
+    app.include_router(review_router)
 
     @app.get("/metrics", include_in_schema=False)
     def metrics():

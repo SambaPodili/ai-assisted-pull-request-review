@@ -1,4 +1,5 @@
 import { useApp } from '../AppContext'
+import { canManageUsers } from '../state'
 
 export default function Sidebar({ view, showView, state, dark, setDark, goHome }) {
   const connected = !!(state.userInfo)
@@ -31,6 +32,7 @@ export default function Sidebar({ view, showView, state, dark, setDark, goHome }
         {goHome && <i className="ti ti-layout-grid" style={{ marginLeft: 'auto', fontSize: 14, opacity: 0.55 }} title="All frameworks" />}
       </div>
 
+      <div className="sidebar-nav">
       <div className="nav-section">Analysis</div>
       <NavItem id="configure" label="Configure"       icon="ti-plug-connected"  view={view} showView={showView} shortcut="1"
         badge={connected ? <span style={dotStyle('#3fb950')} title="Connected" /> : null} />
@@ -58,7 +60,10 @@ export default function Sidebar({ view, showView, state, dark, setDark, goHome }
 
       <div className="nav-section">Settings</div>
       <NavItem id="settings" label="Backend config"  icon="ti-settings"      view={view} showView={showView} shortcut="9" />
+      {canManageUsers(state) && <NavItem id="admin" label="User management" icon="ti-users-group" view={view} showView={showView} />}
+      </div>{/* /sidebar-nav */}
 
+      <div className="sidebar-foot">
       {/* Dark mode toggle */}
       <div style={{ padding: '8px 20px 0' }}>
         <button
@@ -77,6 +82,7 @@ export default function Sidebar({ view, showView, state, dark, setDark, goHome }
       </div>
 
       <UserIdentity state={state} gitName={name} connected={connected} />
+      </div>{/* /sidebar-foot */}
     </aside>
   )
 }

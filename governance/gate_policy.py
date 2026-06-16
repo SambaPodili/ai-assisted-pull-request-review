@@ -171,6 +171,22 @@ def evaluate_policy(report: AnalysisReport, settings=None) -> PolicyResult:
         elif high_sec and not block_reasons:
             hold_reasons.append(f"{len(high_sec)} high-severity security finding(s)")
 
+    # A CONFIRMED critical code-analysis finding (e.g. a deleted symbol still
+    # called → NameError, a broken reference) is a real merge blocker, not a
+    # style nit. Hold for human review so the gate agrees with the Review Plan /
+    # Top Issues instead of silently APPROVING. Unverified/speculative findings
+    # are excluded by _has_content. HOLD (not BLOCK) because it's a single-agent
+    # signal — a reviewer confirms, then merges.
+    ca = report.code_analysis
+    if ca:
+        crit_code = [f for f in (getattr(ca, "findings", None) or [])
+                     if _is_critical(getattr(f, "severity", "")) and _has_content(f)]
+        if crit_code and not block_reasons:
+            hold_reasons.append(
+                f"{len(crit_code)} confirmed critical code finding(s) "
+                "(e.g. broken reference / runtime error) — confirm before merge"
+            )
+
     iface = report.interface
     if iface and getattr(iface, "breaking_changes", None):
         hold_reasons.append(
