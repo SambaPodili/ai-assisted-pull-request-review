@@ -673,6 +673,96 @@ async function icon(Comp, color = "#0E1A33", size = 256) {
                     rowH: [0.34, ...tasks.map(() => 0.405)],
                     border: { type: "solid", pt: 0.75, color: C.border }, valign: "middle" });
 
+  // ════════════════ ROADMAP DETAIL SLIDES (Quality / Efficiency+AI / Platform) ═
+  // Shared renderer: eyebrow + title + subtitle + a themed task table + footer.
+  const roadmapTable = (eyeTxt, titleTxt, subtitle, rows, themeColors2, lastColHdr, footer) => {
+    const sl = mkSlide(); sl.background = { color: C.light };
+    eyebrow(sl, eyeTxt, C.teal);
+    title(sl, titleTxt);
+    sl.addText(subtitle, { x: MX, y: 1.38, w: W - 2 * MX, h: 0.36, fontFace: BF, fontSize: 12.5, color: C.muted, margin: 0 });
+    const hd = (t, align = "left") => ({ text: t, options: { bold: true, color: C.light, fontFace: HF, fontSize: 12, fill: { color: C.navy }, align, valign: "middle" } });
+    const data = [[hd("#", "center"), hd("Feature"), hd("What it delivers"), hd(lastColHdr, "center")]];
+    rows.forEach((row, i) => {
+      const fill = i % 2 ? "EEF2F8" : "FFFFFF";
+      const tc = themeColors2[row[3]] || C.muted;
+      data.push([
+        { text: row[0], options: { color: "94A3B8", bold: true, fontFace: BF, fontSize: 10, align: "center", valign: "middle", fill: { color: fill } } },
+        { text: row[1], options: { color: C.ink, bold: true, fontFace: BF, fontSize: 10, align: "left", valign: "middle", fill: { color: fill }, margin: [2, 4, 2, 6] } },
+        { text: row[2], options: { color: C.muted, fontFace: BF, fontSize: 9.3, align: "left", valign: "middle", fill: { color: fill }, margin: [2, 4, 2, 6] } },
+        { text: row[3], options: { color: tc, bold: true, fontFace: BF, fontSize: 8.8, align: "center", valign: "middle", fill: { color: fill } } },
+      ]);
+    });
+    const bodyH = Math.min(0.42, 4.55 / rows.length);
+    sl.addTable(data, { x: MX, y: 1.8, w: W - 2 * MX, colW: [0.45, 3.15, 6.43, 2.0],
+                        rowH: [0.32, ...rows.map(() => bodyH)],
+                        border: { type: "solid", pt: 0.75, color: C.border }, valign: "middle" });
+    if (footer) sl.addText(footer, { x: MX, y: 6.85, w: W - 2 * MX, h: 0.4, fontFace: BF, fontSize: 10, italic: true, color: C.muted, align: "center", margin: 0 });
+    return sl;
+  };
+
+  // ── Roadmap A+D: detection quality & measurement ──
+  roadmapTable(
+    "Roadmap · Detail 1 of 3", "Detection quality & measurement",
+    "Make every finding more likely to be real — and prove it with numbers.",
+    [
+      ["A1", "Self-consistency voting", "Run risky-diff agents 3× and keep only findings that appear in ≥2 samples — agreement across runs filters AI noise, complementing today's agreement across agents", "Quality"],
+      ["A2", "Semantic finding dedup", "Embedding similarity merges duplicates that are worded differently — today's correlation groups by file+line only", "Quality"],
+      ["A3", "Auto-tuning from feedback", "Valid / false-positive clicks re-weight rule severity and confidence per repo — the tool gets more precise with use", "Quality"],
+      ["A4", "Cross-file taint propagation", "Follow tainted values across files via the reference graph — catches controller → service → DAO injection paths", "Quality"],
+      ["A5", "Test-impact selection", "Map changed symbols to the tests that exercise them: “these 14 tests must pass before merge”", "Quality"],
+      ["A6", "FSD requirement memory", "Persist extracted requirements per repo and track requirement → implementing-PR history across releases (spec drift becomes visible)", "Quality"],
+      ["D1", "Golden corpus from real PRs", "Grow the CI quality gate from 12 cases to 50+ using anonymised production diffs (incl. your Java/DTO patterns)", "Measure"],
+      ["D2", "Precision / recall dashboard", "Trend quality-gate metrics and reviewer-feedback rates per agent across releases, in Insights", "Measure"],
+      ["D3", "Cost-per-finding metric", "Tokens spent per ACCEPTED finding, per agent — the true efficiency KPI that drives routing decisions", "Measure"],
+    ],
+    { Quality: C.indigo, Measure: C.green }, "Theme",
+    "Quality features build on shipped foundations: evidence guard · cross-agent correlation · reviewer feedback loop · CI quality gate.");
+
+  // ── Roadmap B+C: efficiency & advanced AI ──
+  roadmapTable(
+    "Roadmap · Detail 2 of 3", "Efficiency, cost & advanced AI",
+    "Faster runs and lower token spend — then capabilities no scanner has.",
+    [
+      ["B1", "Dynamic agent routing  ⭐", "Skip agents whose domain isn't in the diff (no IaC files → no IaC LLM call) — 30–50% token savings on typical PRs", "Efficiency"],
+      ["B2", "Incremental re-analysis", "On PR update, re-analyse only changed files and reuse prior results — second pushes drop from minutes to seconds", "Efficiency"],
+      ["B3", "Prompt caching  ⭐", "Cache the static prompt prefix (system + schema + rubric) at the provider — ~40–60% input-token cost cut, zero behaviour change", "Efficiency"],
+      ["B4", "Tiered model routing", "A fast model triages each file's risk; only risky files reach the strong model — full coverage of big PRs at a fraction of the cost", "Efficiency"],
+      ["B5", "Streaming results", "Push each agent's findings to the dashboard as they land — reviewers start reading while later agents still run", "Efficiency"],
+      ["B6", "Symbol-level diff cache", "Cache per-(file-hash, agent) results across PRs — rebases and cherry-picks hit cache org-wide", "Efficiency"],
+      ["C1", "Auto-fix PRs", "Apply the remediation agent's fix diffs as a suggested commit / follow-up PR with one click — findings become fixes", "Advanced AI"],
+      ["C2", "Repo knowledge base (RAG)", "Index docs, ADRs, FSDs and past review comments; agents retrieve YOUR conventions per diff, not generic best practice", "Advanced AI"],
+      ["C3", "Risk prediction model", "Learn from change history + incident outcomes to predict defect probability per file as a first-class gate signal", "Advanced AI"],
+      ["C4", "Generated-test execution", "Compile and run the QA agent's test skeletons in a sandbox — close the loop from “should test X” to “X was tested”", "Advanced AI"],
+      ["C5", "Shadow mode & A/B prompts", "Run candidate prompts/models silently beside production; promote only when the judge panel + golden gate confirm improvement", "Advanced AI"],
+      ["C6", "IDE inline feedback", "CIAA findings in VS Code / IntelliJ at commit time — issues caught before the PR even opens", "Advanced AI"],
+    ],
+    { Efficiency: C.blue, "Advanced AI": C.amber }, "Theme",
+    "⭐ = quick win. Efficiency items compound: routing + caching + tiering apply to every analysis the org runs.");
+
+  // ── Roadmap E/F/G: platform front (vs SonarQube & Veracode) ──
+  roadmapTable(
+    "Roadmap · Detail 3 of 3", "Platform front — parity with SonarQube & Veracode",
+    "Program-management features that turn CIAA from a PR checker into an org-wide code-quality platform. Detection stays our edge.",
+    [
+      ["E1", "Baseline scan + new-code mode", "Scan the whole repo once as a baseline; judge PRs only on NEW code while tracking legacy debt separately", "Clean as You Code"],
+      ["E2", "Quality profiles / rule manager", "Enable/disable rules, adjust severities and define custom regex/AST rules per repo or team — from the UI", "Quality Profiles"],
+      ["E3", "Technical-debt quantification", "Per-issue fix-effort estimates rolled into an A–E maintainability rating per repo", "SQALE rating"],
+      ["E5", "Coverage ingestion + trends", "Import JaCoCo/Cobertura from CI so coverage deltas are measured, not estimated; trend per repo", "Coverage history"],
+      ["E6", "Configurable gate conditions", "Per-repo gate rules from the UI: “HOLD if new-code coverage < 80% or any new critical”", "Quality Gate"],
+      ["F1", "Issue lifecycle & mitigation", "Findings get states (open → confirmed → mitigated → fixed), assignees, and security-approved mitigations", "Flaw mitigation"],
+      ["F2", "Policy center + grace periods", "Org policies like “criticals fixed in 7 days”; exemptions with expiry; PRs evaluated against policy", "Policy scans"],
+      ["F3", "SBOM generation", "CycloneDX/SPDX software bill of materials per release — a growing regulatory requirement in banking", "SCA / SBOM"],
+      ["F4", "Auditor-grade reports", "Signed PDF attestation per release: OWASP/PCI/CWE mapping with evidence, gate history and sign-offs", "Compliance reports"],
+      ["G1", "Portfolio dashboard", "Org rollup: every repo's rating, open criticals, gate pass-rate and debt trend — the CISO view", "Portfolios / Analytics"],
+      ["G3", "Jira / ServiceNow sync", "Findings create tickets with two-way status sync (builds on the existing ticket-creator stub)", "Integrations"],
+      ["G4", "Scheduled scans", "Nightly full-repo scans independent of PRs — catch drift and new CVEs in existing dependencies", "Policy scans"],
+    ],
+    { "Clean as You Code": C.teal, "Quality Profiles": C.teal, "SQALE rating": C.teal, "Coverage history": C.teal,
+      "Quality Gate": C.teal, "Flaw mitigation": C.red, "Policy scans": C.red, "SCA / SBOM": C.red,
+      "Compliance reports": C.red, "Portfolios / Analytics": C.indigo, "Integrations": C.indigo },
+    "Sonar / Veracode equivalent",
+    "Also planned: code-duplication detection · security-hotspot review queue · DAST result import · per-application risk scoring.");
+
   // ════════════════ SLIDE 11 — CLOSING ════════════════
   s = mkSlide(); s.background = { color: C.navy };
   s.addShape(p.shapes.RECTANGLE, { x: 0, y: 0, w: W, h: 0.18, fill: { color: C.teal } });

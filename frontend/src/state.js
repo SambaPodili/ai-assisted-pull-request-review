@@ -16,6 +16,8 @@ export const AGENT_META = {
   maintainability:    { label:'Maintainability',       icon:'ti-tool',              phase:'Phase 1b', color:'#6366f1', desc:'Flags long functions, duplication and complexity smells that hurt long-term maintainability.' },
   license_compliance: { label:'License Compliance',    icon:'ti-license',           phase:'Phase 1b', color:'#059669', desc:'Checks newly-added dependencies for copyleft / unknown licences. Copyleft introduction BLOCKs the gate.' },
   observability:      { label:'Observability',         icon:'ti-eye',               phase:'Phase 1b', color:'#0ea5e9', desc:'Detects removed logs / metrics and missing instrumentation on new code paths.' },
+  functional_validation: { label:'FSD Validation',       icon:'ti-file-check',        phase:'Phase 1b', color:'#6366f1', desc:'Validates the change against uploaded Functional Specification Documents and reports business-function impact across dependent repos.' },
+  cross_repo_impact:  { label:'Cross-Repo Impact',     icon:'ti-affiliate',         phase:'Phase 1b', color:'#e11d48', desc:'Deep analysis of declared downstream repos: for each call-site of a changed symbol, judges whether the change breaks that caller (signature/removal) and the exact fix.' },
   dependency:         { label:'Dependency Mapping',    icon:'ti-topology-star-3',   phase:'Phase 2',  color:'#f59e0b', desc:'Computes blast radius across the service dependency graph and checks changed dependencies for known CVEs (OSV). CVEs BLOCK.' },
   test_coverage:      { label:'Test Coverage',         icon:'ti-test-pipe',         phase:'Phase 2',  color:'#10b981', desc:'Finds test gaps, validates per-method scenario coverage, flags assertion-free (hollow) tests, and generates stubs.' },
   interface:          { label:'Interface / API',       icon:'ti-api',               phase:'Phase 2',  color:'#3b82f6', desc:'Detects contract-breaking changes in REST / gRPC / AsyncAPI / MQ and traces downstream consumer impact. Breaking → HOLD.' },
@@ -27,7 +29,7 @@ export const AGENT_ORDER = [
   'code_analysis','security',
   'ast_analysis','secrets_entropy','taint_analysis','iac_analysis','temporal_risk',
   'schema_change','qa_scenarios','reference_impact',
-  'performance_impact','data_privacy','maintainability','license_compliance','observability',
+  'performance_impact','data_privacy','maintainability','license_compliance','observability','functional_validation','cross_repo_impact',
   'dependency','test_coverage','interface','risk','remediation',
 ];
 

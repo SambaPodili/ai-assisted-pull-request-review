@@ -167,6 +167,9 @@ class PerformanceImpactAgent(BaseAgent[PerformanceImpactResult]):
         if not llm_attempted:
             self.report_static_progress(request, result.duration_s)
 
+        # LLM path is already logged by base.run(); log here only the static path.
+        if result.fallback_used:
+            self.log_done(request, result, mode="static", note=f"{len(result.findings)} finding(s)")
         return result
 
     def build_user_prompt(self, request: AnalysisRequest, context: dict[str, Any]) -> str:

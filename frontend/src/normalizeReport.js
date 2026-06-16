@@ -1,4 +1,13 @@
 // Normalize backend report to UI shape
+const _rvf = f => ({
+  file: f.file_path || f.file || '',
+  bucket: f.bucket || 'auto_approvable',
+  top_severity: (f.top_severity || 'low').toLowerCase(),
+  finding_count: f.finding_count || 0,
+  confirmed_count: f.confirmed_count || 0,
+  reasons: f.reasons || [],
+});
+
 export function normalizeReport(r) {
   const isFull = r.code_analysis !== undefined || r.security !== undefined || r.errors !== undefined;
 
@@ -112,6 +121,7 @@ export function normalizeReport(r) {
       reversible: c.reversible !== false,
       description: c.description || '',
       rollback_sql: c.rollback_sql || '',
+      on_new_table: c.on_new_table || false,
     })),
   } : null;
 
@@ -224,6 +234,7 @@ export function normalizeReport(r) {
     scenarios: (qar.scenarios||[]).map(s=>({ id:s.id||'', title:s.title||'', type:s.type||'functional', priority:s.priority||'medium', description:s.description||'', steps:s.steps||[], expected_result:s.expected_result||'', affected_files:s.affected_files||[], automation_hint:s.automation_hint||'', preconditions:s.preconditions||[], acceptance_criteria:s.acceptance_criteria||[], test_skeleton:s.test_skeleton||'' })),
     total_scenarios: qar.total_scenarios || (qar.scenarios||[]).length,
     summary: qar.summary || '',
+    fallback_used: qar.fallback_used || false,
   } : null;
 
   return {
@@ -236,6 +247,33 @@ export function normalizeReport(r) {
     reference_impact: riNorm, performance_impact: perfNorm,
     data_privacy: privNorm, maintainability: maintNorm,
     license_compliance: licNorm, observability: obsNorm,
+    functional_validation: r.functional_validation ? {
+      requirements: (r.functional_validation.requirements||[]).map(q=>({
+        req_id:q.req_id||'', text:q.text||'', status:q.status||'not_addressed',
+        evidence:q.evidence||'', notes:q.notes||'', source_doc:q.source_doc||'' })),
+      impacts: (r.functional_validation.impacts||[]).map(m=>({
+        function:m.function||'', impact:m.impact||'', risk:(m.risk||'medium').toLowerCase(),
+        affected_repos:m.affected_repos||[], test_focus:m.test_focus||'' })),
+      docs_analysed: r.functional_validation.docs_analysed||[],
+      has_contradiction: r.functional_validation.has_contradiction||false,
+      coverage_pct: r.functional_validation.coverage_pct||0,
+      summary: r.functional_validation.summary||'',
+      notes: r.functional_validation.notes||[],
+    } : null,
+    cross_repo_impact: r.cross_repo_impact ? {
+      impacts: (r.cross_repo_impact.impacts||[]).map(m=>({
+        repo:m.repo||'', file:m.file_path||m.file||'', line:m.line||0, symbol:m.symbol||'',
+        change_kind:m.change_kind||'', impact:m.impact||'verify',
+        severity:(m.severity||'medium').toString().toLowerCase(),
+        reason:m.reason||'', suggested_fix:m.suggested_fix||'', caller_context:m.caller_context||'' })),
+      repos_analysed: r.cross_repo_impact.repos_analysed||[],
+      total_call_sites: r.cross_repo_impact.total_call_sites||0,
+      breaking_count: r.cross_repo_impact.breaking_count||0,
+      overall_risk: (r.cross_repo_impact.overall_risk||'low').toString().toLowerCase(),
+      analysed: r.cross_repo_impact.analysed||false,
+      summary: r.cross_repo_impact.summary||'',
+      fallback_used: r.cross_repo_impact.fallback_used||false,
+    } : null,
     risk: riskObj, remediation: remNorm,
     token_usage: r.total_tokens || (Array.isArray(r.token_usage) ? r.token_usage.reduce((s,u)=>s+(u.tokens_used||0),0) : r.token_usage) || 0,
     duration_s: r.duration_s || 0,
@@ -250,6 +288,15 @@ export function normalizeReport(r) {
     ai_proposed_gate:          r.ai_proposed_gate || '',
     capabilities_affected:     r.capabilities_affected || [],
     consumer_impacts:          r.consumer_impacts || [],
+    review_plan:               r.review_plan ? {
+      must_fix:        (r.review_plan.must_fix||[]).map(_rvf),
+      needs_review:    (r.review_plan.needs_review||[]).map(_rvf),
+      auto_approvable: (r.review_plan.auto_approvable||[]).map(_rvf),
+      read_first:      r.review_plan.read_first||[],
+      effort_minutes:  r.review_plan.effort_minutes||0,
+      headline:        r.review_plan.headline||'',
+      summary:         r.review_plan.summary||'',
+    } : null,
     top_issues:                r.top_issues || [],
     suppressed_count:          r.suppressed_count || 0,
     suppressed_notes:          r.suppressed_notes || [],

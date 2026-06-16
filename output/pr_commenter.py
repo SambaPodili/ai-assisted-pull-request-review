@@ -172,8 +172,16 @@ class PRCommenter:
             f"> Risk Level: **{risk.value.upper()}** | Tokens used: {report.total_tokens}",
         ]
 
-        # Lead with the ranked, cross-agent-deduplicated Top Issues — the
-        # "what must I look at" list — before any metric tables.
+        # Lead with the reviewer triage (must-fix / needs-review / auto-approvable),
+        # then the ranked Top Issues — the "where do I look" view before metrics.
+        try:
+            from governance.review_plan import review_plan_markdown
+            rp_md = review_plan_markdown(report)
+            if rp_md:
+                sections.append(rp_md)
+        except Exception:
+            pass
+
         try:
             from governance.correlation import top_issues_markdown
             top_md = top_issues_markdown(report)

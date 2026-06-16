@@ -33,9 +33,15 @@ from ingestion.language_registry import lang_meta, test_framework_hint, linter_h
 
 # ── Heuristic classifiers ─────────────────────────────────────────────────────
 
+# NOTE: deliberately does NOT match a bare "sql" — a plain CREATE TABLE / DDL
+# file is a DATA concern (handled by _DB_PATTERNS), not a security one. Real
+# SQL-injection risk is still caught via "inject"/"sanitize"/"sql injection".
+# Substring (not word-bounded) so camelCase identifiers like hasPermission /
+# getUserToken / AuthException are still recognised.
 _SECURITY_PATTERNS = re.compile(
     r'password|secret|token|api_?key|auth|credential|crypt|hash|jwt|oauth|'
-    r'permission|privilege|role|acl|cors|csrf|xss|sql|inject|sanitize',
+    r'permission|privilege|role|acl|cors|csrf|xss|inject|sanitize|'
+    r'sql\s*injection|dynamic\s*sql',
     re.I,
 )
 _API_PATTERNS = re.compile(
@@ -228,20 +234,30 @@ def _build_fallback_scenarios(request: AnalysisRequest) -> list[QAScenario]:
 
         if QAScenarioType.SECURITY in cats:
             lang_risks = "; ".join(meta.security_notes[:3]) if meta.security_notes else "general OWASP top 10"
+            is_api = QAScenarioType.API in cats
+            attack_vectors = ', '.join(meta.security_notes[:2]) if meta.security_notes else 'injection, XSS, path traversal'
+            sec_steps = ["Review the change for hardcoded secrets or credentials"]
+            if is_api:
+                sec_steps.append("Test authentication/authorization flows affected by the change")
+            sec_steps += [
+                "Verify input validation and sanitization are in place",
+                f"Test {meta.display}-specific attack vectors: {attack_vectors}",
+                "Check that sensitive data is not logged or exposed in error responses",
+            ]
+            sec_expected = (
+                "No credentials exposed; all auth checks pass; attack vectors rejected with "
+                "appropriate HTTP status codes and safe error messages."
+                if is_api else
+                "No credentials exposed; inputs are validated/sanitised; attack vectors rejected "
+                "and sensitive data is never logged or leaked in errors."
+            )
             scenarios.append(_make_scenario(
                 idx, f"Security validation — {fp}",
                 QAScenarioType.SECURITY, RiskLevel.CRITICAL,
                 f"Verify that security controls in {fp} ({meta.display}) are correctly implemented. "
                 f"Language-specific risks: {lang_risks}.",
-                [
-                    "Review the change for hardcoded secrets or credentials",
-                    "Test authentication/authorization flows affected by the change",
-                    "Verify input validation and sanitization are in place",
-                    f"Test {meta.display}-specific attack vectors: {', '.join(meta.security_notes[:2]) if meta.security_notes else 'injection, XSS, path traversal'}",
-                    "Check that sensitive data is not logged or exposed in error responses",
-                ],
-                "No credentials exposed; all auth checks pass; attack vectors rejected with "
-                "appropriate HTTP status codes and safe error messages.",
+                sec_steps,
+                sec_expected,
                 [fp],
                 sec_tool_str,
             ))

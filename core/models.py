@@ -64,6 +64,8 @@ class AgentName(str, Enum):
     MAINTAINABILITY       = "maintainability"
     LICENSE_COMPLIANCE    = "license_compliance"
     OBSERVABILITY         = "observability"
+    FUNCTIONAL_VALIDATION = "functional_validation"
+    CROSS_REPO_IMPACT     = "cross_repo_impact"
 
 
 class DeploymentStrategy(str, Enum):
@@ -284,6 +286,36 @@ class RemediationResult(AgentResultBase):
     executive_summary:    str = ""
 
 
+class FSDRequirement(BaseModel):
+    """One requirement extracted from an uploaded Functional Specification
+    Document, validated against the code change."""
+    req_id:    str = ""        # e.g. "R3" or the FSD's own numbering ("4.2")
+    text:      str = ""        # the requirement sentence(s)
+    status:    str = "not_addressed"   # implemented | partial | missing | contradicted | not_addressed
+    evidence:  str = ""        # file / symbol in the diff supporting the status
+    notes:     str = ""
+    source_doc: str = ""       # which uploaded document it came from
+
+
+class FunctionalImpact(BaseModel):
+    """A business function affected by this change (FSD + diff + dependent repos)."""
+    function:       str = ""           # business function, e.g. "Fee calculation"
+    impact:         str = ""           # how the change affects it
+    risk:           str = "medium"     # high | medium | low
+    affected_repos: list[str] = []     # dependent repos that consume this function
+    test_focus:     str = ""           # where to point regression testing
+
+
+class FunctionalValidationResult(AgentResultBase):
+    requirements:      list[FSDRequirement]  = []
+    impacts:           list[FunctionalImpact] = []
+    docs_analysed:     list[str] = []          # names of FSDs consumed
+    has_contradiction: bool  = False           # change conflicts with the spec
+    coverage_pct:      float = 0.0             # % of extracted requirements touched by this change
+    summary:           str   = ""
+    notes:             list[str] = []          # e.g. "no FSD uploaded"
+
+
 class CorrelatedIssue(BaseModel):
     """One deduplicated, ranked issue — possibly corroborated by several agents.
 
@@ -313,6 +345,29 @@ class ConsumerImpact(BaseModel):
     failure_mode:  str  = ""      # e.g. "HTTP 404", "AttributeError", "type mismatch"
     severity:      str  = "high"
     repo:          str  = ""      # empty = same repo; populated for cross-repo hits
+
+
+# ── Reviewer Review Plan (triage) ─────────────────────────────────────────────
+
+class ReviewFile(BaseModel):
+    """One changed file, triaged into a review bucket with the reasons why."""
+    file_path:       str       = ""
+    bucket:          str       = "auto_approvable"  # must_fix | needs_review | auto_approvable
+    top_severity:    str       = "low"
+    finding_count:   int       = 0    # all findings citing this file (incl. low-confidence)
+    confirmed_count: int       = 0    # confirmed (not unverified/speculative) findings
+    reasons:         list[str] = []   # short human reasons, e.g. "Confirmed HIGH: SQL injection"
+
+
+class ReviewPlan(BaseModel):
+    """PR-level triage so a reviewer knows where to spend attention first."""
+    must_fix:        list[ReviewFile] = []
+    needs_review:    list[ReviewFile] = []
+    auto_approvable: list[ReviewFile] = []
+    read_first:      list[str]        = []   # ordered file paths, highest-risk first
+    effort_minutes:  int              = 0    # heuristic human-review effort estimate
+    headline:        str              = ""   # one-line "🚨 1 must-fix · ⚠ 2 need a human · …"
+    summary:         str              = ""
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -436,6 +491,7 @@ class SchemaChange(BaseModel):
     reversible:   bool       = True
     description:  str        = ""
     rollback_sql: str        = ""
+    on_new_table: bool       = False   # index/PK/FK on a table CREATED in this same change set → no lock risk
 
 class SchemaChangeResult(AgentResultBase):
     changes:           list[SchemaChange] = []
@@ -503,6 +559,34 @@ class ReferenceImpactResult(AgentResultBase):
     intra_project_risk: RiskLevel             = RiskLevel.LOW
     search_backend:     str                   = ""  # "local_grep" | "github_api" | "none"
     summary:            str                   = ""
+
+
+# ── Cross-Repo Deep Impact ────────────────────────────────────────────────────
+
+class CrossRepoImpact(BaseModel):
+    """Deep per-call-site impact assessment in a declared DOWNSTREAM repo: does
+    the primary change break THIS caller, and how to fix it."""
+    repo:           str        = ""           # downstream repo slug
+    file_path:      str        = ""           # caller file in that repo
+    line:           int        = 0
+    symbol:         str        = ""           # the changed symbol this call-site uses
+    change_kind:    str        = ""           # removed | signature_changed | modified
+    impact:         str        = "verify"     # breaks | likely | possible | unlikely | verify
+    severity:       RiskLevel  = RiskLevel.MEDIUM
+    reason:         str        = ""           # why it does / doesn't break
+    suggested_fix:  str        = ""           # concrete change the downstream repo must make
+    caller_context: str        = ""           # enclosing caller code (snippet)
+
+
+class CrossRepoImpactResult(AgentResultBase):
+    """Aggregated deep impact across all declared downstream repos."""
+    impacts:          list[CrossRepoImpact] = []
+    repos_analysed:   list[str]             = []
+    total_call_sites: int                   = 0
+    breaking_count:   int                   = 0   # impacts judged breaks/likely
+    overall_risk:     RiskLevel             = RiskLevel.LOW
+    analysed:         bool                  = False  # False = no downstream repos / call-sites
+    summary:          str                   = ""
 
 
 # ── Performance Impact ────────────────────────────────────────────────────────
@@ -645,6 +729,8 @@ class AnalysisReport(BaseModel):
     maintainability:    MaintainabilityResult   | None = None
     license_compliance: LicenseComplianceResult | None = None
     observability:      ObservabilityResult     | None = None
+    functional_validation: FunctionalValidationResult | None = None
+    cross_repo_impact:     CrossRepoImpactResult   | None = None
 
     # Phase 3
     risk:          RiskResult         | None = None
@@ -666,6 +752,9 @@ class AnalysisReport(BaseModel):
 
     # Downstream call-sites that breaking changes will affect (with failure mode)
     consumer_impacts:        list[ConsumerImpact] = []
+
+    # Reviewer triage: which files must be fixed / need a human / are auto-approvable
+    review_plan:             ReviewPlan | None = None
 
     # Findings auto-suppressed because reviewers repeatedly marked this
     # (agent, category) a false positive for this repo (transparency, not hiding).

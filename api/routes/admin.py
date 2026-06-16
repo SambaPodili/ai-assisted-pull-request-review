@@ -6,6 +6,7 @@ Phase 4: Prometheus /metrics, circuit breaker status, human gate overrides.
 Includes user/key management endpoints for admin and analyst roles.
 """
 from __future__ import annotations
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 from datetime import datetime
 
@@ -13,7 +14,14 @@ from pydantic import BaseModel
 
 from governance.rbac import Permission, Subject, Role, ROLE_META, require_permission
 
+log = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+def _actor(subject: Subject) -> str:
+    """Human-readable actor for audit logs (never the raw key)."""
+    return getattr(subject, "name", None) or "unknown"
 
 
 # ── Report purge (admin only) ─────────────────────────────────────────────────
@@ -82,7 +90,11 @@ def purge_reports(body: PurgeRequest,
         matched.append({"request_id": m["request_id"], "repo": m.get("repo", ""),
                         "completed_at": m.get("completed_at", "")})
 
+    filt = (f"repo_contains={body.repo_contains!r} older_than_days={body.older_than_days} "
+            f"demo_only={body.demo_only}")
     if body.dry_run:
+        log.info("Admin purge DRY-RUN by %s — %d report(s) match (%s)",
+                 _actor(subject), len(matched), filt)
         return {
             "dry_run": True,
             "would_delete": len(matched),
@@ -90,7 +102,11 @@ def purge_reports(body: PurgeRequest,
             "message": f"{len(matched)} report(s) match. Re-run with dry_run=false to delete.",
         }
 
+    # Destructive — audit at WARNING with the actor and filters.
+    log.warning("Admin purge EXECUTE by %s — deleting %d matched report(s) (%s)",
+                _actor(subject), len(matched), filt)
     deleted = sum(1 for m in matched if store.delete(m["request_id"]))
+    log.warning("Admin purge by %s — %d report(s) deleted", _actor(subject), deleted)
     return {
         "dry_run": False,
         "deleted": deleted,
@@ -108,8 +124,11 @@ def send_digest_now(days: int = 1,
     Useful for testing SMTP config or sending an ad-hoc summary. Admin only.
     """
     from output.digest import send_digest
+    log.info("Admin digest send requested by %s (days=%d)", _actor(subject), days)
     result = send_digest(days=days)
     if not result.get("ok"):
+        log.warning("Admin digest send failed (requested by %s): %s",
+                    _actor(subject), result.get("reason", "?"))
         raise HTTPException(400, detail=result.get("reason", "Digest send failed"))
     return result
 
@@ -149,6 +168,7 @@ def reload_keys(subject: Subject = require_permission(Permission.ADMIN_CONFIG)):
     """
     from governance.rbac import get_registry
     count = get_registry().reload()
+    log.warning("Admin API-key reload by %s — %d key(s) now active", _actor(subject), count)
     return {
         "ok":      True,
         "message": f"Reloaded {count} key(s) — no restart required.",

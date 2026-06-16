@@ -15,9 +15,12 @@ without auth — the browser sends these before every cross-origin request and
 they never carry credentials. Blocking them causes "Failed to fetch" errors.
 """
 from __future__ import annotations
+import logging
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+
+log = logging.getLogger(__name__)
 
 
 _OPEN_PATHS = {
@@ -41,6 +44,16 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
                 if k:
                     self._keys.add(k)
         self._skip_auth = skip_auth
+        if skip_auth:
+            # Security-relevant config: surface loudly so it's never silently on in prod.
+            log.warning("APIKeyMiddleware: SKIP_AUTH is ENABLED — all requests bypass "
+                        "API-key authentication. Never use this in production.")
+        else:
+            log.info("APIKeyMiddleware: enabled with %d configured key(s)", len(self._keys))
+
+    @staticmethod
+    def _client(request: Request) -> str:
+        return request.client.host if request.client else "unknown"
 
     async def dispatch(self, request: Request, call_next):
         if request.method == "OPTIONS":
@@ -54,6 +67,9 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             or request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
         )
         if not key:
+            # Never log the key itself — only that a credential was missing, and where.
+            log.warning("Auth rejected (401, no credential) %s %s from %s",
+                        request.method, request.url.path, self._client(request))
             return JSONResponse(
                 {"error": "Unauthorized — provide X-API-Key or Authorization: Bearer <key>"},
                 status_code=401,
@@ -68,6 +84,11 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         if key in self._keys:
             return await call_next(request)
 
+        # Invalid key — log the event (and a short fingerprint, never the key) so
+        # brute-force / misconfig is visible without leaking the secret.
+        log.warning("Auth rejected (401, invalid key …%s) %s %s from %s",
+                    key[-4:] if len(key) >= 4 else "??",
+                    request.method, request.url.path, self._client(request))
         return JSONResponse(
             {"error": "Unauthorized — invalid API key"},
             status_code=401,

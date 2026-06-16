@@ -10,6 +10,7 @@ Banking compliance: all overrides are written to the immutable audit log with
 the overrider's identity, reason, and timestamp.
 """
 from __future__ import annotations
+import logging
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
@@ -17,6 +18,8 @@ from core.models import GateDecision
 from governance.rbac import Permission, resolve_subject
 from governance.audit_logger import AuditEvent
 from config.settings import get_settings
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/gate", tags=["gate-override"])
 
@@ -72,6 +75,12 @@ def override_gate(request_id: str, body: OverrideRequest, request: Request):
     )
     get_gate_override_store().record(override)
 
+    # Human override of an automated gate is a compliance-significant event —
+    # log it (the immutable audit record is written separately below).
+    log.warning("Gate OVERRIDE on %s by %s (team=%s): %s -> %s — reason: %s",
+                request_id, subject.name or subject.key_id, subject.team,
+                original_gate, new_gate.value, body.reason.strip()[:200])
+
     # Record into the feedback loop (AI vs policy vs human) for tuning over time
     try:
         from governance.feedback_store import get_feedback_store
@@ -85,7 +94,7 @@ def override_gate(request_id: str, body: OverrideRequest, request: Request):
             reviewer=subject.name or subject.key_id,
         )
     except Exception as exc:
-        import logging; logging.getLogger(__name__).debug("gate feedback record failed: %s", exc)
+        log.debug("gate feedback record failed: %s", exc)
 
     # Write immutable audit record
     audit = get_audit_logger()

@@ -46,6 +46,8 @@ from agents.data_privacy_agent        import DataPrivacyAgent
 from agents.maintainability_agent     import MaintainabilityAgent
 from agents.license_compliance_agent  import LicenseComplianceAgent
 from agents.observability_agent       import ObservabilityAgent
+from agents.functional_validation_agent import FunctionalValidationAgent
+from agents.cross_repo_impact_agent     import CrossRepoImpactAgent
 from governance.audit_logger    import make_audit_logger, NullAuditLogger
 from governance.circuit_breaker import get_breaker_registry
 from governance.diff_cache      import get_diff_cache
@@ -121,6 +123,8 @@ class ImpactAnalysisOrchestrator:
         self._maint    = MaintainabilityAgent(api_key)
         self._license  = LicenseComplianceAgent(api_key)
         self._obs      = ObservabilityAgent(api_key)
+        self._func     = FunctionalValidationAgent(api_key)
+        self._xrepo    = CrossRepoImpactAgent(api_key)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -237,6 +241,8 @@ class ImpactAnalysisOrchestrator:
         report.iac_analysis    = p1b.get("iac")
         report.temporal_risk   = p1b.get("temporal")
         report.schema_change   = p1b.get("schema")
+        report.functional_validation = p1b.get("functional")
+        report.cross_repo_impact = p1b.get("xrepo")
         report.qa_scenarios    = p1b.get("qa")
         report.reference_impact = p1b.get("ref")
         report.performance_impact = p1b.get("perf")
@@ -247,7 +253,7 @@ class ImpactAnalysisOrchestrator:
         self._record_advanced_usage(report, p1b)
 
         if self.phase < 2:
-            return self._finalize(report, budget, {h.file_path for h in request.hunks})
+            return self._finalize(report, budget, {h.file_path for h in request.hunks}, self._changed_lines(request), self._source_lines(request))
 
         # ── Phase 2: dependency + test_coverage + interface (parallel) ────────
         p2 = self._run_parallel({
@@ -269,14 +275,14 @@ class ImpactAnalysisOrchestrator:
         self._record_single(report, report.risk, AgentName.RISK)
 
         if self.phase < 3:
-            return self._finalize(report, budget, {h.file_path for h in request.hunks})
+            return self._finalize(report, budget, {h.file_path for h in request.hunks}, self._changed_lines(request), self._source_lines(request))
 
         # ── Phase 3: remediation (always last) ───────────────────────────────
         rem_ctx = build_full_report_context(report)
         report.remediation = self._rem.run(request, budget, rem_ctx)
         self._record_single(report, report.remediation, AgentName.REMEDIATION)
 
-        return self._finalize(report, budget, {h.file_path for h in request.hunks})
+        return self._finalize(report, budget, {h.file_path for h in request.hunks}, self._changed_lines(request), self._source_lines(request))
 
     # ═════════════════════════════════════════════════════════════════════════
     #  LangGraph pipeline — complete implementation with all agents
@@ -308,6 +314,8 @@ class ImpactAnalysisOrchestrator:
             res_iac:       Optional[Any]
             res_temporal:  Optional[Any]
             res_schema:    Optional[Any]
+            res_functional: Optional[Any]
+            res_xrepo:     Optional[Any]
             res_qa:        Optional[Any]
             res_ref:       Optional[Any]
             res_perf:      Optional[Any]
@@ -354,6 +362,12 @@ class ImpactAnalysisOrchestrator:
 
         def node_schema(state: PipelineState) -> dict:
             return {"res_schema": orch._schema.run(state["request"], state["budget"], _actx(state, orch._schema))}
+
+        def node_functional(state: PipelineState) -> dict:
+            return {"res_functional": orch._func.run(state["request"], state["budget"], _actx(state, orch._func))}
+
+        def node_xrepo(state: PipelineState) -> dict:
+            return {"res_xrepo": orch._xrepo.run(state["request"], state["budget"], _actx(state, orch._xrepo))}
 
         def node_qa(state: PipelineState) -> dict:
             return {"res_qa": orch._qa.run(state["request"], state["budget"], _actx(state, orch._qa))}
@@ -406,6 +420,8 @@ class ImpactAnalysisOrchestrator:
                 iac_analysis=state.get("res_iac"),
                 temporal_risk=state.get("res_temporal"),
                 schema_change=state.get("res_schema"),
+                functional_validation=state.get("res_functional"),
+                cross_repo_impact=state.get("res_xrepo"),
                 qa_scenarios=state.get("res_qa"),
                 reference_impact=state.get("res_ref"),
                 performance_impact=state.get("res_perf"),
@@ -436,6 +452,8 @@ class ImpactAnalysisOrchestrator:
                 iac_analysis=state.get("res_iac"),
                 temporal_risk=state.get("res_temporal"),
                 schema_change=state.get("res_schema"),
+                functional_validation=state.get("res_functional"),
+                cross_repo_impact=state.get("res_xrepo"),
                 qa_scenarios=state.get("res_qa"),
                 reference_impact=state.get("res_ref"),
                 performance_impact=state.get("res_perf"),
@@ -458,6 +476,8 @@ class ImpactAnalysisOrchestrator:
         builder.add_node("iac",      node_iac)
         builder.add_node("temporal", node_temporal)
         builder.add_node("schema",   node_schema)
+        builder.add_node("functional", node_functional)
+        builder.add_node("xrepo",    node_xrepo)
         builder.add_node("qa",       node_qa)
         builder.add_node("ref",      node_ref)
         builder.add_node("perf",     node_perf)
@@ -468,7 +488,8 @@ class ImpactAnalysisOrchestrator:
 
         _advanced = (
             "security", "ast", "entropy", "taint", "iac", "temporal",
-            "schema", "qa", "ref", "perf", "privacy", "maint", "license", "obs",
+            "schema", "functional", "xrepo", "qa", "ref", "perf", "privacy",
+            "maint", "license", "obs",
         )
 
         # Fan-out from code: security + all advanced detection run in parallel
@@ -511,8 +532,8 @@ class ImpactAnalysisOrchestrator:
             "request": request, "budget": budget, "context": ctx,
             "res_code": None, "res_security": None,
             "res_ast": None, "res_entropy": None, "res_taint": None,
-            "res_iac": None, "res_temporal": None, "res_schema": None,
-            "res_qa": None, "res_ref": None,
+            "res_iac": None, "res_temporal": None, "res_schema": None, "res_functional": None,
+            "res_xrepo": None, "res_qa": None, "res_ref": None,
             "res_perf": None, "res_privacy": None, "res_maint": None,
             "res_license": None, "res_obs": None,
             "res_dep": None, "res_test": None, "res_iface": None,
@@ -536,6 +557,8 @@ class ImpactAnalysisOrchestrator:
             iac_analysis=final.get("res_iac"),
             temporal_risk=final.get("res_temporal"),
             schema_change=final.get("res_schema"),
+            functional_validation=final.get("res_functional"),
+            cross_repo_impact=final.get("res_xrepo"),
             qa_scenarios=final.get("res_qa"),
             reference_impact=final.get("res_ref"),
             performance_impact=final.get("res_perf"),
@@ -559,6 +582,8 @@ class ImpactAnalysisOrchestrator:
             (AgentName.IAC_ANALYSIS,    "res_iac"),
             (AgentName.TEMPORAL_RISK,   "res_temporal"),
             (AgentName.SCHEMA_CHANGE,   "res_schema"),
+            (AgentName.FUNCTIONAL_VALIDATION, "res_functional"),
+            (AgentName.CROSS_REPO_IMPACT,     "res_xrepo"),
             (AgentName.QA_SCENARIOS,    "res_qa"),
             (AgentName.REFERENCE_IMPACT,   "res_ref"),
             (AgentName.PERFORMANCE_IMPACT, "res_perf"),
@@ -580,7 +605,7 @@ class ImpactAnalysisOrchestrator:
                     duration_s=getattr(result, "duration_s", 0.0),
                 ))
 
-        return self._finalize(report, budget, {h.file_path for h in request.hunks})
+        return self._finalize(report, budget, {h.file_path for h in request.hunks}, self._changed_lines(request), self._source_lines(request))
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -605,6 +630,8 @@ class ImpactAnalysisOrchestrator:
             "maint":    self._maint,
             "license":  self._license,
             "obs":      self._obs,
+            "functional": self._func,
+            "xrepo":    self._xrepo,
         }
         # `ctx` is the per-agent map {AgentName: {...}}. Each agent must receive
         # ITS OWN context slice — not the whole map — otherwise context.get(
@@ -619,7 +646,7 @@ class ImpactAnalysisOrchestrator:
                 slice_ = ctx
             return slice_ or {}
 
-        with ThreadPoolExecutor(max_workers=13) as pool:
+        with ThreadPoolExecutor(max_workers=len(agents_map)) as pool:
             futures = {
                 pool.submit(agent.run, request, budget, _agent_ctx(agent)): name
                 for name, agent in agents_map.items()
@@ -712,10 +739,57 @@ class ImpactAnalysisOrchestrator:
                     results[name] = fb
         return results
 
+    @staticmethod
+    def _changed_lines(request) -> dict:
+        """{file_path: set(added line numbers)} from the request diff hunks."""
+        from ingestion.diff_parser import iter_added_lines
+        out = {}
+        for h in request.hunks:
+            nums = {ln for ln, _ in iter_added_lines(h.content)}
+            if nums:
+                out.setdefault(h.file_path, set()).update(nums)
+        return out
+
+    @staticmethod
+    def _source_lines(request) -> dict:
+        """{normalised_file_path: [(source_line_no, text), …]} for ALL new-file
+        lines (added + context). Used by the false-positive guard to verify
+        claims like "N+1 inside a loop" against the real surrounding code."""
+        from ingestion.diff_parser import iter_source_lines
+        out: dict[str, list[tuple[int, str]]] = {}
+        for h in request.hunks:
+            key = (h.file_path or "").replace("\\", "/").strip().lstrip("./").lower()
+            for ln, _kind, text in iter_source_lines(h.content):
+                out.setdefault(key, []).append((ln, text))
+        return out
+
     def _finalize(self, report: AnalysisReport, budget: TokenBudgetManager,
-                  changed_files: set[str] | None = None) -> AnalysisReport:
+                  changed_files: set[str] | None = None,
+                  changed_lines: dict[str, set[int]] | None = None,
+                  source_lines: dict[str, list] | None = None) -> AnalysisReport:
         summary = budget.summary()
         report.token_budget = summary["total_allocated"]
+        if changed_files is None and changed_lines:
+            changed_files = set(changed_lines.keys())
+
+        # ── Finding quality: snap wrong LLM line numbers to the real diff and
+        # flag speculative/hedged findings (excluded from the gate). Addresses
+        # the two biggest LLM-review complaints: wrong lines + false positives.
+        try:
+            from governance.finding_quality import correct_findings
+            if changed_lines:
+                correct_findings(report, changed_lines)
+        except Exception as exc:
+            log.debug("[%s] Finding-quality pass skipped: %s", report.request_id, exc)
+
+        # ── False-positive guard: kill three recurring LLM hallucination classes
+        # against the real diff — N+1 with no loop, "PII" on operational columns,
+        # and index/PK/FK lock warnings on a brand-new (empty) table.
+        try:
+            from governance.false_positive_guard import guard_false_positives
+            guard_false_positives(report, source_lines)
+        except Exception as exc:
+            log.debug("[%s] False-positive guard skipped: %s", report.request_id, exc)
 
         # ── Generalised evidence guard: flag any agent finding (code, AST, perf,
         # privacy, IaC, maintainability, observability) that cites a file not in
@@ -744,6 +818,14 @@ class ImpactAnalysisOrchestrator:
             report.top_issues = correlate_findings(report)
         except Exception as exc:
             log.debug("[%s] Correlation skipped: %s", report.request_id, exc)
+
+        # ── Reviewer review plan: triage every changed file into must-fix /
+        # needs-review / auto-approvable so a reviewer knows where to look first.
+        try:
+            from governance.review_plan import build_review_plan
+            report.review_plan = build_review_plan(report, changed_files)
+        except Exception as exc:
+            log.debug("[%s] Review plan skipped: %s", report.request_id, exc)
 
         # ── Derive blast radius from real impact signals when no service graph ──
         # Without a configured dependency graph the graph-based score is 0, which
@@ -849,6 +931,8 @@ class ImpactAnalysisOrchestrator:
             "maint":   AgentName.MAINTAINABILITY,
             "license": AgentName.LICENSE_COMPLIANCE,
             "obs":     AgentName.OBSERVABILITY,
+            "functional": AgentName.FUNCTIONAL_VALIDATION,
+            "xrepo":   AgentName.CROSS_REPO_IMPACT,
         }
         for key, agent_name in advanced_map.items():
             result = results.get(key)

@@ -122,11 +122,14 @@ class DependencyMappingAgent(BaseAgent[DependencyResult]):
         if self._graph is not None:
             result = self.analyse_with_graph(changed_packages)
             self.report_static_progress(request)   # graph path skips super().run()
+            mode = "graph"
         elif not any(_is_manifest(h.file_path) for h in request.hunks):
             result = self._empty_result(changed_packages)
             self.report_static_progress(request)   # no manifests — skips super().run()
+            mode = "skip"
         else:
             result = super().run(request, budget, ctx)   # base reports progress
+            mode = "llm"
 
         # Fold in downstream repos the reviewer explicitly declared as dependents
         # (the "connected repos" picked in the UI). These are real, named
@@ -154,6 +157,11 @@ class DependencyMappingAgent(BaseAgent[DependencyResult]):
                     "Dependency manifests changed but no downstream services, version bumps "
                     "or known CVEs were identified for the changed packages."
                 ]
+        # LLM path is logged by base.run(); log here the graph/skip (no-super) paths.
+        if mode != "llm":
+            self.log_done(request, result, mode=mode,
+                          note=f"{len(result.affected_services)} affected svc(s), "
+                               f"blast={result.blast_radius_score}, {len(result.cve_hits)} CVE(s)")
         return result
 
     def fallback_result(self, request: AnalysisRequest) -> DependencyResult:
@@ -248,7 +256,14 @@ def _merge_declared_dependents(result: DependencyResult, request: AnalysisReques
 
 
 def _osv_lookup(packages: list[str], request: AnalysisRequest) -> list[str]:
-    """Return CVE IDs for changed packages via OSV.dev. Silent on failure."""
+    """Return CVE IDs for changed packages via OSV.dev. Silent on failure.
+
+    Precision: where a manifest pins an exact version we query OSV WITH that
+    version (query_versioned), so only CVEs actually affecting the pinned version
+    are reported — not every CVE ever filed against the package (which over-reports
+    vulns already fixed in the pinned release). Packages whose version we can't
+    parse fall back to a name-only query so we never silently miss a real CVE.
+    """
     try:
         from config.settings import get_settings
         if not get_settings().osv_enabled:
@@ -256,20 +271,31 @@ def _osv_lookup(packages: list[str], request: AnalysisRequest) -> list[str]:
     except Exception:
         return []
 
-    if not packages:
-        return []
-
     try:
-        from ingestion.osv_client import lookup_multi_ecosystem, cve_ids as _cve_ids
-        # Group packages by the language detected in their manifests
-        lang_pkgs: dict[str, list[str]] = {}
-        for hunk in request.hunks:
-            if _is_manifest(hunk.file_path):
-                lang_pkgs.setdefault(hunk.language, []).extend(packages)
-        if not lang_pkgs:
-            lang_pkgs["python"] = packages   # sensible default
-        vulns = lookup_multi_ecosystem(lang_pkgs)
-        return _cve_ids(vulns)
+        from ingestion.osv_client import (
+            query_versioned, query_batch, lookup_multi_ecosystem, cve_ids as _cve_ids,
+        )
+        versioned, name_only = _extract_versioned_packages(request)
+        ids: list[str] = []
+
+        if versioned:
+            vres = query_versioned(versioned)                       # exact-version match
+            ids += _cve_ids([v for lst in vres.values() for v in lst])
+        if name_only:
+            bres = query_batch(name_only)                          # name-only (no version)
+            ids += _cve_ids([v for lst in bres.values() for v in lst])
+
+        # Last resort: nothing parsed from manifests but the caller has names.
+        if not versioned and not name_only and packages:
+            lang_pkgs: dict[str, list[str]] = {}
+            for hunk in request.hunks:
+                if _is_manifest(hunk.file_path):
+                    lang_pkgs.setdefault(hunk.language, []).extend(packages)
+            if not lang_pkgs:
+                lang_pkgs["python"] = packages
+            ids += _cve_ids(lookup_multi_ecosystem(lang_pkgs))
+
+        return list(dict.fromkeys(ids))
     except Exception as exc:
         import logging
         logging.getLogger(__name__).debug("OSV lookup failed: %s", exc)
@@ -278,6 +304,90 @@ def _osv_lookup(packages: list[str], request: AnalysisRequest) -> list[str]:
 
 def _is_manifest(path: str) -> bool:
     return any(path.endswith(m) for m in _MANIFEST_FILES)
+
+
+def _clean_ver(v: str) -> str:
+    """Strip semver range operators (^ ~ >= <= == etc.) → a concrete version."""
+    v = re.sub(r"^[\s\^~>=<!*]+", "", (v or "").strip())
+    v = v.split(",")[0].split()[0] if v else ""
+    return v.strip('"\'')
+
+
+def _extract_versioned_packages(
+    request: AnalysisRequest,
+) -> tuple[list[tuple[str, str, str]], list[tuple[str, str]]]:
+    """Parse manifest diffs into (versioned, name_only).
+
+    versioned  = [(name, ecosystem, version), …] for deps with a parseable version.
+    name_only  = [(name, ecosystem), …]          for deps where no version was found.
+    """
+    from ingestion.osv_client import _LANG_TO_ECOSYSTEM
+
+    versioned: list[tuple[str, str, str]] = []
+    name_only: list[tuple[str, str]] = []
+
+    for hunk in request.hunks:
+        if not _is_manifest(hunk.file_path):
+            continue
+        path = hunk.file_path.lower()
+        eco  = _LANG_TO_ECOSYSTEM.get(hunk.language, "")
+        pending_artifact: str | None = None     # Maven artifactId awaiting its <version>
+
+        for raw in hunk.content.splitlines():
+            if not raw.startswith("+") or raw.startswith("+++"):
+                continue
+            line = raw[1:]
+
+            # ── Maven (pom.xml): artifactId + version on adjacent lines ──
+            ma = re.search(r"<artifactId>([^<]+)</artifactId>", line)
+            mv = re.search(r"<version>([^<]+)</version>", line)
+            if ma:
+                name = ma.group(1).strip()
+                if mv:
+                    versioned.append((name, "Maven", _clean_ver(mv.group(1))))
+                else:
+                    pending_artifact = name
+                continue
+            if mv and pending_artifact:
+                versioned.append((pending_artifact, "Maven", _clean_ver(mv.group(1))))
+                pending_artifact = None
+                continue
+
+            # ── go.mod: "<module path> vX.Y.Z" ──
+            if path.endswith("go.mod"):
+                m = re.search(r"([a-zA-Z0-9_.\-/]+)\s+v([0-9][\w.\-]*)", line)
+                if m:
+                    versioned.append((m.group(1).split("/")[-1], "Go", "v" + m.group(2)))
+                    continue
+
+            # ── npm (package.json): "pkg": "^1.2.3" ──
+            m = re.search(r'"([a-zA-Z0-9@/_.\-]+)"\s*:\s*"([\^~>=<\s]*[0-9][^"]*)"', line)
+            if m and (eco == "npm" or path.endswith("package.json")):
+                versioned.append((m.group(1), "npm", _clean_ver(m.group(2))))
+                continue
+
+            # ── pip (requirements.txt / Pipfile): pkg==1.2.3 / pkg>=1.2.3 ──
+            m = re.search(r"^\s*([a-zA-Z0-9_.\-]+)\s*(==|~=|>=|<=)\s*([0-9][\w.\-]*)", line)
+            if m:
+                versioned.append((m.group(1), eco or "PyPI", m.group(3)))
+                continue
+
+            # ── Cargo.toml: name = "1.2.3" ──
+            m = re.search(r'^\s*([a-zA-Z0-9_\-]+)\s*=\s*"([0-9][\w.\-]*)"', line)
+            if m and (eco == "crates.io" or path.endswith("cargo.toml")):
+                versioned.append((m.group(1), "crates.io", _clean_ver(m.group(2))))
+                continue
+
+            # ── name only (no version we can pin) ──
+            m = re.search(r'"([a-zA-Z0-9@/_.\-]+)"\s*:', line)
+            if m and eco:
+                name_only.append((m.group(1), eco))
+
+    # Dedupe; drop name_only entries already covered by a versioned hit.
+    versioned = list(dict.fromkeys(versioned))
+    have = {n for (n, _e, _v) in versioned}
+    name_only = [(n, e) for (n, e) in dict.fromkeys(name_only) if n not in have]
+    return versioned, name_only
 
 
 def _extract_changed_packages(request: AnalysisRequest) -> list[str]:

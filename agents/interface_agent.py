@@ -77,13 +77,16 @@ class InterfaceAnalysisAgent(BaseAgent[InterfaceResult]):
             # breaks and additive data-model changes from the source diff.
             dur = round(time.monotonic() - t0, 3)
             self.report_static_progress(request, dur)
-            return InterfaceResult(
+            result = InterfaceResult(
                 breaking_changes=structural_breaks,
                 schema_diffs=[],
                 affected_consumers=[],
                 additive_changes=additive,
                 duration_s=dur,
             )
+            self.log_done(request, result, mode="static",
+                          note=f"{len(structural_breaks)} breaking, {len(additive)} additive (no spec files)")
+            return result
 
         # LLM pass for semantic analysis
         llm_result = super().run(request, budget, ctx)

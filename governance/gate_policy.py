@@ -213,6 +213,17 @@ def evaluate_policy(report: AnalysisReport, settings=None) -> PolicyResult:
     if dp and getattr(dp, "unencrypted_pii_count", 0) > 0:
         hold_reasons.append(f"{dp.unencrypted_pii_count} unencrypted PII field(s) (GDPR/PDPA)")
 
+    # A change that CONTRADICTS the uploaded Functional Specification needs a
+    # human decision: either the code is wrong or the spec is stale.
+    fv = getattr(report, "functional_validation", None)
+    if fv and getattr(fv, "has_contradiction", False):
+        contradicted = [r.req_id for r in (getattr(fv, "requirements", None) or [])
+                        if getattr(r, "status", "") == "contradicted"][:3]
+        hold_reasons.append(
+            "Change contradicts FSD requirement(s)"
+            + (f" ({', '.join(contradicted)})" if contradicted else "")
+            + " — confirm the spec or fix the code")
+
     # ── Resolve policy gate ───────────────────────────────────────────────────
     if block_reasons:
         policy_gate = GateDecision.BLOCK

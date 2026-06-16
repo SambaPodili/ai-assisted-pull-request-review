@@ -61,8 +61,57 @@ def _security_cwes(report) -> list[int]:
     return out
 
 
+def _taint_cwe_hits(report) -> list[tuple[int, str, str, str]]:
+    """[(cwe_num, file, line, label)] for taint paths that carry a CWE — so a CWE
+    proven only by the taint agent still rolls up to OWASP / CWE-25 (Fix 1)."""
+    out: list[tuple[int, str, str, str]] = []
+    ta = getattr(report, "taint_analysis", None)
+    for p in (getattr(ta, "taint_paths", None) or []):
+        n = _cwe_num(getattr(p, "cwe", ""))
+        if not n:
+            continue
+        sink = getattr(p, "sink", None)
+        out.append((
+            n,
+            getattr(sink, "file_path", "") if sink else "",
+            getattr(sink, "line", "") if sink else "",
+            getattr(p, "description", "") or getattr(p, "cwe", ""),
+        ))
+    return out
+
+
+# CWE numbers any standard table knows — used to find the "Other" (unmapped) set.
+def _mapped_cwes() -> set[int]:
+    mapped: set[int] = set(_CWE_TOP25)
+    for _code, _title, cwe_set in _OWASP:
+        mapped |= cwe_set
+    return mapped
+
+
+# Friendly names for common weaknesses that fall outside OWASP Top 10 / CWE-25,
+# so the "Other" bucket reads clearly. Unknown CWEs fall back to "CWE-n".
+_CWE_NAMES = {
+    400: "Uncontrolled Resource Consumption (DoS)",
+    1333: "Inefficient Regular Expression (ReDoS)",
+    770: "Allocation Without Limits",
+    601: "Open Redirect",
+    295: "Improper Certificate Validation",
+    209: "Information Exposure via Error Message",
+    532: "Sensitive Info in Log File",
+    312: "Cleartext Storage of Sensitive Data",
+    347: "Improper Verification of Signature",
+    611: "XML External Entity (XXE)",
+    776: "XML Entity Expansion (Billion Laughs)",
+    338: "Use of Cryptographically Weak PRNG",
+    330: "Use of Insufficiently Random Values",
+}
+
+
 def assess(report) -> dict:
-    cwes = set(_security_cwes(report))
+    taint_hits = _taint_cwe_hits(report)
+    # Fix 1: the mapping set now includes CWEs proven by the taint agent, not just
+    # the security agent — so e.g. a taint-found SQL injection fails OWASP A03.
+    cwes = set(_security_cwes(report)) | {n for (n, _f, _l, _lab) in taint_hits}
     taint = report.taint_analysis
     iac = report.iac_analysis
     dep = report.dependency
@@ -84,13 +133,18 @@ def assess(report) -> dict:
     def _ev(file, line, label):
         return {"file": file or "", "line": str(line or ""), "label": (label or "").strip(" :")}
 
-    sec_ev = []   # (cwe_num, evidence)
+    sec_ev = []   # (cwe_num, evidence) — from the security agent
     for f in (getattr(sec, "findings", None) or []):
         if getattr(f, "unverified", False):
             continue
         n = _cwe_num(getattr(f, "cwe_id", "") or getattr(f, "cwe", ""))
         sec_ev.append((n, _ev(getattr(f, "file_path", ""), getattr(f, "line_range", ""),
                               f"{getattr(f,'cwe_id','')} {getattr(f,'description','')}")))
+    # (cwe_num, evidence) from the taint agent, keyed so it maps to the right
+    # OWASP/CWE-25 row exactly like a security finding (Fix 1).
+    taint_cwe_ev = [(n, _ev(f, l, lab)) for (n, f, l, lab) in taint_hits]
+    # all CWE-keyed evidence across agents — drives OWASP + CWE-25 mapping/evidence
+    all_ev = sec_ev + taint_cwe_ev
     taint_ev = [_ev(p.sink.file_path, p.sink.line, p.description or f"{p.source.source} → {p.sink.sink}")
                 for p in (getattr(taint, "taint_paths", None) or []) if getattr(p, "sink", None)]
     obs_ev   = [_ev(f.file_path, f.line, f"{f.kind}: {f.description}") for f in (getattr(obs, "findings", None) or [])]
@@ -123,7 +177,7 @@ def assess(report) -> dict:
                    ("SSRF data-flow detected" if code == "A10" and has_ssrf else
                     ("logging/monitoring reduced" if code == "A09" and logs_removed else
                      ("secret/credential exposure" if code == "A02" and secrets else "no issues found")))))
-        ev = [e for (n, e) in sec_ev if n in cwe_set]
+        ev = [e for (n, e) in all_ev if n in cwe_set]
         if code == "A02": ev += secret_ev
         if code == "A03": ev += taint_ev
         if code == "A06": ev += cve_ev
@@ -152,7 +206,22 @@ def assess(report) -> dict:
     hit25 = sorted((cwes | ({918} if has_ssrf else set())) & set(_CWE_TOP25))
     cwe_items = [{"id": f"CWE-{n}", "title": _CWE_TOP25[n], "status": "fail",
                   "detail": "detected in this change",
-                  "evidence": [e for (cn, e) in sec_ev if cn == n][:8]} for n in hit25]
+                  "evidence": [e for (cn, e) in all_ev if cn == n][:8]} for n in hit25]
+
+    # ── Fix 2: "Other" — real weaknesses whose CWE is NOT in OWASP Top 10 / CWE-25,
+    # so a finding like ReDoS (CWE-1333) isn't silently dropped from compliance. ──
+    mapped = _mapped_cwes()
+    other_nums = sorted({n for (n, _e) in all_ev if n and n not in mapped})
+    other_items = []
+    for n in other_nums:
+        ev = [e for (cn, e) in all_ev if cn == n][:8]
+        other_items.append({
+            "id": f"CWE-{n}",
+            "title": _CWE_NAMES.get(n, f"CWE-{n} weakness"),
+            "status": "fail",
+            "detail": "detected — outside OWASP Top 10 / CWE Top 25",
+            "evidence": ev,
+        })
 
     standards = [
         {"name": "OWASP Top 10 (2021)", "items": owasp_items},
@@ -160,6 +229,11 @@ def assess(report) -> dict:
         {"name": "CWE Top 25", "items": cwe_items or
             [{"id": "—", "title": "No CWE-Top-25 weaknesses detected", "status": "pass", "detail": ""}]},
     ]
+    # Only show the "Other" section when there actually are unmapped weaknesses,
+    # so the compliance view stays clean for the common case.
+    if other_items:
+        standards.append({"name": "Other detected weaknesses (outside OWASP Top 10 / CWE Top 25)",
+                          "items": other_items})
 
     fails = sum(1 for s in standards for it in s["items"] if it["status"] == "fail")
     passes = sum(1 for s in standards for it in s["items"] if it["status"] == "pass")

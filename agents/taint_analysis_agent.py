@@ -147,6 +147,8 @@ class TaintAnalysisAgent(BaseAgent[TaintAnalysisResult]):
         # Static-only path (no paths to review, or low budget) — report progress
         if not llm_attempted:
             self.report_static_progress(request, getattr(taint_result, "duration_s", 0.0))
+            self.log_done(request, taint_result, mode="static",
+                          note=f"{len(taint_result.taint_paths)} taint path(s)")
 
         return taint_result
 

@@ -337,6 +337,72 @@ async def fetch_file(body: FileRequest):
         pass
     return {"found": False, "path": path, "content": ""}
 
+
+def _raw_file(cfg: GitConfig, h: dict, slug: str, path: str, ref: str) -> str:
+    """Synchronous raw-file fetch (mirror first, then provider). '' on miss."""
+    path = (path or "").lstrip("/")
+    if not path:
+        return ""
+    # Warm mirror — read the checked-out file directly, no network.
+    try:
+        from ingestion.repo_mirror import resolve_repo_dir
+        d = resolve_repo_dir(slug)
+        if d:
+            from pathlib import Path
+            f = Path(d) / path
+            if f.is_file():
+                return f.read_text(errors="replace")[:200_000]
+    except Exception:
+        pass
+    try:
+        if cfg.provider in ("github", "github_enterprise"):
+            url = f"{_github_base(cfg)}/repos/{slug}/contents/{path}" + (f"?ref={ref}" if ref else "")
+            return _get_text(url, {**h, "Accept": "application/vnd.github.v3.raw"})[:200_000]
+        if cfg.provider == "bitbucket_server":
+            proj, repo = (slug.split("/", 1) + [""])[:2]
+            url = f"{_bb_server_base(cfg)}/projects/{proj}/repos/{repo}/raw/{path}" + (f"?at={ref}" if ref else "")
+            return _get_text(url, h)[:200_000]
+        ws = cfg.workspace or slug.split("/")[0]; name = slug.split("/")[-1]
+        url = f"https://api.bitbucket.org/2.0/repositories/{ws}/{name}/src/{ref or 'HEAD'}/{path}"
+        return _get_text(url, h)[:200_000]
+    except Exception:
+        return ""
+
+
+def _enrich_caller_context(cfg: GitConfig, refs: list[dict], ref_map: dict,
+                           default_ref: str, max_files: int = 25) -> None:
+    """Replace each call-site's single-line `context` with the ENCLOSING caller
+    function, so downstream deep-impact analysis sees real usage, not one line.
+
+    Best-effort and bounded: at most `max_files` fetches; failures leave the
+    original single-line context untouched. Files are fetched once and reused
+    across multiple hits in the same file.
+    """
+    from ingestion.context_expander import _enclosing_window
+    h = _headers(cfg)
+    cache: dict[tuple, list[str]] = {}
+    fetched = 0
+    for r in refs:
+        line = int(r.get("line") or 0)
+        if line <= 0:
+            continue
+        slug, path = r.get("repo", ""), r.get("file_path", "")
+        key = (slug, path)
+        if key not in cache:
+            if fetched >= max_files:
+                continue
+            fetched += 1
+            txt = _raw_file(cfg, h, slug, path, ref_map.get(slug, "") or default_ref)
+            cache[key] = txt.splitlines() if txt else []
+        lines = cache[key]
+        if not lines:
+            continue
+        hit = min(max(0, line - 1), len(lines) - 1)
+        s, e = _enclosing_window(lines, hit)
+        snippet = "\n".join(f"{i + 1:5d}| {lines[i]}" for i in range(s, e))
+        if snippet.strip():
+            r["context"] = snippet[:1800]
+
 @router.post("/diff")
 async def fetch_diff(body: DiffRequest):
     h = _headers(body.cfg); cfg = body.cfg
@@ -528,6 +594,8 @@ class XrefRequest(BaseModel):
     max_refs:    int = 200
     allow_clone: bool = True      # shallow-clone + grep fallback when search yields nothing
     max_clone_repos: int = 3      # cap clones (each is bandwidth + time)
+    deep_context: bool = True     # expand each call-site to its enclosing caller function
+    max_context_files: int = 25   # cap raw-file fetches for context expansion
 
 
 @router.post("/xref")
@@ -644,9 +712,23 @@ async def cross_repo_references(body: XrefRequest):
         backend = search_label        # searched, no hits
 
     truncated = len(deduped) > body.max_refs
-    return {"references": deduped[:body.max_refs], "searched_repos": slugs,
+    out_refs = deduped[:body.max_refs]
+
+    # Deep context: expand each call-site to its enclosing caller function so the
+    # cross-repo impact agent can judge whether the change actually breaks it.
+    # Reported separately — it does NOT change the search `backend` label.
+    context_enriched = False
+    if body.deep_context and out_refs:
+        try:
+            _enrich_caller_context(cfg, out_refs, ref_map, body.ref, body.max_context_files)
+            context_enriched = True
+        except Exception as exc:
+            log.debug("xref deep-context enrichment failed: %s", exc)
+
+    return {"references": out_refs, "searched_repos": slugs,
             "symbols": symbols, "backend": backend, "errors": errors,
-            "mirrored_repos": sorted(mirrored), "truncated": truncated}
+            "mirrored_repos": sorted(mirrored), "truncated": truncated,
+            "context_enriched": context_enriched}
 
 
 # ── Warm-mirror maintenance ───────────────────────────────────────────────────

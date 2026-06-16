@@ -135,6 +135,8 @@ class ASTAnalysisAgent(BaseAgent[ASTAnalysisResult]):
         # Static-only path (no findings to enhance, or low budget) — report progress
         if not llm_attempted:
             self.report_static_progress(request, getattr(base_result, "duration_s", 0.0))
+            self.log_done(request, base_result, mode="static",
+                          note=f"{len(base_result.findings)} finding(s), {len(base_result.function_profiles)} fn profile(s)")
 
         return base_result
 

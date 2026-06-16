@@ -338,7 +338,7 @@ function RunningView({ state, update, showToast }) {
     const simPhases = [
       ['code_analysis','security'],
       ['ast_analysis','secrets_entropy','taint_analysis','iac_analysis','temporal_risk','schema_change'],
-      ['qa_scenarios','reference_impact','performance_impact','data_privacy','maintainability','license_compliance','observability'],
+      ['qa_scenarios','reference_impact','performance_impact','data_privacy','maintainability','license_compliance','observability','functional_validation'],
       ['dependency','test_coverage','interface','risk'],
       ['remediation'],
     ]
@@ -578,8 +578,60 @@ function SummaryTab({r, snipCache}) {
           <span><strong>{r.suppressed_count} finding(s) auto-suppressed</strong> — repeatedly marked false positive by reviewers for this repo. Hover for details.</span>
         </div>
       )}
+      <ReviewPlanCard r={r}/>
       <TopIssues r={r}/>
       {effectivePersona==='developer' ? <DeveloperView r={r} findings={findings} blockers={blockers} fixes={fixes} scenarios={scenarios} covDelta={covDelta}/> : <ReviewerView r={r} findings={findings}/>}
+    </div>
+  )
+}
+
+// Reviewer triage: every changed file bucketed into must-fix / needs-review /
+// auto-approvable, with read-first ordering and an effort estimate. The "where
+// do I spend my attention" view.
+function ReviewPlanCard({ r }) {
+  const rp = r.review_plan
+  if (!rp) return null
+  const buckets = [
+    { key:'must_fix',        files:rp.must_fix||[],        c:'#991b1b', bg:'#fef2f2', bd:'#fca5a5', icon:'🚨', label:'Must fix' },
+    { key:'needs_review',    files:rp.needs_review||[],    c:'#92400e', bg:'#fffbeb', bd:'#fcd34d', icon:'⚠️', label:'Needs a human' },
+    { key:'auto_approvable', files:rp.auto_approvable||[], c:'#166534', bg:'#f0fdf4', bd:'#86efac', icon:'✅', label:'Auto-approvable' },
+  ]
+  const sevC = {critical:'#991b1b',high:'#b91c1c',medium:'#92400e',low:'#1e40af'}
+  return (
+    <div className="card" style={{marginBottom:14}}>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:8,marginBottom:4}}>
+        <div className="section-heading" style={{marginBottom:0}}><i className="ti ti-list-check"/>Review plan</div>
+        <div style={{fontSize:13,fontWeight:700,color:'#1a2332'}}>{rp.headline}</div>
+      </div>
+      <div style={{fontSize:12,color:'#7a8494',marginBottom:12}}>{rp.summary}</div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:10}}>
+        {buckets.map(b=>(
+          <div key={b.key} style={{border:`1px solid ${b.bd}`,background:b.bg,borderRadius:8,padding:'10px 12px'}}>
+            <div style={{display:'flex',alignItems:'center',gap:6,fontSize:12,fontWeight:700,color:b.c,marginBottom:8}}>
+              <span>{b.icon}</span><span>{b.label}</span>
+              <span style={{marginLeft:'auto',background:'#fff',border:`1px solid ${b.bd}`,borderRadius:10,padding:'0 8px',fontSize:11}}>{b.files.length}</span>
+            </div>
+            {b.files.length===0
+              ? <div style={{fontSize:11.5,color:'#9fadbf'}}>None</div>
+              : b.files.slice(0,8).map((f,i)=>(
+                <div key={i} style={{marginBottom:b.key==='auto_approvable'?2:7}}>
+                  <div style={{display:'flex',alignItems:'center',gap:6}}>
+                    {b.key!=='auto_approvable' && <span style={{width:7,height:7,borderRadius:'50%',background:sevC[f.top_severity]||'#9fadbf',flexShrink:0}}/>}
+                    <code style={{fontSize:11.5,color:'#1a2332',wordBreak:'break-all'}}>{f.file.split('/').slice(-2).join('/')}</code>
+                  </div>
+                  {b.key!=='auto_approvable' && (f.reasons||[]).length>0 &&
+                    <div style={{fontSize:11,color:b.c,marginLeft:13,marginTop:1}}>{f.reasons.join(' · ')}</div>}
+                </div>
+              ))}
+            {b.files.length>8 && <div style={{fontSize:11,color:'#9fadbf',marginTop:4}}>+{b.files.length-8} more</div>}
+          </div>
+        ))}
+      </div>
+      {(rp.read_first||[]).length>0 && (
+        <div style={{marginTop:10,fontSize:11.5,color:'#5b6675'}}>
+          <strong>Read first:</strong> {rp.read_first.slice(0,5).map((p,i)=><code key={i} style={{fontSize:11,marginLeft:i?6:4}}>{p.split('/').slice(-1)[0]}</code>)}
+        </div>
+      )}
     </div>
   )
 }
@@ -1138,7 +1190,13 @@ function SchemaTab({r}) {
       {!changes.length?<div className="empty-state"><i className="ti ti-database"/>No schema changes detected in this PR.</div>
         :changes.map((c,i)=>{
           const ct = (c.change_type||'').toLowerCase()
-          const [what, verify] = SCHEMA_EXPLAIN[ct] || [c.description||'Schema change.', 'Review the migration and its rollback path.']
+          let [what, verify] = SCHEMA_EXPLAIN[ct] || [c.description||'Schema change.', 'Review the migration and its rollback path.']
+          // Index/PK/FK created together with a brand-new table can't lock it (empty table) —
+          // replace the generic "prefer CONCURRENTLY" warning with an accurate note.
+          if (c.on_new_table && (ct==='add_index'||ct==='add_column')) {
+            what = 'Created together with the new table, so it applies to an empty table — no CREATE INDEX lock / online-DDL concern.'
+            verify = 'No action needed for locking; just confirm the index/constraint definition is correct.'
+          }
           const target = [c.table, c.column && `· column ${c.column}`].filter(Boolean).join(' ')
           return (
           <div key={i} className="finding" style={{flexDirection:'column',alignItems:'stretch',gap:8,borderLeft:`3px solid ${sevC(c.severity)}`}}>
@@ -1338,6 +1396,142 @@ function scenarioToGherkin(s) {
   return lines.join('\n')
 }
 
+// FSD validation: requirements from the uploaded spec checked against the diff,
+// plus business-function impact across the declared dependent repos.
+function CrossRepoTab({r}) {
+  const cri = r.cross_repo_impact
+  const sevC = s => ({critical:'#991b1b',high:'#b91c1c',medium:'#92400e',low:'#1e40af'})[(s||'').toLowerCase()]||'#7a8494'
+  const impactMeta = {
+    breaks:   ['#7f1d1d','#fee2e2','#fca5a5','✗ Breaks'],
+    likely:   ['#b81c1c','#fff1f1','#f8c0c0','⚠ Likely breaks'],
+    possible: ['#8a5200','#fff8ec','#fad98a','◐ Possible'],
+    unlikely: ['#0c7c4b','#edfaf3','#b5e8cf','✓ Unlikely'],
+    verify:   ['#7a8494','#f7f8fa','#e8eaed','— Verify'],
+  }
+  if (!cri || !cri.analysed) {
+    return <div className="card"><div className="empty-state"><i className="ti ti-affiliate"/>
+      No downstream repos analysed. Declare dependent repos in the Analysis Target (Connected repos) so call-sites of the changed symbols are pulled in and assessed here.
+    </div></div>
+  }
+  const impacts = cri.impacts||[]
+  // group by downstream repo
+  const byRepo = {}
+  impacts.forEach(i=>{ (byRepo[i.repo]=byRepo[i.repo]||[]).push(i) })
+  const order = {breaks:0,likely:1,possible:2,unlikely:3,verify:4}
+  return (
+    <div>
+      <div className="card" style={{marginBottom:12}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:10}}>
+          <div className="section-heading" style={{marginBottom:0}}><i className="ti ti-affiliate"/>Downstream repo impact</div>
+          <div style={{display:'flex',gap:14,alignItems:'center',fontSize:11.5,color:'#7a8494'}}>
+            <span><strong style={{color:'#1a2332',fontSize:15}}>{cri.total_call_sites}</strong> call-site(s)</span>
+            <span><strong style={{color:cri.breaking_count?'#b91c1c':'#0c7c4b',fontSize:15}}>{cri.breaking_count}</strong> likely to break</span>
+            <span><strong style={{color:'#1a2332',fontSize:15}}>{(cri.repos_analysed||[]).length}</strong> repo(s)</span>
+            {cri.fallback_used && <span title="Heuristic (signature-diff) analysis — the LLM did not run for this agent." style={{fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:10,background:'#fff7ed',color:'#9a3412',border:'1px solid #fed7aa'}}>heuristic</span>}
+          </div>
+        </div>
+        <div style={{fontSize:12,color:'#7a8494',marginTop:8}}>{cri.summary||''}</div>
+      </div>
+      {Object.entries(byRepo).map(([repo, list])=>(
+        <div key={repo} className="card" style={{marginBottom:12}}>
+          <div className="section-heading" style={{marginBottom:8}}><i className="ti ti-git-fork"/><code>{repo}</code></div>
+          {list.sort((a,b)=>(order[a.impact]??9)-(order[b.impact]??9)).map((i,idx)=>{
+            const [c,bg,bd,lbl] = impactMeta[i.impact]||impactMeta.verify
+            return (
+              <div key={idx} className="finding" style={{flexDirection:'column',alignItems:'stretch',gap:7,borderLeft:`3px solid ${sevC(i.severity)}`}}>
+                <div style={{display:'flex',alignItems:'center',gap:9,flexWrap:'wrap'}}>
+                  <span style={{fontSize:10.5,fontWeight:700,padding:'2px 9px',borderRadius:10,background:bg,color:c,border:`1px solid ${bd}`}}>{lbl}</span>
+                  <span style={{fontSize:11,fontWeight:700,color:sevC(i.severity),textTransform:'uppercase'}}>{i.severity}</span>
+                  <code style={{fontSize:12.5}}>{i.symbol}</code>
+                  <span style={{fontSize:11,color:'#7a8494'}}>({(i.change_kind||'').replace(/_/g,' ')})</span>
+                  <span style={{marginLeft:'auto',fontFamily:'var(--mono)',fontSize:11,color:'#7a8494'}}>{i.file}{i.line?`:${i.line}`:''}</span>
+                </div>
+                {i.reason && <div style={{fontSize:12.5,color:'#374151'}}>{i.reason}</div>}
+                {i.suggested_fix && <div style={{fontSize:12,color:'#0c7c4b'}}><i className="ti ti-bulb" style={{marginRight:3}}/>{i.suggested_fix}</div>}
+                {i.caller_context && <pre style={{margin:0,padding:'8px 10px',background:'#0d1117',color:'#e6edf3',borderRadius:6,fontSize:11,overflowX:'auto',fontFamily:'var(--mono)',maxHeight:200}}>{i.caller_context}</pre>}
+                <div style={{marginTop:2}}><FindingFeedback r={r} agent="cross_repo_impact" category={i.change_kind||''} file={`${i.repo}/${i.file}`}/></div>
+              </div>
+            )
+          })}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function FunctionalTab({r}) {
+  const fv = r.functional_validation
+  const statusMeta = {
+    implemented:  ['#0c7c4b','#edfaf3','#b5e8cf','✓ Implemented'],
+    partial:      ['#8a5200','#fff8ec','#fad98a','◐ Partial'],
+    missing:      ['#b81c1c','#fff1f1','#f8c0c0','✗ Missing'],
+    contradicted: ['#7f1d1d','#fee2e2','#fca5a5','⚠ Contradicted'],
+    not_addressed:['#7a8494','#f7f8fa','#e8eaed','— Not in scope'],
+  }
+  const riskC = {high:'#b81c1c',medium:'#8a5200',low:'#0c7c4b'}
+  if (!fv) return <div className="card"><div className="empty-state"><i className="ti ti-file-check"/>FSD validation has not run for this report.</div></div>
+  const reqs = fv.requirements||[], impacts = fv.impacts||[]
+  const inScope = reqs.filter(q=>q.status!=='not_addressed')
+  return (
+    <div>
+      {(fv.notes||[]).length>0 && reqs.length===0 && (
+        <div className="card"><div className="empty-state" style={{textAlign:'left'}}>
+          <i className="ti ti-file-off"/>
+          <div style={{marginTop:8}}>{(fv.notes||[]).map((n,i)=><div key={i} style={{fontSize:13,color:'#5b6675',lineHeight:1.6}}>{n}</div>)}</div>
+        </div></div>
+      )}
+      {reqs.length>0 && (
+        <div className="card" style={{marginBottom:12}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:10,marginBottom:6}}>
+            <div className="section-heading" style={{marginBottom:0}}><i className="ti ti-file-check"/>Spec requirements vs this change</div>
+            <div style={{display:'flex',gap:10,alignItems:'center',fontSize:11.5,color:'#7a8494'}}>
+              <span><strong style={{color:'#1a6cf6',fontSize:15}}>{fv.coverage_pct}%</strong> of requirements touched</span>
+              {fv.has_contradiction && <span style={{color:'#b81c1c',fontWeight:700}}>⚠ contradiction found</span>}
+            </div>
+          </div>
+          <div style={{fontSize:12,color:'#7a8494',marginBottom:10}}>{fv.summary||''} {fv.docs_analysed?.length?<span>Docs: {fv.docs_analysed.join(', ')}</span>:null}</div>
+          {[...inScope, ...reqs.filter(q=>q.status==='not_addressed')].map((q,i)=>{
+            const [c,bg,bd,lbl] = statusMeta[q.status]||statusMeta.not_addressed
+            return (
+              <div key={i} className="finding" style={{alignItems:'flex-start',gap:10,opacity:q.status==='not_addressed'?0.65:1}}>
+                <span style={{fontFamily:'var(--mono)',fontSize:11,fontWeight:700,color:'#9fadbf',minWidth:36,marginTop:3}}>{q.req_id}</span>
+                <span style={{fontSize:10.5,fontWeight:700,padding:'2px 9px',borderRadius:10,whiteSpace:'nowrap',flexShrink:0,marginTop:1,background:bg,color:c,border:`1px solid ${bd}`}}>{lbl}</span>
+                <div className="finding-body">
+                  <div className="finding-desc" style={{fontSize:12.5}}>{q.text}</div>
+                  <div className="finding-file">
+                    {q.evidence && <span style={{fontFamily:'var(--mono)'}}>{q.evidence} · </span>}
+                    {q.notes||''}{q.source_doc?` · ${q.source_doc}`:''}
+                  </div>
+                  {['contradicted','missing'].includes(q.status) && <div style={{marginTop:5}}><FindingFeedback r={r} agent="functional_validation" category={q.status} file={q.evidence||''}/></div>}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+      {impacts.length>0 && (
+        <div className="card">
+          <div className="section-heading"><i className="ti ti-sitemap"/>Functional impact ({impacts.length})</div>
+          <div style={{fontSize:12,color:'#7a8494',marginBottom:10}}>Business functions this change touches — combined view of the FSD, the diff and your declared dependent repos.</div>
+          {impacts.map((m,i)=>(
+            <div key={i} className="finding" style={{flexDirection:'column',alignItems:'stretch',gap:6}}>
+              <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+                <span style={{fontSize:10.5,fontWeight:700,padding:'2px 9px',borderRadius:10,textTransform:'uppercase',background:`${riskC[m.risk]||'#7a8494'}1a`,color:riskC[m.risk]||'#7a8494',border:`1px solid ${riskC[m.risk]||'#7a8494'}55`}}>{m.risk}</span>
+                <strong style={{fontSize:13.5,color:'#1c2530'}}>{m.function}</strong>
+              </div>
+              <div style={{fontSize:12.5,color:'#4a5568',lineHeight:1.5}}>{m.impact}</div>
+              <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center',fontSize:11.5}}>
+                {m.test_focus && <span style={{color:'#0c7c4b'}}><i className="ti ti-target" style={{marginRight:3}}/>Test focus: <code>{m.test_focus}</code></span>}
+                {(m.affected_repos||[]).map(rp=><span key={rp} style={{fontSize:10,fontWeight:600,padding:'1px 8px',borderRadius:9,background:'#f0f4fa',color:'#3a4452',border:'1px solid #dde5f0'}}><i className="ti ti-git-branch" style={{fontSize:10,marginRight:3}}/>{rp}</span>)}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function QAScenariosTab({r}) {
   const [filter, setFilter] = useState('all')
   const [copied, setCopied] = useState('')
@@ -1355,6 +1549,12 @@ function QAScenariosTab({r}) {
   return (
     <div>
       <UnitTestCoverage tc={r.test_coverage}/>
+      {qa.fallback_used && (
+        <div style={{display:'flex',alignItems:'flex-start',gap:8,background:'#fff8ec',border:'1px solid #fad98a',borderRadius:8,padding:'9px 12px',marginBottom:12,fontSize:12.5,color:'#8a5200'}}>
+          <i className="ti ti-alert-triangle" style={{marginTop:1}}/>
+          <span><strong>Generic template scenarios</strong> — the LLM did not run for this agent (no model key/budget, or a parse error), so these are static fallback scenarios, not tailored to this change. Configure the AI model to get change-specific QA scenarios.</span>
+        </div>
+      )}
       <div className="card" style={{marginBottom:12}}>
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:10,marginBottom:14}}>
           <div><div className="card-title" style={{marginBottom:4}}><i className="ti ti-checklist"/>QA Test Scenarios</div><div style={{fontSize:12,color:'#7a8494'}}>{qa.summary||''}</div></div>
@@ -2873,8 +3073,8 @@ function ReviewModal({decision, state, onClose, onSubmit, showToast}) {
 const RESULT_TABS = [
   {group:'Overview',tabs:[{id:'summary',label:'Summary'}]},
   {group:'Security',tabs:[{id:'security',label:'Security'},{id:'advanced',label:'⚗ Advanced'}]},
-  {group:'Impact',tabs:[{id:'references',label:'🔗 References'},{id:'dependency',label:'Dependency'},{id:'interface',label:'Interface'},{id:'schema',label:'Schema'}]},
-  {group:'Quality',tabs:[{id:'qa',label:'🧪 QA Scenarios'},{id:'performance',label:'🚀 Performance'},{id:'privacy',label:'🔒 Privacy'},{id:'quality',label:'🔧 Quality'}]},
+  {group:'Impact',tabs:[{id:'references',label:'🔗 References'},{id:'cross_repo',label:'🔀 Cross-Repo'},{id:'dependency',label:'Dependency'},{id:'interface',label:'Interface'},{id:'schema',label:'Schema'}]},
+  {group:'Quality',tabs:[{id:'functional',label:'📋 FSD'},{id:'qa',label:'🧪 QA Scenarios'},{id:'performance',label:'🚀 Performance'},{id:'privacy',label:'🔒 Privacy'},{id:'quality',label:'🔧 Quality'}]},
   {group:'Actions',tabs:[{id:'checklist',label:'✅ Checklist'},{id:'compliance',label:'🛡 Compliance'},{id:'remediation',label:'Remediation'},{id:'timings',label:'⏱ Timings'}]},
 ]
 const ALL_TABS = RESULT_TABS.flatMap(g=>g.tabs.map(t=>t.id))
@@ -2976,6 +3176,8 @@ export default function ResultsView({ active, showView, showToast }) {
       case 'interface': return <InterfaceTab r={r}/>
       case 'schema': return <SchemaTab r={r}/>
       case 'remediation': return <RemediationTab r={r}/>
+      case 'functional': return <FunctionalTab r={r}/>
+      case 'cross_repo': return <CrossRepoTab r={r}/>
       case 'qa': return <QAScenariosTab r={r}/>
       case 'performance': return <PerformanceTab r={r} snipCache={snipCache}/>
       case 'privacy': return <PrivacyTab r={r} snipCache={snipCache}/>

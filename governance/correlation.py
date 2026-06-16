@@ -19,10 +19,12 @@ guard (so `unverified` flags are already set) and after suppression.
 from __future__ import annotations
 
 import logging
+import re
 from collections import defaultdict
 from typing import Any
 
 from core.models import AnalysisReport, CorrelatedIssue
+from governance.finding_quality import is_speculative
 
 log = logging.getLogger(__name__)
 
@@ -52,6 +54,69 @@ def _norm_path(p: str) -> str:
     return (p or "").replace("\\", "/").strip().lstrip("./").lower()
 
 
+# ── Description similarity (so we corroborate the SAME issue, not merely the
+#    same line). Two findings on the same line are only treated as agreeing when
+#    they share a category or enough significant words — otherwise a "code moved"
+#    note and a "no distributed tracing" note would fake a 2-agent agreement. ──
+_WORD = re.compile(r"[a-z0-9_]+")
+_STOP = {
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "to", "in", "of",
+    "and", "or", "for", "on", "with", "that", "this", "it", "its", "as", "at",
+    "by", "from", "into", "has", "have", "had", "not", "no", "but", "if", "then",
+    "change", "changed", "change(s)", "code", "method", "function", "value",
+}
+
+
+def _tokens(s: str) -> set[str]:
+    return {w for w in _WORD.findall((s or "").lower()) if len(w) > 2 and w not in _STOP}
+
+
+def _jaccard(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+# Same-category counts as agreement (taint + security both CWE-89, worded
+# differently); otherwise require real lexical overlap.
+_AGREE_THRESHOLD = 0.30
+# Cross-location duplicate: the SAME finding reported a few lines apart by
+# different agents (e.g. "table name changed" at xml:388 and xml:394 share half
+# their significant tokens, incl. both table identifiers).
+_DUP_THRESHOLD = 0.50
+
+
+def _agree(m1: dict, m2: dict) -> bool:
+    c1, c2 = m1["category"].strip().lower(), m2["category"].strip().lower()
+    if c1 and c2 and c1 == c2:
+        return True
+    return _jaccard(m1["_tok"], m2["_tok"]) >= _AGREE_THRESHOLD
+
+
+def _cluster(members: list[dict]) -> list[list[dict]]:
+    """Union-find sub-clustering: members merge only when they actually agree."""
+    parent = list(range(len(members)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i, j):
+        parent[find(i)] = find(j)
+
+    for i in range(len(members)):
+        for j in range(i + 1, len(members)):
+            if _agree(members[i], members[j]):
+                union(i, j)
+
+    buckets: dict[int, list[dict]] = defaultdict(list)
+    for i, m in enumerate(members):
+        buckets[find(i)].append(m)
+    return list(buckets.values())
+
+
 def _collect(report: AnalysisReport) -> list[dict]:
     """Normalise every located finding into {agent, file, line, severity,
     category, description, unverified, deterministic}."""
@@ -61,11 +126,15 @@ def _collect(report: AnalysisReport) -> list[dict]:
             unverified=False, deterministic=False):
         if not description:
             return
+        desc = str(description).strip()[:240]
         rows.append({
             "agent": agent, "file": _norm_path(file_path), "line": int(line or 0),
             "severity": _sev(severity), "category": str(category or "").strip(),
-            "description": str(description).strip()[:240],
+            "description": desc,
             "unverified": bool(unverified), "deterministic": bool(deterministic),
+            "_tok": _tokens(desc),
+            # speculation is an LLM-finding property only; deterministic rules are exact
+            "speculative": (not deterministic) and is_speculative(desc),
         })
 
     sec = report.security
@@ -158,13 +227,75 @@ def _collect(report: AnalysisReport) -> list[dict]:
     return rows
 
 
+def _score_cluster(members: list[dict]) -> tuple[float, str, bool, bool]:
+    """Return (score, confidence, unverified, speculative) for a member cluster."""
+    agents     = sorted({m["agent"] for m in members})
+    worst      = max((m["severity"] for m in members), key=lambda s: _SEV_ORDER.index(s))
+    unverified = all(m["unverified"] for m in members)        # one verified source clears it
+    any_det    = any(m["deterministic"] and not m["unverified"] for m in members)
+    # Speculative only if NO member is a confirmed (non-speculative, verified) claim.
+    speculative = not any_det and all(m["speculative"] or m["unverified"] for m in members)
+
+    if unverified or speculative:
+        confidence = "low"
+    elif any_det or len(agents) >= 2:
+        confidence = "high"
+    else:
+        confidence = "medium"
+
+    score = _SEV_W[worst] * _CONF_W[confidence]
+    score += min(_CORROBORATION_BONUS * (len(agents) - 1), _CORROBORATION_CAP)
+    if unverified:
+        score *= 0.6        # additional rank penalty on top of low confidence
+    if speculative:
+        score *= 0.6        # hedged / "Potential…" findings sink below confirmed ones
+    return round(score, 1), confidence, unverified, speculative
+
+
+def _lead_desc(members: list[dict]) -> str:
+    return max(members, key=lambda m: _SEV_ORDER.index(m["severity"]))["description"]
+
+
+def _build_issue(members: list[dict]) -> CorrelatedIssue:
+    score, confidence, unverified, _spec = _score_cluster(members)
+    worst = max((m["severity"] for m in members), key=lambda s: _SEV_ORDER.index(s))
+    cats = sorted({m["category"] for m in members if m["category"]})
+    descs, seen_d = [], set()
+    for m in sorted(members, key=lambda m: -_SEV_ORDER.index(m["severity"])):
+        d = m["description"]
+        if d.lower() not in seen_d:
+            seen_d.add(d.lower())
+            descs.append(d)
+    return CorrelatedIssue(
+        title=_lead_desc(members),
+        file_path=members[0]["file"],
+        line=max((m["line"] for m in members), default=0),
+        severity=worst,
+        confidence=confidence,
+        score=score,
+        agents=sorted({m["agent"] for m in members}),
+        categories=cats[:6],
+        descriptions=descs[:4],
+        unverified=unverified,
+    )
+
+
 def correlate_findings(report: AnalysisReport, max_issues: int = 10) -> list[CorrelatedIssue]:
-    """Dedupe + corroborate + rank all findings into a Top-N issue list."""
+    """Dedupe + corroborate + rank all findings into a Top-N issue list.
+
+    Three passes, all over the raw member ROWS (we build the CorrelatedIssue model
+    only once, at the very end):
+      1. Group by (file, line bucket); within a bucket, SUB-CLUSTER by agreement
+         so unrelated findings on the same line don't fake corroboration.
+      2. Merge near-identical clusters across line buckets in the same file (the
+         same finding reported a few lines apart by different agents).
+      3. Score (severity × confidence + corroboration − unverified/speculative).
+    """
     rows = _collect(report)
     if not rows:
         return []
 
-    # ── Group by (file, line bucket). Pathless findings group by description. ──
+    # ── Pass 1: group by location, then sub-cluster by genuine agreement ──
     groups: dict[tuple, list[dict]] = defaultdict(list)
     for r in rows:
         if r["file"]:
@@ -173,51 +304,30 @@ def correlate_findings(report: AnalysisReport, max_issues: int = 10) -> list[Cor
             key = ("", r["description"][:60].lower())
         groups[key].append(r)
 
-    issues: list[CorrelatedIssue] = []
-    for key, members in groups.items():
-        agents     = sorted({m["agent"] for m in members})
-        severities = [m["severity"] for m in members]
-        worst      = max(severities, key=lambda s: _SEV_ORDER.index(s))
-        unverified = all(m["unverified"] for m in members)   # one verified source clears it
-        any_det    = any(m["deterministic"] and not m["unverified"] for m in members)
+    clusters: list[list[dict]] = []
+    for members in groups.values():
+        clusters.extend(_cluster(members))
 
-        # Confidence: deterministic source OR ≥2 agents agree → high;
-        # all sources unverified → low; otherwise medium.
-        if unverified:
-            confidence = "low"
-        elif any_det or len(agents) >= 2:
-            confidence = "high"
+    # ── Pass 2: merge duplicate clusters across buckets (same file, same finding) ─
+    # Process strongest-first so a merged cluster keeps the better-ranked lead.
+    clusters.sort(key=lambda c: -_score_cluster(c)[0])
+    kept: list[list[dict]] = []
+    for cluster in clusters:
+        cfile = cluster[0]["file"]
+        ctok  = _tokens(_lead_desc(cluster))
+        dup_idx = -1
+        for i, k in enumerate(kept):
+            if cfile and k[0]["file"] == cfile and \
+               _jaccard(_tokens(_lead_desc(k)), ctok) >= _DUP_THRESHOLD:
+                dup_idx = i
+                break
+        if dup_idx < 0:
+            kept.append(cluster)
         else:
-            confidence = "medium"
+            kept[dup_idx] = kept[dup_idx] + cluster
 
-        score = _SEV_W[worst] * _CONF_W[confidence]
-        score += min(_CORROBORATION_BONUS * (len(agents) - 1), _CORROBORATION_CAP)
-        if unverified:
-            score *= 0.6   # additional rank penalty on top of low confidence
-
-        # Title: lead with the most severe member's description
-        lead = max(members, key=lambda m: _SEV_ORDER.index(m["severity"]))
-        cats = sorted({m["category"] for m in members if m["category"]})
-        descs, seen_d = [], set()
-        for m in sorted(members, key=lambda m: -_SEV_ORDER.index(m["severity"])):
-            d = m["description"]
-            if d.lower() not in seen_d:
-                seen_d.add(d.lower())
-                descs.append(d)
-
-        issues.append(CorrelatedIssue(
-            title=lead["description"],
-            file_path=members[0]["file"],
-            line=max((m["line"] for m in members), default=0),
-            severity=worst,
-            confidence=confidence,
-            score=round(score, 1),
-            agents=agents,
-            categories=cats[:6],
-            descriptions=descs[:4],
-            unverified=unverified,
-        ))
-
+    # ── Pass 3: build + rank ──
+    issues = [_build_issue(c) for c in kept]
     issues.sort(key=lambda i: -i.score)
     merged_away = len(rows) - len(issues)
     if merged_away > 0:

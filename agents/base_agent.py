@@ -122,19 +122,42 @@ def format_hunks_for_prompt(
 _QUALITY_DIRECTIVE = (
     "\n\n"
     "━━ GROUNDING & QUALITY RULES (apply to every finding) ━━\n"
-    "1. Only report issues you can tie to a SPECIFIC line in the provided diff. "
-    "Put the real file path in `file_path` and the changed line in `line`.\n"
-    "2. Do NOT invent files, symbols, endpoints or issues that are not visible in "
-    "the diff. If you are not sure it is real, omit it.\n"
-    "3. Precision over recall: a few well-grounded findings beat many speculative "
-    "ones. Quote or reference the exact changed code your finding is about.\n"
-    "4. Severity calibration — use consistently:\n"
+    "1. EVIDENCE IS MANDATORY. Every finding must tie to a SPECIFIC added/changed "
+    "line in the provided diff. Put the real file path in `file_path`, the changed "
+    "line number in `line`, and BEGIN the `description` by quoting the exact code "
+    "token(s) from that line (verbatim, in backticks) that the finding is about. "
+    "If you cannot quote the offending code from the diff, DO NOT report it.\n"
+    "2. Do NOT invent files, symbols, endpoints, columns or issues that are not "
+    "visible in the diff. The line you cite must actually contain what you describe "
+    "(e.g. if you say 'inside a loop', a for/while/forEach must be in the quoted "
+    "context; if you say a column is X, that column name must appear in the diff).\n"
+    "3. NO SPECULATION. Do not report conditional or hypothetical issues. Banned "
+    "unless you quote concrete proof from the diff: 'Potential…', 'Possible…', "
+    "'may/might/could…', 'if X is not…', 'ensure/consider/verify that…'. If a risk "
+    "depends on code you cannot see, OMIT it — another agent or the reviewer owns it. "
+    "State confirmed facts about the diff, not advice.\n"
+    "4. Precision over recall: a few well-grounded findings beat many speculative "
+    "ones. Three real issues with quotes are worth more than ten guesses.\n"
+    "5. Domain-specific anti-false-positive rules:\n"
+    "   • N+1 / loop claims: only if a loop construct (for/while/forEach/stream) is "
+    "visible in the diff around the DB call. A flat sequence of calls is NOT a loop.\n"
+    "   • PII/privacy: flag only ACTUAL personal data (name, email, phone, SSN/NRIC, "
+    "address, DOB, card/account number, etc.). Operational columns like "
+    "error_message, error_code, *_status, *_id, timestamps are NOT PII.\n"
+    "   • SQL injection: only when user-controlled input is concatenated into a query "
+    "in the diff. A static/parameterised statement or a changed TABLE NAME is NOT "
+    "injection.\n"
+    "   • Schema: an index/primary key/foreign key defined inside a CREATE TABLE for a "
+    "NEW table has no locking/online-DDL concern (the table is empty). Do not warn "
+    "about CREATE INDEX locks for a table created in the same diff.\n"
+    "6. Severity calibration — use consistently:\n"
     "   • CRITICAL = exploitable now / data loss / guaranteed production break\n"
     "   • HIGH     = likely incident, breaking change, or sensitive-data exposure\n"
     "   • MEDIUM   = a real issue that needs follow-up but isn't urgent\n"
     "   • LOW      = minor, stylistic, or defensive-improvement\n"
-    "5. If nothing in YOUR domain applies to this diff, return an empty findings "
-    "list — do not pad the response with generic best-practice advice.\n"
+    "7. If nothing in YOUR domain applies to this diff, return an empty findings "
+    "list — do not pad the response with generic best-practice advice. An empty list "
+    "is a CORRECT, high-quality answer.\n"
 )
 
 
@@ -151,6 +174,53 @@ class BaseAgent(ABC, Generic[T]):
     def __init__(self, api_key: str | None = None) -> None:
         self._default_api_key = api_key
 
+    # ── Shared logging ──────────────────────────────────────────────────────────
+    # One consistent line per agent run so you can see, in the logs, whether each
+    # agent actually called the LLM or fell back to static rules, and how many
+    # findings it produced. Used by base run() AND by every agent that overrides
+    # run() with a static-first path that would otherwise bypass this logging.
+
+    @property
+    def _key(self) -> str:
+        # AgentName subclasses str, so isinstance(an, str) is True — use .value
+        # (the lowercase agent key) when present, else the raw string.
+        an = getattr(self, "agent_name", "agent")
+        return getattr(an, "value", an)
+
+    @staticmethod
+    def _primary_count(result: Any) -> int:
+        """Best-effort size of the result's main finding/list field, for logs."""
+        for attr in ("findings", "pii_findings", "issues", "taint_paths",
+                     "breaking_changes", "changes", "scenarios", "impacts",
+                     "references", "requirements", "secrets", "uncovered_paths",
+                     "hot_files", "gaps", "violations"):
+            v = getattr(result, attr, None)
+            if isinstance(v, list):
+                return len(v)
+        return 0
+
+    def log_start(self, request: AnalysisRequest) -> None:
+        log.info("[%s] %-22s start", request.request_id, self._key)
+
+    def log_done(self, request: AnalysisRequest, result: Any,
+                 mode: str | None = None, note: str = "") -> None:
+        """Emit the canonical per-agent completion line.
+
+        mode: 'llm' | 'static' | 'fallback' | 'no-budget' | 'skip'. When omitted it
+        is inferred from result.fallback_used.
+        """
+        if mode is None:
+            mode = "static" if getattr(result, "fallback_used", False) else "llm"
+        log.info(
+            "[%s] %-22s done   mode=%-9s findings=%-3d tokens=%-5d time=%6.2fs model=%s%s",
+            request.request_id, self._key, mode,
+            self._primary_count(result),
+            getattr(result, "token_usage", 0) or 0,
+            getattr(result, "duration_s", 0.0) or 0.0,
+            getattr(result, "model_used", "") or "-",
+            f"  {note}" if note else "",
+        )
+
     def run(self, request: AnalysisRequest, budget: TokenBudgetManager, context: dict[str, Any] | None = None) -> T:
         ctx       = context or {}
         agent_key = self.agent_name.value
@@ -161,6 +231,7 @@ class BaseAgent(ABC, Generic[T]):
         progress = get_progress_store().get_or_create(request.request_id)
         progress.agent_started(agent_key)
 
+        self.log_start(request)
         user_prompt = self.build_user_prompt(request, ctx)
         needed      = estimate_tokens(user_prompt) + 800
 
@@ -169,7 +240,8 @@ class BaseAgent(ABC, Generic[T]):
             result.fallback_used = True
             result.duration_s    = 0.0
             progress.agent_done(agent_key, 0, 0.0, "", True)
-            log.warning("[%s] %s: budget exhausted -> fallback", request.request_id, agent_key)
+            log.warning("[%s] %-22s budget exhausted -> static fallback", request.request_id, agent_key)
+            self.log_done(request, result, mode="no-budget")
             return result
 
         t0 = time.monotonic()
@@ -183,18 +255,18 @@ class BaseAgent(ABC, Generic[T]):
                 result.fallback_used = False
                 result.duration_s    = duration
                 progress.agent_done(agent_key, tokens, duration, client.model_name, False)
-                log.info("[%s] %-22s LLM   tokens=%-5d  time=%-6.2fs  model=%s",
-                         request.request_id, agent_key, tokens, duration, client.model_name)
+                self.log_done(request, result, mode="llm")
                 return result
             except Exception as exc:
                 duration = round(time.monotonic() - t0, 2)
-                log.error("[%s] %s LLM error: %s", request.request_id, agent_key, exc, exc_info=True)
+                log.error("[%s] %-22s LLM error -> static fallback: %s",
+                          request.request_id, agent_key, exc, exc_info=True)
                 result = self.fallback_result(request)
                 result.fallback_used = True
                 result.duration_s    = duration
                 progress.agent_done(agent_key, 0, duration, "", True)
-                log.warning("[%s] %-22s FALLBACK (static rules) — LLM call failed  time=%.2fs",
-                            request.request_id, agent_key, duration)
+                self.log_done(request, result, mode="fallback",
+                              note="LLM call failed — see error above")
                 return result
 
     @abstractmethod

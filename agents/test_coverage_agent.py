@@ -37,6 +37,18 @@ class TestCoverageAgent(BaseAgent[TestCoverageResult]):
         "Output ONLY compact JSON. No prose."
     )
 
+    def run(self, request: AnalysisRequest, budget, context: dict | None = None) -> TestCoverageResult:
+        result = super().run(request, budget, context or {})
+        # Coverage delta is NOT measured here — no coverage tool / baseline is wired
+        # in, so the LLM otherwise emits a FABRICATED constant (commonly a flat
+        # -5% every run). Replace it with a deterministic estimate derived from the
+        # REAL test gaps in THIS diff (changed source files with no paired test) so
+        # the number reflects the actual change, is explainable, and the gate only
+        # holds on a genuine signal — not a hallucinated percentage.
+        gaps = _untested_changed_files(request)
+        result.coverage_delta = -float(gaps * 2)   # 0 when every changed file has a test
+        return result
+
     def build_user_prompt(self, request: AnalysisRequest, context: dict[str, Any]) -> str:
         test_files   = context.get("test_files", [])
         coverage_pct = context.get("current_coverage_pct", "unknown")
@@ -102,6 +114,29 @@ class TestCoverageAgent(BaseAgent[TestCoverageResult]):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 from ingestion.test_detect import is_test_file as _is_test_file
+
+
+# Source-code extensions that a unit test could meaningfully cover. Docs, config,
+# SQL, IaC and markup are NOT counted as a coverage gap.
+_CODE_EXTS = (
+    ".java", ".kt", ".scala", ".py", ".ts", ".tsx", ".js", ".jsx", ".go",
+    ".rb", ".php", ".cs", ".cpp", ".cc", ".c", ".rs", ".swift", ".dart", ".groovy",
+)
+
+
+def _untested_changed_files(request: AnalysisRequest) -> int:
+    """Count changed SOURCE-CODE files (not tests, docs, config, SQL, …) that have
+    no paired test file in this diff — the deterministic basis for the
+    coverage-delta estimate."""
+    test_paths = {h.file_path for h in request.hunks if _is_test_file(h.file_path)}
+    n = 0
+    for hunk in request.hunks:
+        fp = hunk.file_path
+        if _is_test_file(fp) or not fp.lower().endswith(_CODE_EXTS):
+            continue
+        if _expected_test_path(fp) not in test_paths:
+            n += 1
+    return n
 
 
 def _expected_test_path(src: str) -> str:

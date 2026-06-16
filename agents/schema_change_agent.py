@@ -99,7 +99,7 @@ class SchemaChangeAgent(BaseAgent[SchemaChangeResult]):
         )
         if not has_relevant:
             self.report_static_progress(request)
-            return SchemaChangeResult(
+            result = SchemaChangeResult(
                 changes=[],
                 has_destructive=False,
                 has_irreversible=False,
@@ -108,6 +108,8 @@ class SchemaChangeAgent(BaseAgent[SchemaChangeResult]):
                 gate_contribution="APPROVE",
                 summary="No schema changes detected.",
             )
+            self.log_done(request, result, mode="skip", note="no migration/ORM/DDL files")
+            return result
         return super().run(request, budget, context or {})
 
     def fallback_result(self, request: AnalysisRequest) -> SchemaChangeResult:

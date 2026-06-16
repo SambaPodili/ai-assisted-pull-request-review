@@ -168,6 +168,7 @@ class SecretsEntropyAgent(BaseAgent[SecretsEntropyResult]):
         result.duration_s    = duration
         result.fallback_used = False    # static scan is the intended path, not a degradation
         progress.agent_done(agent_key, 0, duration, "static", False)
+        self.log_done(request, result, mode="static", note=f"{len(result.findings)} finding(s)")
         return result
 
     def build_user_prompt(self, request: AnalysisRequest, context: dict[str, Any]) -> str:

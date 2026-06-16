@@ -27,8 +27,11 @@ Three analysis layers:
 Fallback: static analysis only (layers 1–3) when no LLM budget remains.
 """
 from __future__ import annotations
+import logging
 import re
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 from core.models import (
     AgentName, AnalysisRequest,
@@ -241,6 +244,7 @@ class ReferenceImpactAgent(BaseAgent[ReferenceImpactResult]):
                 llm_result.search_backend   = static.search_backend
                 llm_result.high_impact_files = static.high_impact_files
             llm_result.fallback_used = False
+            # LLM path already logged by base.run().
             return llm_result
         except Exception as exc:
             log.warning(
@@ -249,6 +253,8 @@ class ReferenceImpactAgent(BaseAgent[ReferenceImpactResult]):
             )
 
         # Return static result
+        self.log_done(request, static, mode="static",
+                      note=f"{static.total_references} ref(s) via {static.search_backend}")
         return static
 
     def fallback_result(self, request: AnalysisRequest) -> ReferenceImpactResult:

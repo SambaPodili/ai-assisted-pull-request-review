@@ -88,6 +88,7 @@ class TemporalRiskAgent(BaseAgent[TemporalRiskResult]):
         result.duration_s    = duration
         result.fallback_used = False    # static analysis is the intended path
         progress.agent_done(agent_key, 0, duration, "static", False)
+        self.log_done(request, result, mode="static", note=f"{len(result.hot_files)} hot file(s)")
         return result
 
     def build_user_prompt(self, request: AnalysisRequest, context: dict[str, Any]) -> str:

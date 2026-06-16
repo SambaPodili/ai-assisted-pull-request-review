@@ -79,6 +79,7 @@ class Settings(BaseSettings):
     budget_maintainability:    int = Field(default=2000,  alias="BUDGET_MAINTAINABILITY")
     budget_license_compliance: int = Field(default=0,     alias="BUDGET_LICENSE_COMPLIANCE")  # static-only
     budget_observability:      int = Field(default=2000,  alias="BUDGET_OBSERVABILITY")
+    budget_functional_validation: int = Field(default=3500, alias="BUDGET_FUNCTIONAL_VALIDATION")
 
     # ── Git providers ─────────────────────────────────────────────────────────
     git_provider:              str = Field(default="github", alias="GIT_PROVIDER")
@@ -277,6 +278,7 @@ class Settings(BaseSettings):
             "maintainability":    self.budget_maintainability,
             "license_compliance": self.budget_license_compliance,
             "observability":      self.budget_observability,
+            "functional_validation": self.budget_functional_validation,
         }
 
 
