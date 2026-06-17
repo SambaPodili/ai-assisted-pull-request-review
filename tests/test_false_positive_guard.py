@@ -17,6 +17,7 @@ from core.models import (
     PerformanceImpactResult, PerformanceFinding,
     DataPrivacyResult, PIIFinding,
     SchemaChangeResult, SchemaChange,
+    SecurityResult, SecurityFinding,
 )
 from governance.false_positive_guard import guard_false_positives
 
@@ -52,9 +53,34 @@ def test_n1_without_loop_is_flagged():
         file_path="src/main/java/com/uob/cus/srm/service/impl/KycStatusSaveServiceImpl.java",
         line=594, suggestion="batch")]))
     src = {"src/main/java/com/uob/cus/srm/service/impl/kycstatussaveserviceimpl.java": _FLAT}
-    n1, _, _ = guard_false_positives(rep, src)
+    n1, _, _, _ = guard_false_positives(rep, src)
     assert n1 == 1
     assert rep.performance_impact.findings[0].unverified is True
+
+
+def test_security_on_import_line_is_flagged():
+    # screenshot: CWE-20 "Improper Input Validation" pinned to an import statement.
+    rep = _rep(security=SecurityResult(overall_severity=RiskLevel.MEDIUM, findings=[
+        SecurityFinding(file_path="src/main/java/com/uob/cus/srm/api/VRMServicesApi.java",
+                        line_range="38", severity=RiskLevel.MEDIUM, cwe_id="CWE-20",
+                        description="`ManualRifUpdateRequest` Improper Input Validation",
+                        remediation="x")]))
+    src = {"src/main/java/com/uob/cus/srm/api/vrmservicesapi.java": [
+        (37, "+import com.uob.cus.srm.model.manualrifdraft.ManualRifDraftSaveRequest;"),
+        (38, "+import com.uob.cus.srm.model.manualrifdraft.ManualRifUpdateRequest;")]}
+    _, _, _, imp = guard_false_positives(rep, src)
+    assert imp == 1 and rep.security.findings[0].unverified is True
+
+
+def test_security_on_real_code_line_survives():
+    # same CWE family but anchored to an actual sink line → must NOT be flagged.
+    rep = _rep(security=SecurityResult(overall_severity=RiskLevel.HIGH, findings=[
+        SecurityFinding(file_path="src/Dao.java", line_range="50", severity=RiskLevel.HIGH,
+                        cwe_id="CWE-89", description="`buildQuery(recordId)` SQL injection",
+                        remediation="x")]))
+    src = {"src/dao.java": [(50, '+    String sql = "SELECT * FROM t WHERE id=" + recordId;')]}
+    _, _, _, imp = guard_false_positives(rep, src)
+    assert imp == 0 and rep.security.findings[0].unverified is False
 
 
 def test_real_n1_with_loop_survives():
@@ -63,7 +89,7 @@ def test_real_n1_with_loop_survives():
         description="N+1 query: DB call inside loop",
         file_path="src/Dao.java", line=101, suggestion="batch")]))
     src = {"src/dao.java": _LOOPED}
-    n1, _, _ = guard_false_positives(rep, src)
+    n1, _, _, _ = guard_false_positives(rep, src)
     assert n1 == 0
     assert rep.performance_impact.findings[0].unverified is False
 
@@ -73,7 +99,7 @@ def test_pii_on_operational_column_is_flagged():
         pii_type="error_message", risk_level=RiskLevel.MEDIUM,
         description="Potential PII exposure through ERROR_MESSAGE column in tvrm_batch_ewf_reports table",
         file_path="db/pdn_vrm_ddl.sql", line=9, context="`ERROR_CODE` VARCHAR(5) DEFAULT NULL,")]))
-    _, pii, _ = guard_false_positives(rep, {})
+    _, pii, _, _ = guard_false_positives(rep, {})
     assert pii == 1
     assert rep.data_privacy.pii_findings[0].unverified is True
 
@@ -83,7 +109,7 @@ def test_real_pii_field_survives():
         pii_type="email", risk_level=RiskLevel.MEDIUM,
         description="PII field 'email' introduced without apparent encryption",
         file_path="src/User.java", line=12, context="private String email;")]))
-    _, pii, _ = guard_false_positives(rep, {})
+    _, pii, _, _ = guard_false_positives(rep, {})
     assert pii == 0
     assert rep.data_privacy.pii_findings[0].unverified is False
 
@@ -100,7 +126,7 @@ def test_index_on_new_table_is_downgraded():
                      table_name="tvrm_batch_ewf_reports", column_name="APPLICATION_ID",
                      severity=RiskLevel.MEDIUM, description="Foreign key added on column APPLICATION_ID"),
     ]))
-    _, _, schema = guard_false_positives(rep, {})
+    _, _, schema, _ = guard_false_positives(rep, {})
     assert schema == 2
     idx = [c for c in rep.schema_change.changes if c.change_type == "add_index"]
     assert all(c.on_new_table and c.severity == RiskLevel.LOW for c in idx)
@@ -115,6 +141,6 @@ def test_index_on_existing_table_not_downgraded():
                      table_name="existing_large_table", column_name="customer_id",
                      severity=RiskLevel.MEDIUM, description="New index"),
     ]))
-    _, _, schema = guard_false_positives(rep, {})
+    _, _, schema, _ = guard_false_positives(rep, {})
     assert schema == 0
     assert rep.schema_change.changes[0].severity == RiskLevel.MEDIUM

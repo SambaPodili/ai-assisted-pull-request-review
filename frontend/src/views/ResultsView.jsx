@@ -516,148 +516,106 @@ function FindingFeedback({ r, agent, category='', file='' }) {
   )
 }
 
-// (GateHero removed — the gate decision, risk score, POLICY-ENFORCED badge and
-//  deterministic "why" reasons now live solely in the persistent top gate banner,
-//  so the gate isn't repeated inside the Summary persona views.)
+// ── Shared review session (one source of truth across every tab) ──────────────
+// The dev→reviewer validation workflow is keyed by request_id and lives on the
+// backend (generic over ANY agent's finding). This module-level store lets every
+// surface — Top Issues AND each agent tab — read & mutate the SAME session, so a
+// verdict set on the Security tab instantly shows in Top Issues and counts toward
+// the validated set posted to the PR on finalize.
+const _rsCache = {}   // reqId -> session object
+const _rsSubs  = {}   // reqId -> Set<setState>
 
-// Developer → reviewer → PR continuity. Developer triages each top issue
-// (valid / false-positive + comment), submits; a reviewer (gate:override role)
-// confirms/rejects and posts the validated "real issues" back to the PR.
-function ReviewWorkflowCard({ r, persona, state, showToast }) {
-  const reqId = r.request_id || state.lastRequestId
-  const issues = r.top_issues || []
-  const isReviewer = canOverrideGate(state)
-  const [session, setSession] = useState(null)
-  const [comments, setComments] = useState({})
-  const [gate, setGate] = useState((r.gate_decision || 'APPROVE').toUpperCase())
+async function reloadReviewSession(reqId, state) {
+  if (!reqId || !state?.backendUrl) return null
+  try {
+    const s = await backendGet(state, `/api/v1/review/${reqId}`)
+    _rsCache[reqId] = s
+    ;(_rsSubs[reqId] || []).forEach(fn => fn(s))
+    return s
+  } catch { return null }
+}
+
+function useReviewSession(reqId, state) {
+  const [session, setSession] = useState(reqId ? (_rsCache[reqId] || null) : null)
+  useEffect(() => {
+    if (!reqId) return
+    if (!_rsSubs[reqId]) _rsSubs[reqId] = new Set()
+    _rsSubs[reqId].add(setSession)
+    if (_rsCache[reqId]) setSession(_rsCache[reqId])
+    else if (state?.backendUrl) reloadReviewSession(reqId, state)
+    return () => { _rsSubs[reqId]?.delete(setSession) }
+  }, [reqId, state?.backendUrl])
+  return session
+}
+
+// Stable triage key for a finding. MUST match TopIssues so the same finding
+// triaged on an agent tab and in Top Issues share ONE row / verdict.
+function triageKey({ agent, file = '', line = '', title = '' }) {
+  return `${agent || 'issue'}|${file || ''}|${line || ''}|${(title || '').slice(0, 60)}`
+}
+
+// Formal dev→reviewer validation controls for a SINGLE finding on any agent tab.
+// Same workflow as Top Issues (✓Valid/⚐False-positive → ✓Confirm/✗Reject, stage-
+// gated, sharing one session). Falls back to the lightweight "teach CIAA" feedback
+// when there's no backend/request to drive the workflow (e.g. offline demo).
+function FindingTriage({ r, agent, title = '', file = '', line = '', severity = '', category = '' }) {
+  const { state } = useApp()
+  const reqId = r?.request_id
+  const workflowOn = !!(reqId && state?.backendUrl)
+  const session = useReviewSession(workflowOn ? reqId : null, state)
   const [busy, setBusy] = useState(false)
+  const [comment, setComment] = useState('')
+  if (!workflowOn)
+    return <FindingFeedback r={r} agent={agent} category={category} file={file}/>
 
-  const keyFor = it => `${(it.agents && it.agents[0]) || 'issue'}|${it.file_path || ''}|${it.line || ''}|${(it.title || '').slice(0, 60)}`
-
-  async function load() {
-    if (!reqId || !state.backendUrl) return
-    try { setSession(await backendGet(state, `/api/v1/review/${reqId}`)) } catch (e) { /* unauth / offline */ }
-  }
-  useEffect(() => { load() }, [reqId, state.backendUrl])
-
-  if (!reqId || !state.backendUrl || !issues.length) return null
-
-  const triageMap = {}
-  ;(session?.triage || []).forEach(t => { triageMap[t.finding_key] = t })
+  const role  = canOverrideGate(state) ? 'reviewer' : 'developer'
   const stage = session?.stage || 'developer'
+  const fk = triageKey({ agent, file, line, title: title || category })
+  const t  = (session?.triage || []).find(x => x.finding_key === fk) || {}
+  const devChip = { valid:['#166534','#f0fdf4','✓ valid'], false_positive:['#991b1b','#fff1f2','⚐ false positive'], wont_fix:['#7a8494','#f3f4f6',"won't fix"] }
+  const revChip = { confirmed:['#166534','#f0fdf4','✓ confirmed'], rejected:['#991b1b','#fff1f2','✗ rejected'] }
+  const dc = devChip[t.dev_verdict], rc = revChip[t.reviewer_verdict]
+  const devActive = role === 'developer' && stage === 'developer'
+  const revActive = role === 'reviewer'  && stage === 'reviewer'
+  const chip = c => ({fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:9,background:c[1],color:c[0]})
 
-  async function triage(it, role, verdict) {
-    const fk = keyFor(it)
+  async function send(verdict) {
     try {
       setBusy(true)
       await backendPost(state, `/api/v1/review/${reqId}/triage`, {
-        finding_key: fk, role, verdict, comment: comments[fk] || '',
-        title: it.title || '', agent: (it.agents && it.agents[0]) || '', file: it.file_path || '',
-        line: String(it.line || ''), severity: it.severity || '', repo: repoName(state.primaryRepo),
+        finding_key: fk, role, verdict, comment,
+        title: title || category || '', agent, file, line: String(line || ''),
+        severity, repo: repoName(state.primaryRepo),
       })
-      await load()
-    } catch (e) { showToast?.(`Triage failed: ${e.message}`, 'error') } finally { setBusy(false) }
+      await reloadReviewSession(reqId, state)
+    } catch { /* keep current chips; user can retry */ } finally { setBusy(false) }
   }
-  async function submit() {
-    try { setBusy(true); await backendPost(state, `/api/v1/review/${reqId}/submit`, {}); await load(); showToast?.('Submitted for reviewer validation', 'success') }
-    catch (e) { showToast?.(e.message, 'error') } finally { setBusy(false) }
-  }
-  async function reopen() {
-    try { setBusy(true); await backendPost(state, `/api/v1/review/${reqId}/reopen`, {}); await load() }
-    catch (e) { showToast?.(e.message, 'error') } finally { setBusy(false) }
-  }
-  async function finalize() {
-    try {
-      setBusy(true)
-      const pr = state.selectedPR; const prId = pr ? (pr.number || pr.id || prNum(pr) || '') : ''
-      const cfg = gitCfg(state)
-      const d = await backendPost(state, `/api/v1/review/${reqId}/finalize`, {
-        gate, post_to_pr: true, repo: repoName(state.primaryRepo), pr_id: String(prId),
-        provider: cfg.provider, token: cfg.token, workspace: cfg.workspace,
-        base_url: cfg.base_url, repo_slug: repoName(state.primaryRepo),
-      })
-      await load()
-      showToast?.(d.posted
-        ? `✅ ${d.validated_count} validated issue(s) posted to PR (gate ${d.gate})`
-        : `Finalized — gate ${d.gate}, ${d.validated_count} validated issue(s)${prId ? '' : ' (no PR id — not posted)'}`,
-        'success')
-    } catch (e) { showToast?.(e.message, 'error') } finally { setBusy(false) }
-  }
-
-  const devChip = { valid: ['#166534', '#f0fdf4', '✓ valid'], false_positive: ['#991b1b', '#fff1f2', '⚐ false positive'], wont_fix: ['#7a8494', '#f3f4f6', "won't fix"] }
-  const revChip = { confirmed: ['#166534', '#f0fdf4', '✓ confirmed'], rejected: ['#991b1b', '#fff1f2', '✗ rejected'] }
-  const stageMeta = {
-    developer: ['#1e40af', '#eef4ff', '① Developer triage', 'Mark each issue valid or false-positive, add comments, then submit for review.'],
-    reviewer: ['#92400e', '#fffbeb', '② Reviewer validation', 'Confirm or reject the developer’s triage, then approve and post the real issues to the PR.'],
-    done: ['#166534', '#f0fdf4', '③ Done', session?.posted_to_pr ? 'Validated issues were posted to the PR.' : 'Review finalized.'],
-  }[stage]
-  const validatedCount = (session?.triage || []).filter(t => t.dev_verdict === 'valid' && t.reviewer_verdict === 'confirmed').length
 
   return (
-    <div className="card" style={{marginBottom:14}}>
-      <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',marginBottom:4}}>
-        <div className="section-heading" style={{marginBottom:0}}><i className="ti ti-git-pull-request"/>Review workflow</div>
-        <span style={{fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:10,background:stageMeta[1],color:stageMeta[0]}}>{stageMeta[2]}</span>
-        {stage!=='done' && <span style={{marginLeft:'auto',fontSize:11.5,color:'#7a8494'}}>{validatedCount} validated · {issues.length} issue(s)</span>}
-      </div>
-      <div style={{fontSize:12,color:'#7a8494',marginBottom:12}}>{stageMeta[3]}</div>
-
-      {issues.map((it,i)=>{
-        const fk = keyFor(it); const t = triageMap[fk] || {}
-        const dc = devChip[t.dev_verdict]; const rc = revChip[t.reviewer_verdict]
-        const devActive = persona==='developer' && stage==='developer'
-        const revActive = persona==='reviewer' && stage==='reviewer' && isReviewer
-        return (
-          <div key={i} className="finding" style={{flexDirection:'column',alignItems:'stretch',gap:7}}>
-            <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
-              <span style={{fontSize:10.5,fontWeight:700,color:({critical:'#991b1b',high:'#b91c1c',medium:'#92400e',low:'#1e40af'}[(it.severity||'').toLowerCase()]||'#7a8494'),textTransform:'uppercase'}}>{it.severity}</span>
-              <span style={{fontSize:12.5,color:'#1a2332',flex:1,minWidth:0}}>{it.title}</span>
-              {it.file_path && <code style={{fontSize:11,color:'#7a8494'}}>{it.file_path.split('/').slice(-1)[0]}{it.line?`:${it.line}`:''}</code>}
-              {dc && <span style={{fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:9,background:dc[1],color:dc[0]}}>{dc[2]}</span>}
-              {rc && <span style={{fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:9,background:rc[1],color:rc[0]}}>{rc[2]}</span>}
-            </div>
-            {/* reviewer sees the developer's note */}
-            {persona==='reviewer' && (t.dev_comment||t.dev_by) && <div style={{fontSize:11.5,color:'#5b6675',background:'#f7f8fa',borderRadius:6,padding:'5px 9px'}}><strong>dev{t.dev_by?` (${t.dev_by})`:''}:</strong> {t.dev_verdict||'—'}{t.dev_comment?` — ${t.dev_comment}`:''}</div>}
-            {(devActive||revActive) && (
-              <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
-                <input value={comments[fk]||t.reviewer_comment||t.dev_comment||''} onChange={e=>setComments(c=>({...c,[fk]:e.target.value}))}
-                  placeholder="comment (optional)…" style={{flex:1,minWidth:140,fontSize:12,padding:'4px 8px',border:'1px solid #e3e7ee',borderRadius:6}}/>
-                {devActive && <>
-                  <button className="btn" disabled={busy} onClick={()=>triage(it,'developer','valid')} style={{fontSize:11,padding:'4px 9px',color:'#166534'}}>✓ Valid</button>
-                  <button className="btn" disabled={busy} onClick={()=>triage(it,'developer','false_positive')} style={{fontSize:11,padding:'4px 9px',color:'#991b1b'}}>⚐ False positive</button>
-                </>}
-                {revActive && <>
-                  <button className="btn" disabled={busy} onClick={()=>triage(it,'reviewer','confirmed')} style={{fontSize:11,padding:'4px 9px',color:'#166534'}}>✓ Confirm</button>
-                  <button className="btn" disabled={busy} onClick={()=>triage(it,'reviewer','rejected')} style={{fontSize:11,padding:'4px 9px',color:'#991b1b'}}>✗ Reject</button>
-                </>}
-              </div>
-            )}
-          </div>
-        )
-      })}
-
-      {/* Stage actions */}
-      <div style={{display:'flex',alignItems:'center',gap:10,marginTop:12,flexWrap:'wrap'}}>
-        {persona==='developer' && stage==='developer' &&
-          <button className="btn btn-primary" disabled={busy} onClick={submit}><i className="ti ti-send"/> Submit for review</button>}
-        {persona==='reviewer' && stage==='reviewer' && isReviewer && <>
-          <span style={{fontSize:12,color:'#5b6675'}}>Final gate:</span>
-          <select value={gate} onChange={e=>setGate(e.target.value)} style={{fontSize:12,padding:'5px 8px',border:'1px solid #e3e7ee',borderRadius:6}}>
-            <option>APPROVE</option><option>HOLD</option><option>BLOCK</option>
-          </select>
-          <button className="btn btn-primary" disabled={busy} onClick={finalize}><i className="ti ti-git-merge"/> Approve &amp; post real issues to PR</button>
-          <button className="btn" disabled={busy} onClick={reopen} style={{fontSize:12}}>Send back to developer</button>
-        </>}
-        {persona==='reviewer' && stage==='reviewer' && !isReviewer &&
-          <span style={{fontSize:12,color:'#92400e'}}>Reviewer role required to validate and approve.</span>}
-        {stage==='developer' && persona==='reviewer' &&
-          <span style={{fontSize:12,color:'#7a8494'}}>Waiting for the developer to submit their triage.</span>}
-        {stage==='done' &&
-          <span style={{fontSize:12.5,color:'#166534',fontWeight:600}}><i className="ti ti-circle-check"/> Finalized — {validatedCount} validated issue(s){session?.posted_to_pr?' posted to the PR':''}.</span>}
-      </div>
-    </div>
+    <span style={{display:'inline-flex',gap:7,alignItems:'center',flexWrap:'wrap'}}>
+      <span style={{fontSize:10,color:'#9fadbf',textTransform:'uppercase',letterSpacing:.4}}>Review:</span>
+      {dc && <span style={chip(dc)}>{dc[2]}</span>}
+      {rc && <span style={chip(rc)}>{rc[2]}</span>}
+      {devActive && <>
+        <button className="btn" disabled={busy} onClick={()=>send('valid')} style={{fontSize:11,padding:'3px 9px',color:'#166534'}}>✓ Valid</button>
+        <button className="btn" disabled={busy} onClick={()=>send('false_positive')} style={{fontSize:11,padding:'3px 9px',color:'#991b1b'}}>⚐ False positive</button>
+      </>}
+      {revActive && <>
+        <button className="btn" disabled={busy} onClick={()=>send('confirmed')} style={{fontSize:11,padding:'3px 9px',color:'#166534'}}>✓ Confirm</button>
+        <button className="btn" disabled={busy} onClick={()=>send('rejected')} style={{fontSize:11,padding:'3px 9px',color:'#991b1b'}}>✗ Reject</button>
+      </>}
+      {(devActive||revActive) &&
+        <input value={comment} onChange={e=>setComment(e.target.value)} placeholder="comment…"
+          style={{fontSize:11,padding:'3px 7px',border:'1px solid #e3e7ee',borderRadius:6,minWidth:120}}/>}
+      {!devActive && !revActive && !dc && !rc &&
+        <span style={{fontSize:10.5,color:'#bcc6d2'}}>{stage==='done'?'review finalized':role==='reviewer'?'awaiting developer triage':'in reviewer validation'}</span>}
+    </span>
   )
 }
+
+// (GateHero removed — the gate decision, risk score, POLICY-ENFORCED badge and
+//  deterministic "why" reasons now live solely in the persistent top gate banner,
+//  so the gate isn't repeated inside the Summary persona views.)
 
 function SummaryTab({r, snipCache, state, showToast}) {
   const [persona, setPersona] = useState(null)
@@ -689,8 +647,7 @@ function SummaryTab({r, snipCache, state, showToast}) {
       )}
       <LlmCoverageBanner r={r}/>
       <ReviewPlanCard r={r}/>
-      <TopIssues r={r}/>
-      {state && <ReviewWorkflowCard r={r} persona={effectivePersona} state={state} showToast={showToast}/>}
+      <TopIssues r={r} persona={effectivePersona} state={state} showToast={showToast}/>
       {effectivePersona==='developer' ? <DeveloperView r={r} findings={findings} blockers={blockers} fixes={fixes} scenarios={scenarios} covDelta={covDelta}/> : <ReviewerView r={r} findings={findings}/>}
     </div>
   )
@@ -775,25 +732,106 @@ function ReviewPlanCard({ r }) {
 // Ranked, cross-agent-deduplicated "what must I look at" list. One row per real
 // issue: findings from several agents on the same location are merged, agreement
 // raises confidence, unverified locations are penalised in rank.
-function TopIssues({ r }) {
+// Single combined "Top issues to review" + review-workflow card: the ranked,
+// deduplicated issue list IS the triage list — each row carries its own
+// developer/reviewer verdict controls, plus the stage banner + submit/approve
+// actions. No more duplicate "Top issues" and "Review workflow" sections.
+function TopIssues({ r, persona, state, showToast }) {
   const issues = r.top_issues || []
+  const reqId = r.request_id || state?.lastRequestId
+  const workflowOn = !!(reqId && state?.backendUrl && issues.length)
+  const isReviewer = state ? canOverrideGate(state) : false
+  const [comments, setComments] = useState({})
+  const [gate, setGate] = useState((r.gate_decision || 'APPROVE').toUpperCase())
+  const [busy, setBusy] = useState(false)
+  // Shared session: verdicts set on any agent tab show here too (and vice-versa).
+  const session = useReviewSession(workflowOn ? reqId : null, state)
+  const load = () => reloadReviewSession(reqId, state)
+
+  const keyFor = it => triageKey({ agent: it.agents && it.agents[0], file: it.file_path, line: it.line, title: it.title })
+
   if (!issues.length) return null
+
   const sevC  = {critical:'#991b1b',high:'#b91c1c',medium:'#92400e',low:'#1e40af'}
   const confC = {high:'#16a34a',medium:'#d97706',low:'#9ca3af'}
   const agentLabel = a => (AGENT_META[a]?.label) || a.replace(/_/g,' ')
+  const devChip = { valid:['#166534','#f0fdf4','✓ valid'], false_positive:['#991b1b','#fff1f2','⚐ false positive'], wont_fix:['#7a8494','#f3f4f6',"won't fix"] }
+  const revChip = { confirmed:['#166534','#f0fdf4','✓ confirmed'], rejected:['#991b1b','#fff1f2','✗ rejected'] }
+
+  const triageMap = {}
+  ;(session?.triage || []).forEach(t => { triageMap[t.finding_key] = t })
+  const stage = session?.stage || 'developer'
+  const stageMeta = {
+    developer: ['#1e40af','#eef4ff','① Developer triage','Mark each issue valid or false-positive, add comments, then submit for review.'],
+    reviewer:  ['#92400e','#fffbeb','② Reviewer validation','Confirm or reject the developer’s triage, then approve and post the real issues to the PR.'],
+    done:      ['#166534','#f0fdf4','③ Done', session?.posted_to_pr ? 'Validated issues were posted to the PR.' : 'Review finalized.'],
+  }[stage]
+  const validatedCount = (session?.triage || []).filter(t => t.dev_verdict==='valid' && t.reviewer_verdict==='confirmed').length
+
+  async function triage(it, role, verdict) {
+    const fk = keyFor(it)
+    try {
+      setBusy(true)
+      await backendPost(state, `/api/v1/review/${reqId}/triage`, {
+        finding_key: fk, role, verdict, comment: comments[fk] || '',
+        title: it.title || '', agent: (it.agents && it.agents[0]) || '', file: it.file_path || '',
+        line: String(it.line || ''), severity: it.severity || '', repo: repoName(state.primaryRepo),
+      })
+      await load()
+    } catch (e) { showToast?.(`Triage failed: ${e.message}`, 'error') } finally { setBusy(false) }
+  }
+  async function submit() {
+    try { setBusy(true); await backendPost(state, `/api/v1/review/${reqId}/submit`, {}); await load(); showToast?.('Submitted for reviewer validation', 'success') }
+    catch (e) { showToast?.(e.message, 'error') } finally { setBusy(false) }
+  }
+  async function reopen() {
+    try { setBusy(true); await backendPost(state, `/api/v1/review/${reqId}/reopen`, {}); await load() }
+    catch (e) { showToast?.(e.message, 'error') } finally { setBusy(false) }
+  }
+  async function finalize() {
+    try {
+      setBusy(true)
+      const pr = state.selectedPR; const prId = pr ? (pr.number || pr.id || prNum(pr) || '') : ''
+      const cfg = gitCfg(state)
+      const d = await backendPost(state, `/api/v1/review/${reqId}/finalize`, {
+        gate, post_to_pr: true, repo: repoName(state.primaryRepo), pr_id: String(prId),
+        provider: cfg.provider, token: cfg.token, workspace: cfg.workspace, base_url: cfg.base_url, repo_slug: repoName(state.primaryRepo),
+      })
+      await load()
+      showToast?.(d.posted
+        ? `✅ ${d.validated_count} validated issue(s) posted to PR (gate ${d.gate})`
+        : `Finalized — gate ${d.gate}, ${d.validated_count} validated issue(s)${prId ? '' : ' (no PR id — not posted)'}`, 'success')
+    } catch (e) { showToast?.(e.message, 'error') } finally { setBusy(false) }
+  }
+
   return (
     <div className="card" style={{marginBottom:14}}>
-      <div className="section-heading"><i className="ti ti-target-arrow"/>Top issues to review ({issues.length})</div>
-      <div style={{fontSize:11.5,color:'#9fadbf',marginBottom:10}}>
-        Deduplicated across all agents and ranked by severity, cross-agent agreement and location confidence — start here.
+      <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+        <div className="section-heading" style={{marginBottom:0}}><i className="ti ti-target-arrow"/>Top issues to review ({issues.length})</div>
+        {workflowOn && <span style={{fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:10,background:stageMeta[1],color:stageMeta[0]}}>{stageMeta[2]}</span>}
+        {workflowOn && stage!=='done' && <span style={{marginLeft:'auto',fontSize:11.5,color:'#7a8494'}}>{validatedCount} validated · {issues.length} issue(s)</span>}
       </div>
-      {issues.map((it,i)=>(
+      <div style={{fontSize:11.5,color:'#9fadbf',margin:'4px 0 10px'}}>
+        Deduplicated across all agents, ranked by severity, cross-agent agreement and location confidence — start here.
+        {workflowOn && <> {stageMeta[3]}</>}
+      </div>
+
+      {issues.map((it,i)=>{
+        const fk = keyFor(it); const t = triageMap[fk] || {}
+        const dc = devChip[t.dev_verdict]; const rc = revChip[t.reviewer_verdict]
+        const devActive = workflowOn && persona==='developer' && stage==='developer'
+        const revActive = workflowOn && persona==='reviewer' && stage==='reviewer' && isReviewer
+        return (
         <div key={i} className="finding" style={{alignItems:'flex-start',gap:10}}>
           <span style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,color:'#9fadbf',minWidth:22,textAlign:'right',marginTop:2}}>{i+1}</span>
           <span style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:10,textTransform:'uppercase',whiteSpace:'nowrap',flexShrink:0,marginTop:2,
             background:`${sevC[it.severity]||'#7a8494'}1a`,color:sevC[it.severity]||'#7a8494',border:`1px solid ${sevC[it.severity]||'#7a8494'}55`}}>{it.severity}</span>
           <div className="finding-body">
-            <div className="finding-desc">{it.title}{it.unverified && <UnvBadge f={it}/>}</div>
+            <div className="finding-desc" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+              <span style={{flex:1,minWidth:0}}>{it.title}</span>{it.unverified && <UnvBadge f={it}/>}
+              {dc && <span style={{fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:9,background:dc[1],color:dc[0]}}>{dc[2]}</span>}
+              {rc && <span style={{fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:9,background:rc[1],color:rc[0]}}>{rc[2]}</span>}
+            </div>
             <div className="finding-file" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',marginTop:3}}>
               {it.file_path && <span style={{fontFamily:'var(--mono)'}}>{it.file_path}{it.line?`:${it.line}`:''}</span>}
               <span title={`Location confidence: ${it.confidence}`} style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:10,color:confC[it.confidence]||'#9ca3af',fontWeight:700}}>
@@ -809,9 +847,50 @@ function TopIssues({ r }) {
                 {(it.descriptions||[]).slice(1,3).map((d,j)=><div key={j}>· {d}</div>)}
               </div>
             )}
+            {/* reviewer sees the developer's note */}
+            {workflowOn && persona==='reviewer' && (t.dev_comment||t.dev_by) &&
+              <div style={{fontSize:11.5,color:'#5b6675',background:'#f7f8fa',borderRadius:6,padding:'5px 9px',marginTop:5}}><strong>dev{t.dev_by?` (${t.dev_by})`:''}:</strong> {t.dev_verdict||'—'}{t.dev_comment?` — ${t.dev_comment}`:''}</div>}
+            {/* inline triage controls */}
+            {(devActive||revActive) && (
+              <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginTop:6}}>
+                <input value={comments[fk]??(t.reviewer_comment||t.dev_comment||'')} onChange={e=>setComments(c=>({...c,[fk]:e.target.value}))}
+                  placeholder="comment (optional)…" style={{flex:1,minWidth:140,fontSize:12,padding:'4px 8px',border:'1px solid #e3e7ee',borderRadius:6}}/>
+                {devActive && <>
+                  <button className="btn" disabled={busy} onClick={()=>triage(it,'developer','valid')} style={{fontSize:11,padding:'4px 9px',color:'#166534'}}>✓ Valid</button>
+                  <button className="btn" disabled={busy} onClick={()=>triage(it,'developer','false_positive')} style={{fontSize:11,padding:'4px 9px',color:'#991b1b'}}>⚐ False positive</button>
+                </>}
+                {revActive && <>
+                  <button className="btn" disabled={busy} onClick={()=>triage(it,'reviewer','confirmed')} style={{fontSize:11,padding:'4px 9px',color:'#166534'}}>✓ Confirm</button>
+                  <button className="btn" disabled={busy} onClick={()=>triage(it,'reviewer','rejected')} style={{fontSize:11,padding:'4px 9px',color:'#991b1b'}}>✗ Reject</button>
+                </>}
+              </div>
+            )}
           </div>
         </div>
-      ))}
+        )
+      })}
+
+      {/* Stage actions */}
+      {workflowOn && (
+        <div style={{display:'flex',alignItems:'center',gap:10,marginTop:12,flexWrap:'wrap',borderTop:'1px solid #f0f2f5',paddingTop:12}}>
+          {persona==='developer' && stage==='developer' &&
+            <button className="btn btn-primary" disabled={busy} onClick={submit}><i className="ti ti-send"/> Submit for review</button>}
+          {persona==='reviewer' && stage==='reviewer' && isReviewer && <>
+            <span style={{fontSize:12,color:'#5b6675'}}>Final gate:</span>
+            <select value={gate} onChange={e=>setGate(e.target.value)} style={{fontSize:12,padding:'5px 8px',border:'1px solid #e3e7ee',borderRadius:6}}>
+              <option>APPROVE</option><option>HOLD</option><option>BLOCK</option>
+            </select>
+            <button className="btn btn-primary" disabled={busy} onClick={finalize}><i className="ti ti-git-merge"/> Approve &amp; post real issues to PR</button>
+            <button className="btn" disabled={busy} onClick={reopen} style={{fontSize:12}}>Send back to developer</button>
+          </>}
+          {persona==='reviewer' && stage==='reviewer' && !isReviewer &&
+            <span style={{fontSize:12,color:'#92400e'}}>Reviewer role required to validate and approve.</span>}
+          {stage==='developer' && persona==='reviewer' &&
+            <span style={{fontSize:12,color:'#7a8494'}}>Waiting for the developer to submit their triage.</span>}
+          {stage==='done' &&
+            <span style={{fontSize:12.5,color:'#166534',fontWeight:600}}><i className="ti ti-circle-check"/> Finalized — {validatedCount} validated issue(s){session?.posted_to_pr?' posted to the PR':''}.</span>}
+        </div>
+      )}
     </div>
   )
 }
@@ -1009,7 +1088,7 @@ function SecurityTab({r, snipCache, search=''}) {
               </div>
               <div className="finding-file">{f.file||''}{f.line_range?` · line ${f.line_range}`:''}</div>
               {getCodeSnippetJSX(f.file,f.line_range,snipCache)}
-              <div style={{marginTop:6}}><FindingFeedback r={r} agent="security" category={f.cwe||''} file={f.file||''}/></div>
+              <div style={{marginTop:6}}><FindingTriage r={r} agent="security" category={f.cwe||''} file={f.file||''} line={f.line_range||f.line||''} severity={f.severity||''} title={`${f.cwe?f.cwe+' — ':''}${f.description||''}`}/></div>
             </div>
           </div>
         ))}
@@ -1037,7 +1116,7 @@ function SecretsTab({r, snipCache}) {
         "Entropy" measures randomness; real secrets look random (≈4.5+), normal code ≈4.0.
         <strong> How to act:</strong> open the line, confirm whether it's a real credential. If yes → remove it, move it to a secret store, and <strong>rotate the key</strong>. If it's just config/code, mark it <code>⚐ false positive</code> so it stops flagging.
       </div>
-      {(se.findings||[]).map((f,i)=><div key={i} className="finding"><span className={`sev sev-${f.severity}`}>{f.severity}</span><div className="finding-body"><div className="finding-desc"><code>{f.variable||f.kind||''}</code> — {f.kind||''} (entropy: {(f.entropy||0).toFixed(2)})</div><div className="finding-file" title="Value is redacted — see the highlighted line below for full context">value: <code>{f.value||''}</code> {f.file?`· ${f.file.split(/[\\/]/).pop()}`:''} · line {f.line||'?'}</div>{getCodeSnippetJSX(f.file,f.line,snipCache,2)}<div style={{marginTop:6}}><FindingFeedback r={r} agent="secrets_entropy" category={f.kind||''} file={f.file||''}/></div></div></div>)}
+      {(se.findings||[]).map((f,i)=><div key={i} className="finding"><span className={`sev sev-${f.severity}`}>{f.severity}</span><div className="finding-body"><div className="finding-desc"><code>{f.variable||f.kind||''}</code> — {f.kind||''} (entropy: {(f.entropy||0).toFixed(2)})</div><div className="finding-file" title="Value is redacted — see the highlighted line below for full context">value: <code>{f.value||''}</code> {f.file?`· ${f.file.split(/[\\/]/).pop()}`:''} · line {f.line||'?'}</div>{getCodeSnippetJSX(f.file,f.line,snipCache,2)}<div style={{marginTop:6}}><FindingTriage r={r} agent="secrets_entropy" category={f.kind||''} file={f.file||''} line={f.line||''} severity={f.severity||''} title={`${f.kind||'secret'} — ${f.variable||''}`}/></div></div></div>)}
     </div>
   )
 }
@@ -1215,7 +1294,7 @@ function MavenSca({ report }) {
               <div className="finding-body">
                 <div className="finding-desc"><code>{v.cve}</code> {v.summary}</div>
                 <div className="finding-file"><code>{v.package}@{v.version}</code> · scope: {v.scope} · {v.depth}</div>
-                {report && <div style={{marginTop:6}}><FindingFeedback r={report} agent="dependency" category={v.cve||''} file={v.package||''}/></div>}
+                {report && <div style={{marginTop:6}}><FindingTriage r={report} agent="dependency" category={v.cve||''} file={v.package||''} severity={v.severity||''} title={`${v.cve||''} ${v.summary||''}`.trim()}/></div>}
               </div>
             </div>
           ))}
@@ -1245,7 +1324,7 @@ function InterfaceTab({r}) {
                 <span className={`sev sev-${b.severity}`}>{b.severity}</span>
                 <div className="finding-body"><div className="finding-desc"><span className="badge badge-dim" style={{marginRight:6}}>{b.type}</span>{(b.break_type||'').replace(/_/g,' ')} change</div><div className="finding-file">{b.path||''}</div></div>
               </div>
-              <div><FindingFeedback r={r} agent="interface" category={b.break_type||b.type||''} file={b.path||''}/></div>
+              <div><FindingTriage r={r} agent="interface" category={b.break_type||b.type||''} file={b.path||''} severity={b.severity||''} title={`${(b.break_type||'').replace(/_/g,' ')} change ${b.path||''}`.trim()}/></div>
             </div>
           ))}
       </div>
@@ -1362,7 +1441,7 @@ function SchemaTab({r}) {
             <div style={{fontSize:12,color:'#5b6675',lineHeight:1.55}}><strong>Before merge:</strong> {verify}</div>
             {c.file && <div className="finding-file" style={{fontFamily:'var(--mono)'}}>{c.file}</div>}
             {c.rollback_sql && <div><div style={{fontSize:10,color:'#9fadbf',textTransform:'uppercase',letterSpacing:.4,margin:'2px 0 3px'}}>Rollback SQL</div><pre style={{margin:0,padding:'8px 10px',background:'#0d1117',color:'#e6edf3',borderRadius:6,fontSize:11.5,overflowX:'auto',fontFamily:'var(--mono)'}}>{c.rollback_sql}</pre></div>}
-            <div style={{marginTop:2}}><FindingFeedback r={r} agent="schema_change" category={ct} file={c.file||''}/></div>
+            <div style={{marginTop:2}}><FindingTriage r={r} agent="schema_change" category={ct} file={c.file||''} severity={c.severity||''} title={`${(ct||'').replace(/_/g,' ')} ${c.description||c.object_name||''}`.trim()}/></div>
           </div>
         )})}
     </div>
@@ -1600,7 +1679,7 @@ function CrossRepoTab({r}) {
                 {i.reason && <div style={{fontSize:12.5,color:'#374151'}}>{i.reason}</div>}
                 {i.suggested_fix && <div style={{fontSize:12,color:'#0c7c4b'}}><i className="ti ti-bulb" style={{marginRight:3}}/>{i.suggested_fix}</div>}
                 {i.caller_context && <pre style={{margin:0,padding:'8px 10px',background:'#0d1117',color:'#e6edf3',borderRadius:6,fontSize:11,overflowX:'auto',fontFamily:'var(--mono)',maxHeight:200}}>{i.caller_context}</pre>}
-                <div style={{marginTop:2}}><FindingFeedback r={r} agent="cross_repo_impact" category={i.change_kind||''} file={`${i.repo}/${i.file}`}/></div>
+                <div style={{marginTop:2}}><FindingTriage r={r} agent="cross_repo_impact" category={i.change_kind||''} file={`${i.repo}/${i.file}`} line={i.line||''} severity={i.severity||''} title={`${(i.change_kind||'').replace(/_/g,' ')} ${i.reason||i.symbol||''}`.trim()}/></div>
               </div>
             )
           })}
@@ -1653,7 +1732,7 @@ function FunctionalTab({r}) {
                     {q.evidence && <span style={{fontFamily:'var(--mono)'}}>{q.evidence} · </span>}
                     {q.notes||''}{q.source_doc?` · ${q.source_doc}`:''}
                   </div>
-                  {['contradicted','missing'].includes(q.status) && <div style={{marginTop:5}}><FindingFeedback r={r} agent="functional_validation" category={q.status} file={q.evidence||''}/></div>}
+                  {['contradicted','missing'].includes(q.status) && <div style={{marginTop:5}}><FindingTriage r={r} agent="functional_validation" category={q.status} file={q.evidence||''} title={`${q.status} — ${q.text||''}`}/></div>}
                 </div>
               </div>
             )
@@ -1780,7 +1859,7 @@ function PerformanceTab({r, snipCache}) {
         </div>
       </div>
       {findings.length===0?<div className="empty-state"><i className="ti ti-circle-check"/>No performance issues found</div>
-        :findings.map((f,i)=><div key={i} className="finding"><span className={`sev sev-${(f.severity||'low').toLowerCase()}`}>{f.severity||'low'}</span><div className="finding-body"><div className="finding-desc"><code>{f.kind||''}</code> — {f.description||''}<UnvBadge f={f}/></div><div className="finding-file">{f.file||''}{f.line?` · line ${f.line}`:''}</div>{f.suggestion&&<div style={{fontSize:11,color:'#0c7c4b',marginTop:4}}><i className="ti ti-bulb" style={{marginRight:3}}/>{f.suggestion}</div>}{getCodeSnippetJSX(f.file,f.line,snipCache,3)}</div></div>)}
+        :findings.map((f,i)=><div key={i} className="finding"><span className={`sev sev-${(f.severity||'low').toLowerCase()}`}>{f.severity||'low'}</span><div className="finding-body"><div className="finding-desc"><code>{f.kind||''}</code> — {f.description||''}<UnvBadge f={f}/></div><div className="finding-file">{f.file||''}{f.line?` · line ${f.line}`:''}</div>{f.suggestion&&<div style={{fontSize:11,color:'#0c7c4b',marginTop:4}}><i className="ti ti-bulb" style={{marginRight:3}}/>{f.suggestion}</div>}{getCodeSnippetJSX(f.file,f.line,snipCache,3)}<div style={{marginTop:6}}><FindingTriage r={r} agent="performance_impact" category={f.kind||''} file={f.file||''} line={f.line||''} severity={f.severity||''} title={`${f.kind?f.kind+' — ':''}${f.description||''}`}/></div></div></div>)}
     </div>
   )
 }
@@ -1800,7 +1879,7 @@ function PrivacyTab({r, snipCache}) {
       </div>
       {violations.length>0&&<div style={{marginBottom:14}}><div style={{fontSize:11,fontWeight:600,textTransform:'uppercase',letterSpacing:.06,color:'#9fadbf',marginBottom:6}}>Compliance frameworks affected</div><div style={{display:'flex',flexWrap:'wrap',gap:6}}>{violations.map(v=><span key={v} className="badge badge-red">{v}</span>)}</div></div>}
       {findings.length===0?<div className="empty-state"><i className="ti ti-shield-check"/>No PII or privacy violations found</div>
-        :findings.map((f,i)=><div key={i} className="finding"><span className={`sev sev-${(f.severity||'medium').toLowerCase()}`}>{f.severity||'medium'}</span><div className="finding-body"><div className="finding-desc"><code>{f.pii_type||f.kind||''}</code> — {f.description||''}<UnvBadge f={f}/></div><div className="finding-file">{f.file||''}{f.line?` · line ${f.line}`:''}</div>{f.recommendation&&<div style={{fontSize:11,color:'#0c7c4b',marginTop:4}}><i className="ti ti-bulb" style={{marginRight:3}}/>{f.recommendation}</div>}{getCodeSnippetJSX(f.file,f.line,snipCache,3)}</div></div>)}
+        :findings.map((f,i)=><div key={i} className="finding"><span className={`sev sev-${(f.severity||'medium').toLowerCase()}`}>{f.severity||'medium'}</span><div className="finding-body"><div className="finding-desc"><code>{f.pii_type||f.kind||''}</code> — {f.description||''}<UnvBadge f={f}/></div><div className="finding-file">{f.file||''}{f.line?` · line ${f.line}`:''}</div>{f.recommendation&&<div style={{fontSize:11,color:'#0c7c4b',marginTop:4}}><i className="ti ti-bulb" style={{marginRight:3}}/>{f.recommendation}</div>}{getCodeSnippetJSX(f.file,f.line,snipCache,3)}<div style={{marginTop:6}}><FindingTriage r={r} agent="data_privacy" category={f.pii_type||f.kind||''} file={f.file||''} line={f.line||''} severity={f.severity||''} title={`${(f.pii_type||'PII').toUpperCase()} — ${f.description||''}`}/></div></div></div>)}
     </div>
   )
 }
@@ -1811,7 +1890,7 @@ function QualityTab({r, snipCache}) {
   const agentSection=(icon,color,title,body)=>(<div key={title} style={{marginBottom:20,paddingBottom:20,borderBottom:'1px solid #e8eaed'}}><div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}><i className={`ti ${icon}`} style={{fontSize:16,color}}/><span style={{fontSize:13,fontWeight:600,color:'#0d1117'}}>{title}</span></div>{body}</div>)
   const maintBody=!maint?emptyRow('Agent did not run'):(() => {
     const issues=maint.issues||[]; const score=maint.score??100; const scoreColor=score>=80?'#0c7c4b':score>=60?'#8a5200':'#b81c1c'
-    return <div><div style={{display:'flex',gap:16,alignItems:'center',marginBottom:12}}><div style={{textAlign:'center'}}><div style={{fontSize:28,fontWeight:700,color:scoreColor}}>{score}</div><div style={{fontSize:10,color:'#9fadbf',textTransform:'uppercase',letterSpacing:.06}}>score /100</div></div><div style={{flex:1}}><div className="score-bar"><div className="score-fill" style={{width:`${score}%`,background:scoreColor}}/></div></div></div>{issues.length===0?emptyRow('No maintainability issues'):issues.map((i2,idx)=><div key={idx} className="finding"><span className={`sev sev-${(i2.severity||'low').toLowerCase()}`}>{i2.severity||'low'}</span><div className="finding-body"><div className="finding-desc"><code>{i2.kind||''}</code> — {i2.description||''}<UnvBadge f={i2}/></div><div className="finding-file">{i2.file||''}{i2.line?` · line ${i2.line}`:''}</div>{i2.suggestion&&<div style={{fontSize:11,color:'#0c7c4b',marginTop:4}}><i className="ti ti-bulb" style={{marginRight:3}}/>{i2.suggestion}</div>}</div></div>)}</div>
+    return <div><div style={{display:'flex',gap:16,alignItems:'center',marginBottom:12}}><div style={{textAlign:'center'}}><div style={{fontSize:28,fontWeight:700,color:scoreColor}}>{score}</div><div style={{fontSize:10,color:'#9fadbf',textTransform:'uppercase',letterSpacing:.06}}>score /100</div></div><div style={{flex:1}}><div className="score-bar"><div className="score-fill" style={{width:`${score}%`,background:scoreColor}}/></div></div></div>{issues.length===0?emptyRow('No maintainability issues'):issues.map((i2,idx)=><div key={idx} className="finding"><span className={`sev sev-${(i2.severity||'low').toLowerCase()}`}>{i2.severity||'low'}</span><div className="finding-body"><div className="finding-desc"><code>{i2.kind||''}</code> — {i2.description||''}<UnvBadge f={i2}/></div><div className="finding-file">{i2.file||''}{i2.line?` · line ${i2.line}`:''}</div>{i2.suggestion&&<div style={{fontSize:11,color:'#0c7c4b',marginTop:4}}><i className="ti ti-bulb" style={{marginRight:3}}/>{i2.suggestion}</div>}<div style={{marginTop:6}}><FindingTriage r={r} agent="maintainability" category={i2.kind||''} file={i2.file||''} line={i2.line||''} severity={i2.severity||''} title={`${i2.kind?i2.kind+' — ':''}${i2.description||''}`}/></div></div></div>)}</div>
   })()
   const licenseBody=!license?emptyRow('Agent did not run'):(() => {
     const findings=license.findings||[]
@@ -1819,7 +1898,7 @@ function QualityTab({r, snipCache}) {
   })()
   const obsBody=!obs?emptyRow('Agent did not run'):(() => {
     const findings=obs.findings||[]; const score=obs.observability_score??100; const scoreColor=score>=80?'#0c7c4b':score>=60?'#8a5200':'#b81c1c'
-    return <div><div style={{display:'flex',gap:16,alignItems:'center',marginBottom:12}}><div style={{textAlign:'center'}}><div style={{fontSize:28,fontWeight:700,color:scoreColor}}>{score}</div><div style={{fontSize:10,color:'#9fadbf',textTransform:'uppercase',letterSpacing:.06}}>obs score /100</div></div><div style={{flex:1}}><div className="score-bar"><div className="score-fill" style={{width:`${score}%`,background:scoreColor}}/></div></div></div>{findings.length===0?emptyRow('No observability gaps'):findings.map((f,i)=><div key={i} className="finding"><span className={`sev sev-${(f.severity||'low').toLowerCase()}`}>{f.severity||'low'}</span><div className="finding-body"><div className="finding-desc"><code>{f.kind||''}</code> — {f.description||''}<UnvBadge f={f}/></div><div className="finding-file">{f.file||''}{f.line?` · line ${f.line}`:''}</div>{f.suggestion&&<div style={{fontSize:11,color:'#0c7c4b',marginTop:4}}><i className="ti ti-bulb" style={{marginRight:3}}/>{f.suggestion}</div>}{getCodeSnippetJSX(f.file,f.line,snipCache,3)}</div></div>)}</div>
+    return <div><div style={{display:'flex',gap:16,alignItems:'center',marginBottom:12}}><div style={{textAlign:'center'}}><div style={{fontSize:28,fontWeight:700,color:scoreColor}}>{score}</div><div style={{fontSize:10,color:'#9fadbf',textTransform:'uppercase',letterSpacing:.06}}>obs score /100</div></div><div style={{flex:1}}><div className="score-bar"><div className="score-fill" style={{width:`${score}%`,background:scoreColor}}/></div></div></div>{findings.length===0?emptyRow('No observability gaps'):findings.map((f,i)=><div key={i} className="finding"><span className={`sev sev-${(f.severity||'low').toLowerCase()}`}>{f.severity||'low'}</span><div className="finding-body"><div className="finding-desc"><code>{f.kind||''}</code> — {f.description||''}<UnvBadge f={f}/></div><div className="finding-file">{f.file||''}{f.line?` · line ${f.line}`:''}</div>{f.suggestion&&<div style={{fontSize:11,color:'#0c7c4b',marginTop:4}}><i className="ti ti-bulb" style={{marginRight:3}}/>{f.suggestion}</div>}{getCodeSnippetJSX(f.file,f.line,snipCache,3)}<div style={{marginTop:6}}><FindingTriage r={r} agent="observability" category={f.kind||''} file={f.file||''} line={f.line||''} severity={f.severity||''} title={`${f.kind?f.kind+' — ':''}${f.description||''}`}/></div></div></div>)}</div>
   })()
   return <div className="card">{agentSection('ti-tool','#6366f1','Maintainability',maintBody)}{agentSection('ti-license','#10b981','License Compliance',licenseBody)}{agentSection('ti-eye','#0ea5e9','Observability',obsBody)}</div>
 }
@@ -3298,7 +3377,7 @@ export default function ResultsView({ active, showView, showToast }) {
           {hasTarget?'An analysis target is selected. Click Run Analysis to start.':'Select a pull request, branch diff, or commit on the Analysis target screen, then click Run Analysis.'}
         </div>
         <div style={{display:'flex',gap:12,justifyContent:'center',flexWrap:'wrap'}}>
-          {hasTarget && <button className="btn btn-primary" style={{fontSize:14,padding:'10px 24px'}} onClick={()=>update({analysisRequested:true})}>
+          {hasTarget && <button className="btn btn-primary" style={{fontSize:14,padding:'10px 24px'}} onClick={()=>update({analysisRequested:true, report:null, runNonce:Date.now()})}>
             <i className="ti ti-player-play"/> Run Analysis
           </button>}
           <button className="btn" style={{fontSize:14,padding:'10px 24px'}} onClick={()=>showView('target')}>
@@ -3310,7 +3389,9 @@ export default function ResultsView({ active, showView, showToast }) {
   }
 
   if (!state.report && state.analysisRequested) {
-    return <RunningView state={state} update={update} showToast={showToast}/>
+    // key by runNonce so each requested run mounts a FRESH RunningView (resets the
+    // started-guard) — fixes "2nd analysis does nothing until I refresh the page".
+    return <RunningView key={state.runNonce || 0} state={state} update={update} showToast={showToast}/>
   }
 
   const r = state.report

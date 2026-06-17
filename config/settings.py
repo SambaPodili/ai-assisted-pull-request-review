@@ -83,6 +83,11 @@ class Settings(BaseSettings):
 
     # ── Git providers ─────────────────────────────────────────────────────────
     git_provider:              str = Field(default="github", alias="GIT_PROVIDER")
+    # Disable TLS cert verification for git clone/fetch ONLY. For corporate
+    # Bitbucket/GitHub Enterprise behind a self-signed or internal-CA cert that
+    # git cannot verify (clone fails rc=128 "SSL certificate problem"). INSECURE:
+    # prefer trusting the corporate CA. Off by default; opt in per deployment.
+    git_ssl_no_verify:         bool = Field(default=False, alias="GIT_SSL_NO_VERIFY")
 
     bitbucket_api_url:         str = Field(default="https://api.bitbucket.org/2.0", alias="BITBUCKET_API_URL")
     bitbucket_token:           str = Field(default="", alias="BITBUCKET_TOKEN")
@@ -198,6 +203,11 @@ class Settings(BaseSettings):
     deep_scan_batch_chars: int = Field(default=12000, alias="DEEP_SCAN_BATCH_CHARS")
     deep_scan_max_batches: int = Field(default=10,    alias="DEEP_SCAN_MAX_BATCHES")
     deep_scan_min_files:   int = Field(default=8,     alias="DEEP_SCAN_MIN_FILES")
+    # Auto-promote to deep-scan when the prioritised single-prompt pass would have
+    # to SKIP files (large PR, or a few very large files that blow the token
+    # budget) — so code/security LLM review covers every changed file without the
+    # user having to tick the box. Off → only an explicit deep_scan request does it.
+    deep_scan_auto:        bool = Field(default=True,  alias="DEEP_SCAN_AUTO")
 
     # ── LLM retry (tenacity) ──────────────────────────────────────────────────
     llm_retry_attempts:    int = Field(default=5,  alias="LLM_RETRY_ATTEMPTS")

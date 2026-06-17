@@ -73,6 +73,47 @@ def _first_int(line_range: str) -> int:
     return int(m.group()) if m else 0
 
 
+# Generic identifiers that are too common to anchor on (would match many lines).
+_STOPWORDS = frozenset({
+    "string", "public", "private", "static", "final", "return", "import",
+    "class", "void", "value", "param", "object", "request", "response",
+    "exception", "boolean", "integer", "default", "select", "update", "insert",
+})
+
+
+def _anchor_tokens(desc: str) -> list[str]:
+    """Distinctive code identifiers to locate a finding in the real source.
+
+    Prefers symbols the model quoted in `backticks`, falling back to the longest
+    identifiers in the description. Returns longest-first so the most specific
+    (e.g. `convertLocalDateTimeToTimeStamp`, `ManualRifDraftSaveRequest`) wins.
+    """
+    text = desc or ""
+    backticked = " ".join(re.findall(r"`([^`]+)`", text))
+    pool = backticked or text
+    toks = re.findall(r"[A-Za-z_][A-Za-z0-9_]{5,}", pool)
+    seen, out = set(), []
+    for t in sorted(toks, key=len, reverse=True):
+        lt = t.lower()
+        if lt in _STOPWORDS or lt in seen:
+            continue
+        seen.add(lt)
+        out.append(t)
+    return out[:4]
+
+
+def _content_anchor(tokens: list[str], src: list, cited: int) -> int | None:
+    """Snap to the source line that actually contains one of the finding's
+    symbols. `src` = [(line_no, text), …]. When a token appears on several
+    lines, pick the one NEAREST the model's cited line (it's usually close).
+    Returns the matched line number, or None when nothing matches confidently."""
+    for tok in tokens:                       # longest/most-specific token first
+        hits = [ln for ln, txt in src if tok in (txt or "")]
+        if hits:
+            return min(hits, key=lambda L: abs(L - cited)) if cited else hits[0]
+    return None
+
+
 def _located_llm_findings(report: AnalysisReport):
     """Yield (finding, is_deterministic) for the LLM agents whose lines/claims
     we want to ground. Deterministic agents already have exact lines."""
@@ -88,33 +129,54 @@ def _located_llm_findings(report: AnalysisReport):
             yield f, det
 
 
-def correct_findings(report: AnalysisReport, changed_lines: dict[str, set[int]]) -> tuple[int, int]:
+def correct_findings(report: AnalysisReport, changed_lines: dict[str, set[int]],
+                     source_lines: dict[str, list] | None = None) -> tuple[int, int]:
     """Anchor wrong line numbers and flag speculative findings.
 
     changed_lines: {normalised_file_path: {added line numbers}} from the diff.
+    source_lines:  {normalised_file_path: [(line_no, text), …]} (added + context)
+                   — enables CONTENT anchoring: snap to the line that actually
+                   contains the finding's symbol, not just the nearest changed
+                   line. Without it we fall back to nearest-changed-line only.
     Returns (lines_anchored, speculative_flagged).
     """
     anchored = 0
     flagged = 0
     norm_map = { _norm(k): v for k, v in (changed_lines or {}).items() }
+    src_map  = { _norm(k): v for k, v in (source_lines or {}).items() }
+
+    def _by_basename(m: dict, fp: str):
+        v = m.get(fp)
+        if v is None and fp:
+            base = fp.rsplit("/", 1)[-1]
+            for k, vv in m.items():
+                if k.rsplit("/", 1)[-1] == base:
+                    return vv
+        return v
 
     for f, is_det in _located_llm_findings(report):
         # ── 1. Line anchoring (only for findings whose file is in the diff) ──
         fp = _norm(getattr(f, "file_path", ""))
-        lines = norm_map.get(fp)
-        if not lines and fp:
-            base = fp.rsplit("/", 1)[-1]
-            for k, v in norm_map.items():
-                if k.rsplit("/", 1)[-1] == base:
-                    lines = v
-                    break
-        if lines:
+        lines = _by_basename(norm_map, fp)
+        src   = _by_basename(src_map, fp)
+        if (lines or src) and hasattr(f, "line_range"):
             cur = _first_int(getattr(f, "line_range", ""))
-            if cur not in lines:
+            # 1a. CONTENT anchor — match the cited symbol against real source.
+            # This catches the common case the number-only anchor missed: the
+            # model cites a line that IS in the diff but is the WRONG changed
+            # line (e.g. says 38 when the symbol is at 41).
+            matched = None
+            if src:
+                matched = _content_anchor(_anchor_tokens(getattr(f, "description", "")), src, cur)
+            if matched is not None and matched != cur:
+                f.line_range = str(matched)
+                anchored += 1
+            # 1b. Fallback: snap to the nearest changed line only when the cited
+            # line isn't itself a changed line (and content gave us nothing).
+            elif matched is None and lines and cur not in lines:
                 nearest = min(lines, key=lambda L: abs(L - cur)) if cur else min(lines)
-                if hasattr(f, "line_range"):
-                    f.line_range = str(nearest)
-                    anchored += 1
+                f.line_range = str(nearest)
+                anchored += 1
 
         # ── 2. Speculation flagging (skip deterministic findings) ──
         if not is_det and not getattr(f, "unverified", False):

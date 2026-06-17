@@ -176,18 +176,64 @@ def _guard_schema_new_table(report: AnalysisReport) -> int:
     return adjusted
 
 
+# ── 4. Security finding anchored to a pure import/package line ────────────────
+# A static `import`/`package`/`using`/`#include`/`require(...)` declaration is not
+# runtime-reachable code — it can't be a search-path exploit (CWE-106), an input
+# validation gap (CWE-20), an injection sink (CWE-89/78/79), etc. The LLM
+# routinely flags new model-class imports with these CWEs; once the finding is
+# anchored (finding_quality runs first) we can check the real line and drop it.
+_IMPORT_LINE_RE = re.compile(
+    r"^\s*[+-]?\s*("
+    r"import\s|from\s+[\w.]+\s+import\b|package\s|using\s|#include\b|"
+    r"(?:const|let|var)?\s*[\w{},*\s]+\s*=\s*require\s*\("
+    r")"
+)
+# CWEs that simply cannot manifest on a declaration-only line. (Hardcoded-secret
+# CWE-798 is deliberately excluded — a secret could appear anywhere.)
+_NON_IMPORT_CWES = re.compile(
+    r"(?i)CWE-(?:106|20|89|78|79|22|94|95|352|918|434|611)\b")
+
+
+def _guard_import_only_security(report: AnalysisReport, source_lines) -> int:
+    sec = report.security
+    if not sec:
+        return 0
+    flagged = 0
+    for f in getattr(sec, "findings", None) or []:
+        if getattr(f, "unverified", False):
+            continue
+        blob = f"{getattr(f, 'cwe_id', '') or ''} {getattr(f, 'description', '') or ''}"
+        if not _NON_IMPORT_CWES.search(blob):
+            continue
+        lines = _lines_for(source_lines, getattr(f, "file_path", ""))
+        if not lines:
+            continue
+        m = re.search(r"\d+", str(getattr(f, "line_range", "") or ""))
+        if not m:
+            continue
+        cur = int(m.group())
+        text = next((t for (ln, t) in lines if ln == cur), None)
+        if text is not None and _IMPORT_LINE_RE.match(text):
+            f.unverified = True
+            flagged += 1
+    return flagged
+
+
 def guard_false_positives(report: AnalysisReport,
-                          source_lines: dict[str, list[tuple[int, str]]] | None) -> tuple[int, int, int]:
-    """Apply all three deterministic guards. Returns (n1, pii, schema) counts."""
-    n1 = _guard_n1(report, source_lines or {})
+                          source_lines: dict[str, list[tuple[int, str]]] | None) -> tuple[int, int, int, int]:
+    """Apply the deterministic guards. Returns (n1, pii, schema, import_only) counts."""
+    src = source_lines or {}
+    n1 = _guard_n1(report, src)
     pii = _guard_pii(report)
     schema = _guard_schema_new_table(report)
-    if n1 or pii or schema:
+    imp = _guard_import_only_security(report, src)
+    if n1 or pii or schema or imp:
         bits = []
         if n1:     bits.append(f"{n1} N+1 finding(s) with no loop in the diff")
         if pii:    bits.append(f"{pii} PII finding(s) with no PII signal")
         if schema: bits.append(f"{schema} index/constraint(s) on a brand-new table")
+        if imp:    bits.append(f"{imp} security finding(s) on a non-exploitable import line")
         note = "False-positive guard: " + "; ".join(bits) + " marked low-confidence."
         report.suppressed_notes = (report.suppressed_notes or []) + [note]
         log.info("[%s] %s", report.request_id, note)
-    return n1, pii, schema
+    return n1, pii, schema, imp

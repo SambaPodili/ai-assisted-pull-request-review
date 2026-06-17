@@ -91,7 +91,9 @@ function AppShell() {
         showToast('Please select a pull request, branch pair, or commit SHA first.', 'warn')
         return
       }
-      update({ report: null, analysisRequested: true })
+      // runNonce forces RunningView to remount (fresh refs) so a 2nd run always
+      // re-fires runAnalysis — even if the previous run was left mid-flight.
+      update({ report: null, analysisRequested: true, runNonce: Date.now() })
       showView('results')
       return
     }

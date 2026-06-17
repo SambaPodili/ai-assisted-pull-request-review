@@ -122,10 +122,12 @@ def count_files_in_llm_budget(hunks, max_chars_per_hunk: int = 3000,
                               max_total_chars: int = 40_000, focus: str = "general") -> dict:
     """How many changed files the default LLM prompt budget can include — mirrors
     format_hunks_for_prompt's ranking + packing so the coverage figure is exact.
-    Returns {total, signal, reviewed, skipped_noise}."""
+    Returns {total, signal, reviewed, truncated, skipped_noise}. `truncated` =
+    reviewed files whose diff is longer than the per-file char cap, so the model
+    only sees a slice — these are full-coverage candidates for deep-scan."""
     from ingestion.diff_parser import is_low_signal_path
     if not hunks:
-        return {"total": 0, "signal": 0, "reviewed": 0, "skipped_noise": 0}
+        return {"total": 0, "signal": 0, "reviewed": 0, "truncated": 0, "skipped_noise": 0}
     total = len(hunks)
     signal = [h for h in hunks if not is_low_signal_path(h.file_path)]
     skipped_noise = total - len(signal)
@@ -139,14 +141,18 @@ def count_files_in_llm_budget(hunks, max_chars_per_hunk: int = 3000,
             s += 500
         return s
 
-    used, reviewed = 0, 0
+    used, reviewed, truncated = 0, 0, 0
     for h in sorted(pool, key=_score, reverse=True):
         budget = min(max_chars_per_hunk, max_total_chars - used)
         if budget <= 0:
             break
         reviewed += 1
-        used += min(len(h.content or ""), budget)
-    return {"total": total, "signal": len(pool), "reviewed": reviewed, "skipped_noise": skipped_noise}
+        clen = len(h.content or "")
+        if clen > budget:
+            truncated += 1
+        used += min(clen, budget)
+    return {"total": total, "signal": len(pool), "reviewed": reviewed,
+            "truncated": truncated, "skipped_noise": skipped_noise}
 
 
 # Shared quality rubric appended to every agent's system prompt (see _call_llm).
@@ -348,35 +354,22 @@ class BaseAgent(ABC, Generic[T]):
 
     def _parse_json(self, raw: str) -> T:
         """
-        Parse the LLM JSON response with three escalating recovery attempts:
+        Parse the LLM JSON response, trying a chain of recovery candidates so that
+        self-hosted models (Llama, Mistral, vLLM, …) that emit *almost*-valid JSON
+        still parse instead of falling back to static rules:
           1. Direct parse — the happy path
-          2. Regex extraction — strip preamble/suffix the LLM added anyway
-          3. Truncation repair — close open strings/arrays/objects when the
-             LLM hit its max_tokens cap mid-response
+          2. Balanced-brace extraction — strip preamble/suffix/fences
+          3. Lenient repair (no deps) — Python literals (True/False/None), //+/* */
+             comments, trailing commas
+          4. Truncation repair — close strings/arrays/objects cut by max_tokens
+          5. json-repair library (if installed) — handles unescaped inner quotes,
+             single quotes, missing brackets, etc.
         """
-        # Attempt 1: direct parse
-        try:
-            return self.output_model.model_validate_json(raw)
-        except (ValidationError, ValueError):
-            pass
-
-        # Attempt 2: extract the first balanced {...} object (robust to preamble,
-        # trailing prose, and code fences the model added anyway).
-        candidate = _extract_balanced_json(raw) or _greedy_brace(raw)
-        if candidate:
+        for candidate in _json_candidates(raw):
             try:
                 return self.output_model.model_validate_json(candidate)
             except (ValidationError, ValueError):
-                raw = candidate   # carry forward for repair attempt
-
-        # Attempt 3: repair truncated JSON (LLM hit max_tokens mid-response)
-        repaired = _repair_truncated_json(raw)
-        if repaired != raw:
-            log.warning("JSON from %s was truncated — repaired and retrying parse", self.agent_name)
-            try:
-                return self.output_model.model_validate_json(repaired)
-            except (ValidationError, ValueError) as exc:
-                log.warning("Repaired JSON still invalid for %s: %s", self.agent_name, exc)
+                continue
 
         # All recovery failed — log WHAT came back so the cause is diagnosable
         # (truncated JSON vs. prose vs. an HTML proxy/error page vs. wrong model).
@@ -525,6 +518,109 @@ def _repair_truncated_json(raw: str) -> str:
         stripped += "}" if opener == "{" else "]"
 
     return stripped
+
+
+def _lenient_json_repair(raw: str) -> str:
+    """No-dependency repair of the common self-hosted-LLM JSON quirks, preserving
+    string contents (a state machine, NOT naive regex, so `https://` and code in
+    string values are untouched):
+      • strip // line comments and /* */ block comments
+      • normalise Python literals True/False/None → true/false/null
+      • drop trailing commas before } or ]
+    """
+    if not raw:
+        return raw
+    out: list[str] = []
+    i, n = 0, len(raw)
+    in_str = False
+    esc = False
+    _LITS = (("True", "true"), ("False", "false"), ("None", "null"))
+
+    def _wordish(c: str) -> bool:
+        return c.isalnum() or c == "_"
+
+    while i < n:
+        ch = raw[i]
+        if in_str:
+            if esc:
+                out.append(ch); esc = False
+            elif ch == "\\":
+                out.append(ch); esc = True
+            elif ch == '"':
+                out.append(ch); in_str = False
+            # Escape raw control characters the model left unescaped inside a
+            # string value (a multi-line description = the #1 self-hosted-LLM bug).
+            elif ch == "\n":
+                out.append("\\n")
+            elif ch == "\r":
+                out.append("\\r")
+            elif ch == "\t":
+                out.append("\\t")
+            elif ord(ch) < 0x20:
+                out.append("\\u%04x" % ord(ch))
+            else:
+                out.append(ch)
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True; out.append(ch); i += 1; continue
+        if ch == "/" and i + 1 < n and raw[i + 1] == "/":          # line comment
+            nl = raw.find("\n", i); i = n if nl < 0 else nl; continue
+        if ch == "/" and i + 1 < n and raw[i + 1] == "*":          # block comment
+            end = raw.find("*/", i + 2); i = n if end < 0 else end + 2; continue
+        matched = False
+        for lit, repl in _LITS:
+            if raw.startswith(lit, i) \
+               and (i == 0 or not _wordish(raw[i - 1])) \
+               and (i + len(lit) >= n or not _wordish(raw[i + len(lit)])):
+                out.append(repl); i += len(lit); matched = True; break
+        if matched:
+            continue
+        out.append(ch); i += 1
+
+    s = "".join(out)
+    s = re.sub(r",(\s*[}\]])", r"\1", s)   # trailing commas
+    return s
+
+
+def _json_repair_lib(raw: str) -> str | None:
+    """Repair via the optional `json-repair` package (handles unescaped inner
+    quotes, single quotes, missing brackets). Returns None when not installed."""
+    if not raw:
+        return None
+    try:
+        from json_repair import repair_json
+    except ImportError:
+        return None
+    try:
+        fixed = repair_json(raw)
+        return fixed if isinstance(fixed, str) and fixed.strip() not in ("", "{}", "[]") else None
+    except Exception:
+        return None
+
+
+def _json_candidates(raw: str):
+    """Yield progressively-repaired parse candidates (deduped, cheapest first)."""
+    seen: set[str] = set()
+
+    def _emit(c):
+        if c and c not in seen:
+            seen.add(c)
+            return c
+        return None
+
+    yield raw
+    seen.add(raw)
+    bal = _extract_balanced_json(raw) or _greedy_brace(raw)
+    base = bal or raw
+    for c in (_emit(bal),
+              _emit(_lenient_json_repair(base)),
+              _emit(_repair_truncated_json(base)),
+              _emit(_repair_truncated_json(_lenient_json_repair(base))),
+              _emit(_json_repair_lib(base)),
+              _emit(_json_repair_lib(raw))):
+        if c:
+            yield c
 
 
 def _strip_fences(text: str) -> str:

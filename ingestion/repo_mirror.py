@@ -115,7 +115,8 @@ def sync_repo(clone_url: str, slug: str, ref: str = "", secret: str = "",
         return {"slug": slug, "ok": False, "action": "skipped", "error": "git not available"}
     os.makedirs(root, exist_ok=True)
     repo_dir = Path(root) / _safe_slug(slug)
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    from ingestion.reference_finder import _git_env
+    env = _git_env()
 
     def _mask(s: str) -> str:
         return s.replace(secret, "***") if secret else s

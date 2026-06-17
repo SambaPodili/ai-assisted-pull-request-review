@@ -173,6 +173,26 @@ def _has_git() -> bool:
     return shutil.which("git") is not None
 
 
+def _git_env() -> dict:
+    """Subprocess env for git clone/fetch: never prompt, and honour the opt-in
+    TLS-skip for corporate self-signed certs (GIT_SSL_NO_VERIFY, default off)."""
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}  # never prompt for password
+    skip = False
+    try:
+        from config.settings import get_settings
+        skip = bool(get_settings().git_ssl_no_verify)
+    except Exception:
+        pass
+    # Allow the raw env var to force it too (e.g. CI/containers without settings).
+    if os.getenv("GIT_SSL_NO_VERIFY", "").strip().lower() in ("1", "true", "yes"):
+        skip = True
+    if skip:
+        env["GIT_SSL_NO_VERIFY"] = "true"
+        log.warning("git TLS verification DISABLED (GIT_SSL_NO_VERIFY) — insecure; "
+                    "prefer trusting the corporate CA")
+    return env
+
+
 def _build_clone_url(repo_url: str, token: str) -> str:
     """
     Inject the token into the clone URL so git can authenticate without
@@ -225,7 +245,7 @@ def _auto_clone_and_grep(
             clone_cmd,
             capture_output=True, text=True,
             timeout=_CLONE_TIMEOUT_S,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},  # never prompt for password
+            env=_git_env(),
         )
         if result.returncode != 0:
             # Mask token in log output
@@ -293,7 +313,7 @@ def clone_and_grep(
         cmd += ["--", clone_url, tmp_dir]
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout_s,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            env=_git_env(),
         )
         if result.returncode != 0:
             err = result.stderr

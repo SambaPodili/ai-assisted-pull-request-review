@@ -574,9 +574,12 @@ def _clone_url(cfg: GitConfig, slug: str) -> tuple[str, str]:
     Empty url = unsupported provider.
     """
     secret = cfg.token or cfg.password or ""
-    # GitHub/Cloud accept a synthetic username with a token; BB Server pairs the
-    # real username with a token/password.
-    default_user = "x-token-auth" if cfg.provider in ("github", "github_enterprise", "bitbucket_cloud") else ""
+    # A token must go in the PASSWORD position, so a synthetic username is needed
+    # when the reviewer authenticated with a token only (no username). Bitbucket
+    # Server HTTP access tokens fail as `https://<token>@host/...` (token as
+    # username, empty password → rc=128); they work as `x-token-auth:<token>@`.
+    default_user = "x-token-auth" if cfg.provider in (
+        "github", "github_enterprise", "bitbucket_cloud", "bitbucket_server") else ""
     user = cfg.username or (default_user if cfg.token else "")
     if secret and user:
         auth = f"{quote(user, safe='')}:{quote(secret, safe='')}@"

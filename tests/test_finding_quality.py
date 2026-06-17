@@ -32,6 +32,40 @@ def test_correct_line_left_untouched():
     assert anchored == 0 and rep.security.findings[0].line_range == "42"
 
 
+def test_content_anchor_fixes_wrong_but_changed_line():
+    # The model cited line 38 (which IS a changed line) but the symbol it quoted
+    # actually lives at line 41. Number-only anchoring left it wrong; content
+    # anchoring snaps to the line that really contains the symbol.
+    rep = _rep(security=SecurityResult(overall_severity=RiskLevel.MEDIUM, findings=[
+        SecurityFinding(file_path="map/MakerCheckerMapper.java", line_range="38-38",
+                        severity=RiskLevel.MEDIUM, cwe_id="CWE-330",
+                        description="`convertLocalDateTimeToTimeStamp(LocalDateTime.now())` non-deterministic",
+                        remediation="x")]))
+    changed = {"map/MakerCheckerMapper.java": {35, 38, 41}}
+    source = {"map/MakerCheckerMapper.java": [
+        (35, '@Mapping(target="entityId")'),
+        (38, '@Mapping(target="makerAction")'),
+        (41, 'expression="java(VRMUtils.convertLocalDateTimeToTimeStamp(LocalDateTime.now()))"')]}
+    anchored, _ = correct_findings(rep, changed, source)
+    assert anchored == 1 and rep.security.findings[0].line_range == "41"
+
+
+def test_content_anchor_snaps_range_to_exact_import():
+    # Range "37-41" cited for a finding about ManualRifUpdateRequest, imported at 38.
+    rep = _rep(security=SecurityResult(overall_severity=RiskLevel.MEDIUM, findings=[
+        SecurityFinding(file_path="api/VRMServicesApi.java", line_range="37-41",
+                        severity=RiskLevel.MEDIUM, cwe_id="CWE-20",
+                        description="`ManualRifUpdateRequest` Improper Input Validation",
+                        remediation="x")]))
+    changed = {"api/VRMServicesApi.java": {36, 37, 38}}
+    source = {"api/VRMServicesApi.java": [
+        (36, "import com.x.ManualRifDraftRetrieveRequest;"),
+        (37, "import com.x.ManualRifDraftSaveRequest;"),
+        (38, "import com.x.ManualRifUpdateRequest;")]}
+    anchored, _ = correct_findings(rep, changed, source)
+    assert anchored == 1 and rep.security.findings[0].line_range == "38"
+
+
 def test_speculative_finding_flagged_and_dropped_from_gate():
     rep = _rep(security=SecurityResult(overall_severity=RiskLevel.HIGH, findings=[
         SecurityFinding(file_path="svc/Impl.java", line_range="610", severity=RiskLevel.HIGH,

@@ -72,7 +72,8 @@ class CodeAnalysisAgent(BaseAgent[CodeAnalysisResult]):
         return CodeAnalysisResult(
             summary=(
                 f"[Fallback] {total} lines changed across {len(request.hunks)} file(s). "
-                "LLM analysis skipped (budget exhausted)."
+                "LLM review unavailable for this run (token budget or model error) — "
+                "heuristic churn analysis only. Enable deep-scan / re-run to get full LLM review."
             ),
             change_type="mixed",
             complexity_delta=0,

@@ -206,14 +206,37 @@ class ImpactAnalysisOrchestrator:
         # ── Phase 1: code_analysis + security ─────────────────────────────────
         from config.settings import get_settings as _gs
         _cfg = _gs()
-        _deep_scan_used = bool(getattr(request, "deep_scan", False)
-                               and len(request.hunks) >= getattr(_cfg, "deep_scan_min_files", 8))
+        # Decide deep-scan (full-coverage batched LLM review of EVERY file):
+        #  1. explicit request → always honour it, regardless of file count
+        #     (a few very large files can blow the budget even when count is low);
+        #  2. else auto-promote when the prioritised single-prompt pass would skip
+        #     signal files (so nothing silently falls back to churn heuristics).
+        _explicit_ds = bool(getattr(request, "deep_scan", False))
+        _deep_scan_used = _explicit_ds and bool(request.hunks)
+        _ds_reason = "requested" if _deep_scan_used else ""
+        if not _deep_scan_used and getattr(_cfg, "deep_scan_auto", True) and request.hunks:
+            try:
+                from agents.base_agent import count_files_in_llm_budget
+                # Use the code agent's per-file cap (2000) so big-diff truncation
+                # is detected the same way the real prompt would clip it.
+                _cov = count_files_in_llm_budget(request.hunks, max_chars_per_hunk=2000)
+                _skipped = _cov.get("signal", 0) - _cov.get("reviewed", 0)
+                _trunc = _cov.get("truncated", 0)
+                if _skipped > 0 or _trunc > 0:
+                    _deep_scan_used = True
+                    bits = []
+                    if _skipped: bits.append(f"{_skipped} file(s) would be skipped")
+                    if _trunc:   bits.append(f"{_trunc} large file(s) would be truncated")
+                    _ds_reason = "auto — " + ", ".join(bits)
+            except Exception as exc:
+                log.debug("[%s] deep-scan auto-check skipped: %s", request.request_id, exc)
         if _deep_scan_used:
             # Full-coverage: run code + security over ALL files in batches.
             from core.deep_scan import run_batched, merge_code, merge_security
             mc = getattr(_cfg, "deep_scan_batch_chars", 12000)
             mb = getattr(_cfg, "deep_scan_max_batches", 10)
-            log.info("[%s] Deep-scan enabled — %d changed files", request.request_id, len(request.hunks))
+            log.info("[%s] Deep-scan enabled (%s) — %d changed files reviewed in batches",
+                     request.request_id, _ds_reason, len(request.hunks))
             report.code_analysis = run_batched(self._code, request, ctx.get(AgentName.CODE_ANALYSIS, {}),
                                                merge_code, self._budgets, mc, mb)
             report.security = run_batched(self._sec, request, ctx.get(AgentName.SECURITY, {}),
@@ -806,7 +829,7 @@ class ImpactAnalysisOrchestrator:
         try:
             from governance.finding_quality import correct_findings
             if changed_lines:
-                correct_findings(report, changed_lines)
+                correct_findings(report, changed_lines, source_lines)
         except Exception as exc:
             log.debug("[%s] Finding-quality pass skipped: %s", report.request_id, exc)
 

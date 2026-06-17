@@ -35,6 +35,15 @@ def test_large_pr_is_budget_capped():
     assert c["total"] == 60 and 0 < c["reviewed"] < 60   # only a slice fits
 
 
+def test_large_files_flagged_truncated():
+    # few files, but each diff far exceeds the per-file cap → all truncated
+    big = [DiffHunk(file_path=f"src/F{i}.java", language="java", additions=600, deletions=0,
+                    content="+    int x = 1;\n" * 600) for i in range(5)]
+    c = count_files_in_llm_budget(big, max_chars_per_hunk=2000)
+    assert c["signal"] == 5 and c["reviewed"] == 5      # nothing skipped…
+    assert c["truncated"] == 5                          # …but every file is clipped
+
+
 def test_noise_files_excluded():
     hunks = _hunks(3) + [
         DiffHunk(file_path="pkg/app.min.js", language="javascript", additions=1, deletions=0, content="+x"),

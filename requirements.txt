@@ -46,3 +46,4 @@ prometheus-client>=0.20.0
 
 # ── Phase 4: Ticket creation ───────────────────────────────────────────────────
 # jira and servicenow are accessed via REST (requests already included)
+json-repair>=0.30  # repair almost-valid JSON from self-hosted LLMs (Llama/Mistral/vLLM) — optional, gracefully skipped if absent

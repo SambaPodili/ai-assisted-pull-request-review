@@ -129,6 +129,7 @@ export function createInitialState() {
     diffText: '',
     history: JSON.parse(localStorage.getItem('analysisHistory') || '[]'),
     analysisRequested: false,
+    runNonce: 0,            // bumped per analysis run to force a fresh RunningView mount
   };
 }
 
