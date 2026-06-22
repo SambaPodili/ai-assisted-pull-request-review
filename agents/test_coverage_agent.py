@@ -65,18 +65,20 @@ class TestCoverageAgent(BaseAgent[TestCoverageResult]):
     def fallback_result(self, request: AnalysisRequest) -> TestCoverageResult:
         """Heuristic: flag source files with no paired test file."""
         gaps:      list[TestGap] = []
-        test_paths = {h.file_path for h in request.hunks if _is_test_file(h.file_path)}
+        diff_test_paths = {h.file_path for h in request.hunks if _is_test_file(h.file_path)}
+        repo_test_basenames = _existing_test_basenames(request)
 
         for hunk in request.hunks:
             if _is_test_file(hunk.file_path):
                 continue
+            if _has_test(hunk.file_path, diff_test_paths, repo_test_basenames):
+                continue   # test added here OR already exists in the repo → not a gap
             expected = _expected_test_path(hunk.file_path)
-            if expected not in test_paths:
-                gaps.append(TestGap(
-                    file_path=hunk.file_path,
-                    uncovered_path="All changed methods",
-                    suggested_test=f"Create {expected} covering changed logic and error paths.",
-                ))
+            gaps.append(TestGap(
+                file_path=hunk.file_path,
+                uncovered_path="All changed methods",
+                suggested_test=f"Create {expected} covering changed logic and error paths.",
+            ))
 
         # Extract new method signatures from diff for stub hints
         new_methods = _extract_new_methods(request)
@@ -124,17 +126,39 @@ _CODE_EXTS = (
 )
 
 
+def _existing_test_basenames(request: AnalysisRequest) -> set[str]:
+    """Filenames of test files the frontend pre-fetched from the repo (paired with
+    changed sources, NOT part of this PR). Lets us treat a changed file whose test
+    already exists in the repo as covered, instead of over-flagging it as a gap.
+    Matched by basename so a test found at a non-conventional dir still counts."""
+    meta = getattr(request, "metadata", None) or {}
+    out: set[str] = set()
+    for d in (meta.get("existing_tests") or []):
+        p = (d.get("path") if isinstance(d, dict) else "") or ""
+        if p:
+            out.add(p.replace("\\", "/").rsplit("/", 1)[-1])
+    return out
+
+
+def _has_test(fp: str, diff_test_paths: set[str], repo_test_basenames: set[str]) -> bool:
+    """A changed source file is covered if its conventional test is either added/
+    changed in THIS diff (exact path) or already exists in the repo (by basename)."""
+    expected = _expected_test_path(fp)
+    return expected in diff_test_paths or expected.rsplit("/", 1)[-1] in repo_test_basenames
+
+
 def _untested_changed_files(request: AnalysisRequest) -> int:
     """Count changed SOURCE-CODE files (not tests, docs, config, SQL, …) that have
-    no paired test file in this diff — the deterministic basis for the
-    coverage-delta estimate."""
-    test_paths = {h.file_path for h in request.hunks if _is_test_file(h.file_path)}
+    no paired test — in this diff OR already in the repo — the deterministic basis
+    for the coverage-delta estimate."""
+    diff_test_paths = {h.file_path for h in request.hunks if _is_test_file(h.file_path)}
+    repo_test_basenames = _existing_test_basenames(request)
     n = 0
     for hunk in request.hunks:
         fp = hunk.file_path
         if _is_test_file(fp) or not fp.lower().endswith(_CODE_EXTS):
             continue
-        if _expected_test_path(fp) not in test_paths:
+        if not _has_test(fp, diff_test_paths, repo_test_basenames):
             n += 1
     return n
 

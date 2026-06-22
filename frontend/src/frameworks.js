@@ -17,7 +17,7 @@ export const FRAMEWORKS = [
     id: 'ciaa',
     app: 'ciaa',
     status: 'active',
-    title: 'Code Impact Analysis Framework',
+    title: 'Code Analysis & Review',
     tagline: 'Multi-agent PR review, risk gating & business-impact mapping',
     description:
       'Analyse a PR, branch diff, or commit across 20 specialised agents — '

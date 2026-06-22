@@ -27,8 +27,22 @@ export default function Sidebar({ view, showView, state, dark, setDark, goHome }
         title="Back to all frameworks"
         style={{ cursor: goHome ? 'pointer' : undefined }}
       >
-        <i className="ti ti-microscope" />
-        <span className="brand-text">Impact Analyzer</span>
+        {/* UOB logo lockup (inline SVG — no external asset, works air-gapped).
+            Fixed small size so the sidebar layout is unaffected. textLength forces
+            "UOB" to fit fully inside the card so the B never clips. */}
+        <svg width="50" height="28" viewBox="0 0 150 84" fill="none" aria-label="UOB" style={{ flexShrink: 0 }}>
+          <rect x="4" y="10" width="142" height="64" rx="12" fill="#1B3A8B" />
+          <g fill="#E4002B">
+            <rect x="18" y="31" width="4" height="26" rx="2" />
+            <rect x="26" y="28" width="4" height="29" rx="2" />
+            <rect x="34" y="31" width="4" height="26" rx="2" />
+            <rect x="42" y="29" width="4" height="28" rx="2" />
+            <rect x="15" y="37" width="33" height="4" rx="2" />
+          </g>
+          <text x="58" y="59" textLength="82" lengthAdjust="spacingAndGlyphs"
+                fontFamily="Arial, Helvetica, sans-serif" fontWeight="700" fontSize="34" fill="#ffffff">UOB</text>
+        </svg>
+        <span className="brand-text">Code Analysis &amp; Review</span>
         {goHome && <i className="ti ti-layout-grid" style={{ marginLeft: 'auto', fontSize: 14, opacity: 0.55 }} title="All frameworks" />}
       </div>
 
@@ -64,23 +78,7 @@ export default function Sidebar({ view, showView, state, dark, setDark, goHome }
       </div>{/* /sidebar-nav */}
 
       <div className="sidebar-foot">
-      {/* Dark mode toggle */}
-      <div style={{ padding: '8px 20px 0' }}>
-        <button
-          onClick={() => setDark?.(v => !v)}
-          title={`Switch to ${dark ? 'light' : 'dark'} mode (D)`}
-          style={{
-            width: '100%', display: 'flex', alignItems: 'center', gap: 8,
-            padding: '7px 0', background: 'none', border: 'none', cursor: 'pointer',
-            fontSize: 12, color: '#7a8494', borderRadius: 6,
-          }}
-        >
-          <i className={`ti ${dark ? 'ti-sun' : 'ti-moon'}`} style={{ fontSize: 15 }} />
-          {dark ? 'Light mode' : 'Dark mode'}
-          <kbd style={{ marginLeft: 'auto', fontSize: 9, background: 'currentColor', color: dark ? '#161b22' : '#fff', borderRadius: 3, padding: '1px 4px', opacity: 0.45 }}>D</kbd>
-        </button>
-      </div>
-
+      {/* Dark mode lives in the top-right toolbar (Topbar) — no duplicate here. */}
       <UserIdentity state={state} gitName={name} connected={connected} />
       </div>{/* /sidebar-foot */}
     </aside>

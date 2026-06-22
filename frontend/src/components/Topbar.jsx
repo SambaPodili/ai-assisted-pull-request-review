@@ -35,25 +35,33 @@ export default function Topbar({ view, state, showView, dark, setDark }) {
         {/* Build version badge (turns amber on FE/BE version mismatch) */}
         <BuildBadge state={state} />
 
-        {/* Logged-in user + role */}
-        {state.ciaaPerms && (
-          <span style={{ display:'flex', alignItems:'center', gap:7 }}
-            title={`${state.ciaaPerms.name||''}${state.ciaaPerms.team?' · '+state.ciaaPerms.team:''} — ${state.ciaaPerms.description||''}`}>
-            {state.ciaaPerms.name && (
-              <span style={{ fontSize:12, color:'#4b5563', fontWeight:600, maxWidth:160, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                <i className="ti ti-user" style={{ fontSize:12, marginRight:4, color:'#9fadbf' }}/>{state.ciaaPerms.name}
+        {/* Logged-in user + role — role is ALWAYS shown (falls back to the default
+            role when no CIAA key / skip-auth), so "what role am I?" is answerable
+            at a glance on every screen. Name appears when known. */}
+        {(() => {
+          const perms = state.ciaaPerms
+          const roleColor = perms?.role_color || '#1a56db'
+          const roleLabel = perms?.role_label || state.ciaaRole || 'Developer'
+          const name = perms?.name
+          const tip = perms
+            ? `${name||''}${perms.team?' · '+perms.team:''} — ${perms.description||roleLabel}`
+            : `Role: ${roleLabel} (no CIAA key configured — using the default role)`
+          return (
+            <span style={{ display:'flex', alignItems:'center', gap:7 }} title={tip}>
+              {name && (
+                <span style={{ fontSize:12, color:'#4b5563', fontWeight:600, maxWidth:160, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                  <i className="ti ti-user" style={{ fontSize:12, marginRight:4, color:'#9fadbf' }}/>{name}
+                </span>
+              )}
+              <span style={{
+                background: `${roleColor}1a`, color: roleColor, border: `1px solid ${roleColor}44`,
+                borderRadius: 5, padding:'2px 8px', fontSize:11, fontWeight:700, whiteSpace:'nowrap',
+              }} title={`Your role: ${roleLabel}`}>
+                <i className="ti ti-shield-lock" style={{ fontSize:11, marginRight:4 }}/>{roleLabel}
               </span>
-            )}
-            <span style={{
-              background: `${state.ciaaPerms.role_color||'#1a56db'}1a`,
-              color:       state.ciaaPerms.role_color || '#1a56db',
-              border:      `1px solid ${state.ciaaPerms.role_color||'#1a56db'}44`,
-              borderRadius: 5, padding:'2px 8px', fontSize:11, fontWeight:700, whiteSpace:'nowrap',
-            }}>
-              {state.ciaaPerms.role_label || state.ciaaRole || 'Developer'}
             </span>
-          </span>
-        )}
+          )
+        })()}
 
         {/* Backend URL pill */}
         {state.backendUrl && (

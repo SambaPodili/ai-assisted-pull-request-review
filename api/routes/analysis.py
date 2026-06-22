@@ -151,8 +151,36 @@ async def submit_analysis(
         deep_scan=bool(payload.deep_scan),
     )
 
+    # GenAI usage telemetry (ELK): capture the logged user's domain NOW, while the
+    # request context exists — the run executes later on a background task. Domain
+    # comes from an SSO/gateway header (config), with X-User-Email as a fallback.
+    _elk_domain = (request.headers.get(getattr(cfg, "elk_domain_header", "X-User-Domain")) or "").strip()
+    if not _elk_domain:
+        _email = (request.headers.get("X-User-Email") or "").strip()
+        if "@" in _email:
+            _elk_domain = _email.rsplit("@", 1)[-1]
+    # user_id = the ACTUAL Bitbucket user (NOT the repo). Priority: SSO/gateway
+    # header → request metadata (frontend's ciaaPerms.user_id) → authenticated
+    # subject name. Empty → telemetry falls back to the repo slug.
+    _elk_user = (request.headers.get(getattr(cfg, "elk_user_header", "X-User-Id")) or "").strip()
+    if not _elk_user:
+        _elk_user = str((payload.metadata or {}).get("user_id") or "").strip()
+    if not _elk_user:
+        try:
+            _subj = get_current_subject(request)
+            _elk_user = (_subj.user_id or _subj.name or "").strip()
+        except Exception:
+            _elk_user = ""
+
     # Mark queued up-front; flips to running once a slot is acquired.
     _in_flight.set(request_id, "queued")
+
+    async def _emit_usage(docs):
+        try:
+            from governance import usage_telemetry as _ut
+            await asyncio.to_thread(_ut.emit, docs)
+        except Exception:           # telemetry must never affect the analysis
+            pass
 
     async def _run():
         timeout = getattr(cfg, "analysis_timeout_s", 600)
@@ -162,6 +190,9 @@ async def submit_analysis(
             _in_flight.set(request_id, "error: cancelled while queued")
             return
         _in_flight.set(request_id, "running")       # timeout starts only now
+        _t0 = time.monotonic()
+        from governance import usage_telemetry as _ut
+        await _emit_usage([_ut.started_doc(request_id, payload.repo_url, _elk_domain, len(hunks), user_id=_elk_user)])
         try:
             report = await asyncio.wait_for(orch.analyse_async(req), timeout=timeout)
             # Persist the diff (capped) so code snippets render when the report is
@@ -173,14 +204,21 @@ async def submit_analysis(
             store.save(report)
             _in_flight.set(request_id, "done")
             log.info("[%s] Analysis complete — gate=%s", request_id, report.gate_decision.value)
+            try:
+                _rlen = len(to_markdown(report))
+            except Exception:
+                _rlen = 0
+            await _emit_usage(_ut.completion_docs(report, _elk_domain, _rlen, time.monotonic() - _t0, user_id=_elk_user))
         except asyncio.TimeoutError:
             log.error("[%s] Analysis timed out after %ds", request_id, timeout)
             _in_flight.set(request_id, f"error: timed out after {timeout}s")
             _save_error(store, req, f"Analysis timed out after {timeout}s")
+            await _emit_usage([_ut.failure_doc(request_id, payload.repo_url, _elk_domain, f"timed out after {timeout}s", user_id=_elk_user)])
         except Exception as exc:
             log.error("[%s] Analysis failed: %s", request_id, exc, exc_info=True)
             _in_flight.set(request_id, f"error: {exc}")
             _save_error(store, req, str(exc))
+            await _emit_usage([_ut.failure_doc(request_id, payload.repo_url, _elk_domain, str(exc), user_id=_elk_user)])
         finally:
             adm.release()
 
@@ -387,6 +425,7 @@ def get_me(subject: Subject = Depends(get_current_subject)):
     return {
         "key_id":       subject.key_id,
         "name":         subject.name or subject.key_id,
+        "user_id":      subject.user_id,
         "team":         subject.team,
         "roles":        [r.value for r in subject.roles],
         "primary_role": top_role.value,

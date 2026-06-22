@@ -161,6 +161,7 @@ class Subject:
     roles:   list[Role] = field(default_factory=list)
     name:    str = ""
     team:    str = ""
+    user_id: str = ""        # external identity (e.g. Bitbucket slug like "uncs16")
 
     @property
     def permissions(self) -> set[Permission]:
@@ -265,6 +266,7 @@ class APIKeyRegistry:
                 roles  = roles,
                 name   = raw_key.get("name", ""),
                 team   = raw_key.get("team", ""),
+                user_id = raw_key.get("user_id", ""),
             )
             self._entries[key] = APIKeyEntry(key=key, subject=subject)
 

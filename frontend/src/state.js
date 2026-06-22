@@ -63,11 +63,13 @@ export const MODEL_PROVIDERS = {
     hint:'Fully local — no data leaves your machine. Run: <code>ollama serve</code> then <code>ollama pull llama3.2</code>',
   },
   custom:       {
-    label:'Custom / Org Llama', icon:'⚡',
-    models:[],
-    needsKey:true, needsUrl:true,
-    keyPlaceholder:'Bearer token / API key', urlPlaceholder:'https://your-org-llm.company.com/v1',
-    hint:'Any OpenAI-compatible endpoint.',
+    label:'Custom / Org (Llama, Qwen…)', icon:'⚡',
+    // Friendly label → internal model id sent to the endpoint. Same URL + key
+    // (from backend .env); only the model id differs between the two.
+    models:[{label:'Llama', value:'gpt-4o'}, {label:'Qwen', value:'reasoning-vlm'}],
+    needsKey:false, needsUrl:false,          // FROZEN — URL + key come from backend .env
+    keyPlaceholder:'', urlPlaceholder:'',
+    hint:'🔒 <strong>URL &amp; API key are fixed in the backend .env</strong>.',
   },
 };
 

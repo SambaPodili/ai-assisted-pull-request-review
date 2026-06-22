@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     llm_model:        str = Field(default="claude-sonnet-4-6",   alias="LLM_MODEL")
     llm_base_url:     str = Field(default="",                    alias="LLM_BASE_URL")
     llm_api_version:  str = Field(default="2024-08-01-preview",  alias="LLM_API_VERSION")
+    # Shared key for a self-hosted / custom OpenAI-compatible endpoint (e.g. one
+    # gateway serving several models like Llama AND Qwen on the same URL + key —
+    # only the model name differs). Sent as an Authorization: Bearer header, NEVER
+    # in the URL. Lets the UI omit the key entirely (prefilled from this env).
+    llm_api_key:      str = Field(default="",                    alias="LLM_API_KEY")
 
     # OpenAI
     openai_api_key:   str = Field(default="", alias="OPENAI_API_KEY")
@@ -80,6 +85,43 @@ class Settings(BaseSettings):
     budget_license_compliance: int = Field(default=0,     alias="BUDGET_LICENSE_COMPLIANCE")  # static-only
     budget_observability:      int = Field(default=2000,  alias="BUDGET_OBSERVABILITY")
     budget_functional_validation: int = Field(default=3500, alias="BUDGET_FUNCTIONAL_VALIDATION")
+    # QA generates many rich scenarios (up to 4000 output tokens) and its prompt can
+    # include uploaded functional docs, so it needs more headroom than the shared
+    # _reserve pool. Without a dedicated slot it fell back every run. Raise
+    # BUDGET_QA_SCENARIOS if you upload large requirement docs.
+    budget_qa_scenarios:       int = Field(default=6000, alias="BUDGET_QA_SCENARIOS")
+    # These agents are primarily LLM-driven (their core output IS the model's),
+    # so — like QA — they need their own slot instead of the shared _reserve, or
+    # they fall back every run. (ast/taint/secrets/iac/temporal stay on _reserve:
+    # they have a deterministic core and only use the LLM opportunistically.)
+    budget_schema_change:      int = Field(default=4000, alias="BUDGET_SCHEMA_CHANGE")
+    budget_cross_repo_impact:  int = Field(default=5000, alias="BUDGET_CROSS_REPO_IMPACT")
+    budget_reference_impact:   int = Field(default=5000, alias="BUDGET_REFERENCE_IMPACT")
+
+    # ── GenAI usage telemetry → ELK (developer portal) ────────────────────────
+    # Emits per-run lifecycle documents (started, analysis success, security
+    # review, gate, report) to an Elasticsearch index. Off by default. user_id =
+    # repo slug; app_code = last 3 chars of the project key; domain = logged
+    # user's domain (from an SSO/gateway header, fallback ELK_DEFAULT_DOMAIN).
+    elk_usage_enabled:    bool  = Field(default=False, alias="ELK_USAGE_ENABLED")
+    elk_usage_url:        str   = Field(default="https://developerportal.com/elasticp/genai_usage/_doc/", alias="ELK_USAGE_URL")
+    elk_tool_id:          str   = Field(default="G040", alias="ELK_TOOL_ID")
+    elk_tool_name:        str   = Field(default="Code Analysis and Review", alias="ELK_TOOL_NAME")
+    elk_tool_version:     str   = Field(default="1.0.0", alias="ELK_TOOL_VERSION")
+    elk_app_code_default: str   = Field(default="CLR", alias="ELK_APP_CODE_DEFAULT")
+    elk_integration_id:   str   = Field(default="ownpccoelkint", alias="ELK_INTEGRATION_ID")
+    elk_environment:      str   = Field(default="SIT", alias="ELK_ENVIRONMENT")
+    elk_default_domain:   str   = Field(default="", alias="ELK_DEFAULT_DOMAIN")
+    elk_auth_header:      str   = Field(default="", alias="ELK_AUTH_HEADER")   # e.g. "ApiKey xxx" / "Bearer xxx"
+    # Content negotiation. Plain application/json works against a _doc/ POST; set
+    # these to "application/vnd.elasticsearch+json; compatible-with=8" if your
+    # cluster (ES8 compatibility mode) requires the vendor media type.
+    elk_accept:           str   = Field(default="application/json", alias="ELK_ACCEPT")
+    elk_content_type:     str   = Field(default="application/json", alias="ELK_CONTENT_TYPE")
+    elk_user_header:      str   = Field(default="X-User-Id", alias="ELK_USER_HEADER")
+    elk_domain_header:    str   = Field(default="X-User-Domain", alias="ELK_DOMAIN_HEADER")
+    elk_verify_ssl:       bool  = Field(default=True, alias="ELK_VERIFY_SSL")
+    elk_timeout_s:        float = Field(default=5.0, alias="ELK_TIMEOUT_S")
 
     # ── Git providers ─────────────────────────────────────────────────────────
     git_provider:              str = Field(default="github", alias="GIT_PROVIDER")
@@ -224,6 +266,13 @@ class Settings(BaseSettings):
     # or resets connections under that load — surfacing as "failed to connect".
     # Lower this (e.g. 2–4) for a small/local custom endpoint. 0 = unlimited.
     llm_max_concurrency:   int = Field(default=8, alias="LLM_MAX_CONCURRENCY")
+    # Reasoning models (Qwen/QwQ/DeepSeek-R1) burn output tokens on a <think> phase
+    # before the JSON, so the default 4000-token cap returns an EMPTY answer for
+    # the bigger agents. Raise the OUTPUT cap (0 = use each agent's own cap) and
+    # multiply the per-agent budgets so reasoning + the JSON answer both fit.
+    # Example for a Qwen reasoning endpoint: LLM_MAX_OUTPUT_TOKENS=8000, LLM_BUDGET_MULTIPLIER=2.5
+    llm_max_output_tokens: int   = Field(default=0,   alias="LLM_MAX_OUTPUT_TOKENS")
+    llm_budget_multiplier: float = Field(default=1.0, alias="LLM_BUDGET_MULTIPLIER")
     # Sampling temperature. 0.0 = deterministic — the same diff yields the same
     # findings and gate on every run, essential for reviewer trust and
     # reproducible audits. Raise only if you deliberately want varied output.
@@ -274,7 +323,7 @@ class Settings(BaseSettings):
     # ── Derived helpers ───────────────────────────────────────────────────────
     @property
     def agent_budgets(self) -> dict[str, int]:
-        return {
+        base = {
             "code_analysis": self.budget_code_analysis,
             "security":      self.budget_security,
             "dependency":    self.budget_dependency,
@@ -282,6 +331,10 @@ class Settings(BaseSettings):
             "interface":     self.budget_interface,
             "risk":          self.budget_risk,
             "remediation":        self.budget_remediation,
+            "qa_scenarios":       self.budget_qa_scenarios,
+            "schema_change":      self.budget_schema_change,
+            "cross_repo_impact":  self.budget_cross_repo_impact,
+            "reference_impact":   self.budget_reference_impact,
             "_reserve":           self.budget_reserve,
             "performance_impact": self.budget_performance_impact,
             "data_privacy":       self.budget_data_privacy,
@@ -290,6 +343,11 @@ class Settings(BaseSettings):
             "observability":      self.budget_observability,
             "functional_validation": self.budget_functional_validation,
         }
+        # Scale every per-agent budget for token-hungry (e.g. reasoning) endpoints.
+        mult = getattr(self, "llm_budget_multiplier", 1.0) or 1.0
+        if mult and mult != 1.0:
+            base = {k: int(v * mult) for k, v in base.items()}
+        return base
 
 
 @lru_cache(maxsize=1)

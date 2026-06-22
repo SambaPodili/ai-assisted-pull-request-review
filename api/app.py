@@ -71,7 +71,7 @@ def create_app(settings=None) -> FastAPI:
     get_registry().load_from_settings(cfg)
 
     app = FastAPI(
-        title="AI Impact Analysis Framework",
+        title="Code Analysis & Review",
         description=(
             "Enterprise AI multi-agent code impact and security review framework.\n\n"
             "Supports GitHub, Bitbucket, GitLab webhooks, direct diff submission, "
@@ -149,6 +149,40 @@ def create_app(settings=None) -> FastAPI:
             status_code=500,
             content={"error": "Internal server error", "request_id": rid},
         )
+
+    # ── Static UI (optional, served from the SAME service) ────────────────────
+    # When the frontend has been built (frontend/dist), serve it from this service
+    # so a no-Docker / single-systemd deploy needs no separate web server. Assets
+    # live under /assets (a specific mount — never shadows API routes); the SPA
+    # shell is served via a 404 FALLBACK so any unmatched GET returns index.html
+    # WITHOUT shadowing real routes. Static paths are auth-exempt (see auth.py).
+    from pathlib import Path as _Path
+    _dist = _Path(__file__).resolve().parent.parent / "frontend" / "dist"
+    if (_dist / "index.html").exists():
+        from fastapi.staticfiles import StaticFiles
+        from fastapi.responses import FileResponse as _FileResponse
+        from starlette.exceptions import HTTPException as _StarletteHTTPException
+        if (_dist / "assets").is_dir():
+            app.mount("/assets", StaticFiles(directory=str(_dist / "assets")), name="assets")
+        _API_PREFIXES = ("/api", "/admin", "/health", "/live", "/ready",
+                         "/docs", "/redoc", "/openapi", "/metrics", "/webhook")
+
+        @app.exception_handler(_StarletteHTTPException)
+        async def _spa_or_404(request, exc):
+            # Genuine API 404s keep their JSON shape; unmatched GETs for non-API
+            # paths serve the SPA (a real top-level file if present, else index).
+            if (exc.status_code == 404 and request.method == "GET"
+                    and not request.url.path.startswith(_API_PREFIXES)):
+                cand = (_dist / request.url.path.lstrip("/")).resolve()
+                if cand.is_file() and str(cand).startswith(str(_dist.resolve())):
+                    return _FileResponse(str(cand))
+                return _FileResponse(str(_dist / "index.html"))
+            return _JSONResponse(status_code=exc.status_code,
+                                 content={"detail": getattr(exc, "detail", "Not Found")})
+        log.info("Serving frontend UI from %s (assets at /assets, SPA fallback)", _dist)
+    else:
+        log.info("No built frontend at %s — UI not served. Build it with "
+                 "`cd frontend && npm run build` (API still runs).", _dist)
 
     # ── Daily email digest scheduler (optional) ───────────────────────────────
     if getattr(cfg, "digest_enabled", False):

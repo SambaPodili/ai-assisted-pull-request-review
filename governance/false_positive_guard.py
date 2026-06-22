@@ -141,9 +141,13 @@ def _guard_pii(report: AnalysisReport) -> int:
     return flagged
 
 
-# ── 3. Schema: index/PK/FK on a brand-new table can't lock ───────────────────
-_INDEXY = {"add_index", "create_index", "add_constraint", "add_foreign_key",
-           "add_primary_key", "add_column"}
+# ── 3. Schema: ANY op on a brand-new table can't carry production risk ───────
+# A table CREATED in the same change set has no existing rows, so operations on
+# it cannot lock a live table, violate a NOT NULL/unique constraint against real
+# data, or lose data. The model still flags ADD COLUMN NOT NULL, CREATE INDEX,
+# ALTER COLUMN, etc. as high/critical "table lock / data risk" — all false
+# positives here. We downgrade every such op (except the CREATE itself).
+_TABLE_CREATE = {"add_table", "create_table"}
 
 
 def _guard_schema_new_table(report: AnalysisReport) -> int:
@@ -154,25 +158,26 @@ def _guard_schema_new_table(report: AnalysisReport) -> int:
     new_tables = {
         (getattr(c, "table_name", "") or "").strip().lower()
         for c in changes
-        if (getattr(c, "change_type", "") or "").lower() in ("add_table", "create_table")
+        if (getattr(c, "change_type", "") or "").lower() in _TABLE_CREATE
         and (getattr(c, "table_name", "") or "").strip()
     }
     if not new_tables:
         return 0
     adjusted = 0
     for c in changes:
-        ct = (getattr(c, "change_type", "") or "").lower()
+        ct  = (getattr(c, "change_type", "") or "").lower()
         tbl = (getattr(c, "table_name", "") or "").strip().lower()
-        if ct in _INDEXY and tbl and tbl in new_tables and not getattr(c, "on_new_table", False):
-            c.on_new_table = True
-            # An index/constraint created with a fresh, empty table holds no lock.
-            if c.severity in (RiskLevel.MEDIUM, RiskLevel.HIGH):
-                c.severity = RiskLevel.LOW
-            note = (f" (created together with the new table '{c.table_name}' — "
-                    f"no locking/online-DDL concern on an empty table)")
-            if note.strip() not in (c.description or ""):
-                c.description = (c.description or "").rstrip(".") + "." + note
-            adjusted += 1
+        # Skip the CREATE TABLE row itself; flag every OTHER op on a brand-new table.
+        if ct in _TABLE_CREATE or not tbl or tbl not in new_tables or getattr(c, "on_new_table", False):
+            continue
+        c.on_new_table = True
+        if c.severity in (RiskLevel.MEDIUM, RiskLevel.HIGH, RiskLevel.CRITICAL):
+            c.severity = RiskLevel.LOW
+        note = (f" (applies to the new table '{c.table_name}' created in this same "
+                f"change — no existing data to lock, violate, or lose)")
+        if note.strip() not in (c.description or ""):
+            c.description = (c.description or "").rstrip(".") + "." + note
+        adjusted += 1
     return adjusted
 
 

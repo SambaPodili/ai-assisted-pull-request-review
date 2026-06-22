@@ -45,6 +45,21 @@ def test_coverage_gap_zero_when_nothing_changed():
     assert _untested_changed_files(_req([])) == 0
 
 
+def _req_meta(files, existing):
+    r = _req(files)
+    r.metadata = {"existing_tests": existing}
+    return r
+
+
+def test_existing_repo_test_suppresses_gap():
+    # A.java has no test IN the PR, but its test already exists in the repo
+    # (pre-fetched into metadata.existing_tests) → must NOT count as a gap.
+    files = ["src/main/java/A.java", "src/main/java/B.java"]
+    assert _untested_changed_files(_req(files)) == 2                    # no repo tests known
+    existing = [{"path": "src/test/java/ATest.java", "text": "class ATest {}"}]
+    assert _untested_changed_files(_req_meta(files, existing)) == 1     # A covered by repo, B still a gap
+
+
 # ── B. Speculation → unverified → out of compliance ───────────────────────────
 
 def _rep(findings):

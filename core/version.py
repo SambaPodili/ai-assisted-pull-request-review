@@ -11,8 +11,8 @@ BUILD_DATE is informational; BUILD_VERSION is the value to compare.
 """
 from __future__ import annotations
 
-BUILD_VERSION = "2.4.0"
-BUILD_DATE = "2026-06-04"
+BUILD_VERSION = "1.0.0"
+BUILD_DATE = "2026-06-19"
 
 # Short, human-readable summary of what this build includes — shown in /health.
 BUILD_FEATURES = [

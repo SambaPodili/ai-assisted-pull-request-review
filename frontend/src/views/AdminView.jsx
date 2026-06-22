@@ -110,16 +110,16 @@ export default function AdminView({ active, showToast }) {
         {/* Map from a Bitbucket / git user: name ← displayName, user id ← slug */}
         <div style={{display:'flex',gap:8,alignItems:'flex-end',marginBottom:12,paddingBottom:12,borderBottom:'1px solid #eef0f3'}}>
           <label style={{display:'flex',flexDirection:'column',gap:4,fontSize:12,color:'#5b6675'}}>Bitbucket / git username
-            <input value={bbUser} onChange={e=>setBbUser(e.target.value)} onKeyDown={e=>e.key==='Enter'&&lookupBitbucket()} placeholder="jdoe" style={inp}/></label>
+            <input value={bbUser} onChange={e=>setBbUser(e.target.value)} onKeyDown={e=>e.key==='Enter'&&lookupBitbucket()} placeholder="unc" style={inp}/></label>
           <button className="btn" onClick={lookupBitbucket} disabled={looking||!bbUser.trim()} style={{height:34}}>
             <i className="ti ti-search"/> {looking?'Looking up…':'Look up & map'}</button>
           <span style={{fontSize:11,color:'#9fadbf',marginBottom:9}}>maps <strong>displayName → name</strong> and <strong>slug → user id</strong> from the connected git provider</span>
         </div>
         <div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'flex-end'}}>
           <label style={{display:'flex',flexDirection:'column',gap:4,fontSize:12,color:'#5b6675'}}>Name (displayName)
-            <input value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} placeholder="Jane Doe" style={inp}/></label>
+            <input value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} placeholder="Samba" style={inp}/></label>
           <label style={{display:'flex',flexDirection:'column',gap:4,fontSize:12,color:'#5b6675'}}>User ID (slug)
-            <input value={form.user_id} onChange={e=>setForm(f=>({...f,user_id:e.target.value}))} placeholder="jdoe" style={inp}/></label>
+            <input value={form.user_id} onChange={e=>setForm(f=>({...f,user_id:e.target.value}))} placeholder="unc" style={inp}/></label>
           <label style={{display:'flex',flexDirection:'column',gap:4,fontSize:12,color:'#5b6675'}}>Team
             <input value={form.team} onChange={e=>setForm(f=>({...f,team:e.target.value}))} placeholder="Payments" style={inp}/></label>
           <label style={{display:'flex',flexDirection:'column',gap:4,fontSize:12,color:'#5b6675'}}>Role

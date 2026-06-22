@@ -266,7 +266,7 @@ export default function ConfigureView({ showView, showToast }) {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 14 }}>
             {Object.entries(MODEL_PROVIDERS).map(([k, v]) => (
               <div key={k}
-                onClick={() => update({ modelProvider: k, modelName: v.models[0] || '', modelBaseUrl: k === 'ollama' ? 'http://localhost:11434' : '' })}
+                onClick={() => update({ modelProvider: k, modelName: (v.models[0]?.value ?? v.models[0]) || '', modelBaseUrl: k === 'ollama' ? 'http://localhost:11434' : '', ...(v.needsKey ? {} : { modelApiKey: '' }) })}
                 style={{
                   border: `1.5px solid ${state.modelProvider === k ? '#1a6cf6' : '#e8eaed'}`,
                   background: state.modelProvider === k ? '#eff5ff' : undefined,
@@ -282,7 +282,7 @@ export default function ConfigureView({ showView, showToast }) {
               <div className="field" style={{ marginBottom: 10 }}>
                 <label>Model</label>
                 <select value={state.modelName} onChange={e => update({ modelName: e.target.value })}>
-                  {mp.models.map(m => <option key={m} value={m}>{m}</option>)}
+                  {mp.models.map(m => { const val = m?.value ?? m; const lab = m?.label ?? m; return <option key={val} value={val}>{lab}</option> })}
                 </select>
               </div>
             ) : (

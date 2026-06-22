@@ -243,6 +243,8 @@ function RunningView({ state, update, showToast }) {
           deep_scan: !!state.deepScan,
           llm_config: { provider:state.modelProvider, model:state.modelName, api_key:state.modelApiKey, base_url:state.modelBaseUrl, api_version:state.modelApiVer },
           metadata: { provider:state.provider, connected_repos:state.connectedRepos.map(repoName), diff_lines:diffLines,
+            // ELK telemetry user_id = the logged-in Bitbucket user (mapped slug), NOT the repo
+            user_id: state.ciaaPerms?.user_id || state.userInfo?.username || state.userInfo?.account_id || state.username || '',
             functional_docs:(state.functionalDocs||[]).map(d=>({name:d.name,text:(d.text||'').slice(0,40000)})).slice(0,10),
             existing_tests: existingTests, external_references: externalRefs, ...tgt.meta }
         }
@@ -377,7 +379,7 @@ function RunningView({ state, update, showToast }) {
           <span className="spinner" style={{width:22,height:22,borderColor:'rgba(255,255,255,.2)',borderTopColor:'#fff'}}/>
         </div>
         <div style={{flex:1,minWidth:0}}>
-          <div style={{fontSize:18,fontWeight:600,color:'#0d1117',fontFamily:'Instrument Serif,serif',letterSpacing:'-.01em'}}>Running Impact Analysis</div>
+          <div style={{fontSize:18,fontWeight:600,color:'#0d1117',fontFamily:'Instrument Serif,serif',letterSpacing:'-.01em'}}>Running Code Analysis &amp; Review</div>
           <div style={{fontSize:13,color:'#7a8494',marginTop:2}}>{agentStatus}</div>
         </div>
         <div style={{textAlign:'right',flexShrink:0}}>
@@ -473,9 +475,12 @@ function UnvBadge({ f }) {
     <i className="ti ti-map-pin-off" style={{fontSize:11,marginRight:3}}/>location unverified</span>
 }
 
-// Reviewer feedback control — mark a finding as false positive / valid.
-// Feeds the feedback loop so noisy checks surface in Insights over time.
-// Rendered as two clearly-visible pill buttons so reviewers can triage at a glance.
+// "Tune CIAA" feedback control — distinct in INTENT from the workflow triage in
+// Top Issues. This does NOT decide the PR; it feeds the suppression loop so a
+// noisy check surfaces in Insights / stops being flagged for this repo over
+// future runs. Same segmented LOOK as the workflow control (visual consistency)
+// but deliberately different labels so the two aren't confused. Backend verdicts
+// stay valid/false_positive; only the surface wording changes.
 function FindingFeedback({ r, agent, category='', file='' }) {
   const { state } = useApp()
   const [sent, setSent] = useState('')
@@ -490,28 +495,39 @@ function FindingFeedback({ r, agent, category='', file='' }) {
       setSent(verdict)
     } catch { setSent('error') } finally { setBusy(false) }
   }
-  const pill = (extra={}) => ({
+  const chip = (color,bg,bd) => ({
     display:'inline-flex',alignItems:'center',gap:5,fontSize:11,fontWeight:600,
-    padding:'4px 11px',borderRadius:20,cursor:busy?'default':'pointer',
-    lineHeight:1,transition:'all .12s',userSelect:'none',...extra,
+    padding:'4px 11px',borderRadius:20,lineHeight:1,userSelect:'none',
+    color,background:bg,border:`1px solid ${bd}`,
   })
   if (sent === 'false_positive')
-    return <span style={pill({background:'#eef1f5',color:'#5b6675',border:'1px solid #d4dae2',cursor:'default'})}>⚐ Marked false positive</span>
+    return <span style={chip('#5b6675','#eef1f5','#d4dae2')}>🔇 Muted — won’t flag here</span>
   if (sent === 'valid')
-    return <span style={pill({background:'#e9f8ef',color:'#166534',border:'1px solid #b5e8cf',cursor:'default'})}>✓ Confirmed valid</span>
+    return <span style={chip('#166534','#e9f8ef','#b5e8cf')}>👍 Marked useful</span>
   if (sent === 'need-backend')
-    return <span style={{fontSize:11,color:'#b91c1c'}}>Connect a backend to record reviewer feedback.</span>
+    return <span style={{fontSize:11,color:'#b91c1c'}}>Connect a backend to send feedback.</span>
   if (sent === 'error')
     return <span style={{fontSize:11,color:'#b91c1c'}}>Couldn’t save — retry.</span>
+  const seg = (col,left) => ({
+    border:'none',borderLeft:left?'1px solid #e3e7ee':'none',background:'#fff',color:col,
+    fontSize:11,fontWeight:600,padding:'5px 11px',whiteSpace:'nowrap',cursor:busy?'default':'pointer',
+  })
   return (
     <span style={{display:'inline-flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-      <span style={{fontSize:10,color:'#9fadbf',textTransform:'uppercase',letterSpacing:.4,marginRight:1}}>Triage:</span>
-      <button type="button" disabled={busy} onClick={()=>send('valid')}
-        title="Confirm this is a real issue worth acting on"
-        style={pill({background:'#fff',color:'#166534',border:'1px solid #9bd9b8'})}>✓ Valid</button>
-      <button type="button" disabled={busy} onClick={()=>send('false_positive')}
-        title="This finding is a false positive — teach CIAA to stop flagging it for this repo"
-        style={pill({background:'#fff',color:'#9a3412',border:'1px solid #e6c4a6'})}>⚐ False positive</button>
+      <span style={{fontSize:10,color:'#9fadbf',textTransform:'uppercase',letterSpacing:.4}}
+        title="Tunes CIAA for FUTURE runs (suppression) — separate from the PR review decision in Top Issues.">Tune CIAA:</span>
+      <div style={{display:'inline-flex',borderRadius:8,overflow:'hidden',border:'1px solid #e3e7ee'}}>
+        <button type="button" disabled={busy} onClick={()=>send('valid')}
+          title="This check was useful — keep surfacing it"
+          style={seg('#166534',false)}
+          onMouseEnter={e=>{if(!busy)e.currentTarget.style.background='#16653412'}}
+          onMouseLeave={e=>{e.currentTarget.style.background='#fff'}}>👍 Useful</button>
+        <button type="button" disabled={busy} onClick={()=>send('false_positive')}
+          title="Noisy or irrelevant here — teach CIAA to stop flagging it for this repo. Does NOT change this PR's decision."
+          style={seg('#9a3412',true)}
+          onMouseEnter={e=>{if(!busy)e.currentTarget.style.background='#9a341212'}}
+          onMouseLeave={e=>{e.currentTarget.style.background='#fff'}}>🔇 Mute this check</button>
+      </div>
     </span>
   )
 }
@@ -596,17 +612,22 @@ function FindingTriage({ r, agent, title = '', file = '', line = '', severity = 
       <span style={{fontSize:10,color:'#9fadbf',textTransform:'uppercase',letterSpacing:.4}}>Review:</span>
       {dc && <span style={chip(dc)}>{dc[2]}</span>}
       {rc && <span style={chip(rc)}>{rc[2]}</span>}
-      {devActive && <>
-        <button className="btn" disabled={busy} onClick={()=>send('valid')} style={{fontSize:11,padding:'3px 9px',color:'#166534'}}>✓ Valid</button>
-        <button className="btn" disabled={busy} onClick={()=>send('false_positive')} style={{fontSize:11,padding:'3px 9px',color:'#991b1b'}}>⚐ False positive</button>
-      </>}
-      {revActive && <>
-        <button className="btn" disabled={busy} onClick={()=>send('confirmed')} style={{fontSize:11,padding:'3px 9px',color:'#166534'}}>✓ Confirm</button>
-        <button className="btn" disabled={busy} onClick={()=>send('rejected')} style={{fontSize:11,padding:'3px 9px',color:'#991b1b'}}>✗ Reject</button>
-      </>}
+      {(devActive||revActive) && (
+        <div style={{display:'inline-flex',borderRadius:8,overflow:'hidden',border:'1px solid #e3e7ee',flexShrink:0}}>
+          {(devActive
+            ? [['valid','✓ Valid','#166534'],['false_positive','⚐ False positive','#991b1b']]
+            : [['confirmed','✓ Confirm','#166534'],['rejected','✗ Reject','#991b1b']]
+          ).map(([verdict,label,col],k)=>(
+            <button key={verdict} type="button" disabled={busy} onClick={()=>send(verdict)}
+              style={{border:'none',borderLeft:k?'1px solid #e3e7ee':'none',background:'#fff',color:col,fontSize:11,fontWeight:600,padding:'5px 11px',whiteSpace:'nowrap',cursor:busy?'default':'pointer'}}
+              onMouseEnter={e=>{if(!busy)e.currentTarget.style.background=`${col}12`}}
+              onMouseLeave={e=>{e.currentTarget.style.background='#fff'}}>{label}</button>
+          ))}
+        </div>
+      )}
       {(devActive||revActive) &&
         <input value={comment} onChange={e=>setComment(e.target.value)} placeholder="comment…"
-          style={{fontSize:11,padding:'3px 7px',border:'1px solid #e3e7ee',borderRadius:6,minWidth:120}}/>}
+          style={{fontSize:11,padding:'4px 8px',border:'1px solid #e3e7ee',borderRadius:6,minWidth:120}}/>}
       {!devActive && !revActive && !dc && !rc &&
         <span style={{fontSize:10.5,color:'#bcc6d2'}}>{stage==='done'?'review finalized':role==='reviewer'?'awaiting developer triage':'in reviewer validation'}</span>}
     </span>
@@ -624,7 +645,6 @@ function SummaryTab({r, snipCache, state, showToast}) {
   const blockers = findings.filter(f=>['critical','high'].includes(f.severity))
   const fixes = r.remediation?.fix_suggestions||[]
   const scenarios = r.qa_scenarios?.scenarios||[]
-  const covDelta = parseFloat(r.test_coverage?.coverage_delta||0)
 
   return (
     <div>
@@ -648,7 +668,7 @@ function SummaryTab({r, snipCache, state, showToast}) {
       <LlmCoverageBanner r={r}/>
       <ReviewPlanCard r={r}/>
       <TopIssues r={r} persona={effectivePersona} state={state} showToast={showToast}/>
-      {effectivePersona==='developer' ? <DeveloperView r={r} findings={findings} blockers={blockers} fixes={fixes} scenarios={scenarios} covDelta={covDelta}/> : <ReviewerView r={r} findings={findings}/>}
+      {effectivePersona==='developer' ? <DeveloperView r={r} findings={findings} blockers={blockers} fixes={fixes} scenarios={scenarios}/> : <ReviewerView r={r} findings={findings}/>}
     </div>
   )
 }
@@ -850,19 +870,23 @@ function TopIssues({ r, persona, state, showToast }) {
             {/* reviewer sees the developer's note */}
             {workflowOn && persona==='reviewer' && (t.dev_comment||t.dev_by) &&
               <div style={{fontSize:11.5,color:'#5b6675',background:'#f7f8fa',borderRadius:6,padding:'5px 9px',marginTop:5}}><strong>dev{t.dev_by?` (${t.dev_by})`:''}:</strong> {t.dev_verdict||'—'}{t.dev_comment?` — ${t.dev_comment}`:''}</div>}
-            {/* inline triage controls */}
+            {/* inline triage — one segmented accept/reject control (binary, so
+                both choices stay visible; a dropdown would add a needless click) */}
             {(devActive||revActive) && (
-              <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginTop:6}}>
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginTop:7}}>
                 <input value={comments[fk]??(t.reviewer_comment||t.dev_comment||'')} onChange={e=>setComments(c=>({...c,[fk]:e.target.value}))}
-                  placeholder="comment (optional)…" style={{flex:1,minWidth:140,fontSize:12,padding:'4px 8px',border:'1px solid #e3e7ee',borderRadius:6}}/>
-                {devActive && <>
-                  <button className="btn" disabled={busy} onClick={()=>triage(it,'developer','valid')} style={{fontSize:11,padding:'4px 9px',color:'#166534'}}>✓ Valid</button>
-                  <button className="btn" disabled={busy} onClick={()=>triage(it,'developer','false_positive')} style={{fontSize:11,padding:'4px 9px',color:'#991b1b'}}>⚐ False positive</button>
-                </>}
-                {revActive && <>
-                  <button className="btn" disabled={busy} onClick={()=>triage(it,'reviewer','confirmed')} style={{fontSize:11,padding:'4px 9px',color:'#166534'}}>✓ Confirm</button>
-                  <button className="btn" disabled={busy} onClick={()=>triage(it,'reviewer','rejected')} style={{fontSize:11,padding:'4px 9px',color:'#991b1b'}}>✗ Reject</button>
-                </>}
+                  placeholder="comment (optional)…" style={{flex:1,minWidth:140,fontSize:12,padding:'5px 8px',border:'1px solid #e3e7ee',borderRadius:6}}/>
+                <div style={{display:'inline-flex',borderRadius:8,overflow:'hidden',border:'1px solid #e3e7ee',flexShrink:0}}>
+                  {(devActive
+                    ? [['developer','valid','✓ Valid','#166534'],['developer','false_positive','⚐ False positive','#991b1b']]
+                    : [['reviewer','confirmed','✓ Confirm','#166534'],['reviewer','rejected','✗ Reject','#991b1b']]
+                  ).map(([role,verdict,label,col],k)=>(
+                    <button key={verdict} type="button" disabled={busy} onClick={()=>triage(it,role,verdict)}
+                      style={{border:'none',borderLeft:k?'1px solid #e3e7ee':'none',background:'#fff',color:col,fontSize:11,fontWeight:600,padding:'5px 11px',whiteSpace:'nowrap',cursor:busy?'default':'pointer'}}
+                      onMouseEnter={e=>{if(!busy)e.currentTarget.style.background=`${col}12`}}
+                      onMouseLeave={e=>{e.currentTarget.style.background='#fff'}}>{label}</button>
+                  ))}
+                </div>
               </div>
             )}
           </div>
@@ -873,15 +897,18 @@ function TopIssues({ r, persona, state, showToast }) {
       {/* Stage actions */}
       {workflowOn && (
         <div style={{display:'flex',alignItems:'center',gap:10,marginTop:12,flexWrap:'wrap',borderTop:'1px solid #f0f2f5',paddingTop:12}}>
-          {persona==='developer' && stage==='developer' &&
-            <button className="btn btn-primary" disabled={busy} onClick={submit}><i className="ti ti-send"/> Submit for review</button>}
+          {persona==='developer' && stage==='developer' && (() => {
+            const devValid = (session?.triage||[]).filter(x=>x.dev_verdict==='valid').length
+            return <button className="btn btn-primary" disabled={busy} onClick={submit}><i className="ti ti-send"/> Submit for review{devValid?` (${devValid} valid)`:''}</button>
+          })()}
           {persona==='reviewer' && stage==='reviewer' && isReviewer && <>
             <span style={{fontSize:12,color:'#5b6675'}}>Final gate:</span>
             <select value={gate} onChange={e=>setGate(e.target.value)} style={{fontSize:12,padding:'5px 8px',border:'1px solid #e3e7ee',borderRadius:6}}>
               <option>APPROVE</option><option>HOLD</option><option>BLOCK</option>
             </select>
-            <button className="btn btn-primary" disabled={busy} onClick={finalize}><i className="ti ti-git-merge"/> Approve &amp; post real issues to PR</button>
-            <button className="btn" disabled={busy} onClick={reopen} style={{fontSize:12}}>Send back to developer</button>
+            <button className="btn btn-primary" disabled={busy} onClick={finalize} title="Approve and post the validated findings to the pull request"><i className="ti ti-git-merge"/> Approve &amp; post to PR</button>
+            <button type="button" disabled={busy} onClick={reopen} title="Return to the developer for another triage round"
+              style={{fontSize:12,color:'#7a8494',background:'none',border:'none',textDecoration:'underline',cursor:busy?'default':'pointer',padding:'4px 2px'}}>Send back to developer</button>
           </>}
           {persona==='reviewer' && stage==='reviewer' && !isReviewer &&
             <span style={{fontSize:12,color:'#92400e'}}>Reviewer role required to validate and approve.</span>}
@@ -921,7 +948,7 @@ function topFinding(findings) {
   return `${f.severity} ${f.category||'issue'}${loc}`
 }
 
-function DeveloperView({r, findings, blockers, fixes, scenarios, covDelta}) {
+function DeveloperView({r, findings, blockers, fixes, scenarios}) {
   // Headline: how many blockers + the top one, or all-clear.
   const dh = blockers.length
     ? { tone:'bad', icon:'ti-alert-triangle',
@@ -978,7 +1005,7 @@ function ReviewerView({r, findings}) {
     ['Performance',r.performance_impact?.has_db_risk||r.performance_impact?.has_complexity_regression?'warn':'pass'],
     ['API',(r.interface?.breaking_changes||[]).length?'fail':'pass'],
     ['Schema',r.schema_change?.has_destructive||r.schema_change?.has_irreversible?'fail':'pass'],
-    ['Tests',parseFloat(r.test_coverage?.coverage_delta||0)<-5?'warn':'pass'],
+    ['Tests',((r.test_coverage?.untested_functions?.length||r.test_coverage?.uncovered_paths?.length||0)>0)?'warn':'pass'],
     ['Licence',r.license_compliance?.has_copyleft?'fail':'pass'],
   ]
   const stColor={pass:['#f0fdf4','#166534','✅'],warn:['#fffbeb','#92400e','⚠️'],fail:['#fff1f2','#991b1b','❌']}
@@ -1036,19 +1063,8 @@ function ReviewerView({r, findings}) {
           <div style={{fontSize:11,color:'#9fadbf',marginTop:8}}><i className="ti ti-info-circle"/> Mapped from changed file paths. Loop in the owning team for capabilities marked critical/high.</div>
         </div>
       )}
-      <div className="card">
-        <div className="section-heading" style={{color:crit||high?'#b91c1c':'#166534'}}><i className="ti ti-eye-exclamation"/>What to scrutinise {crit+high?`(${crit} critical, ${high} high)`:''}</div>
-        {crit+high>0 ? (
-          <div style={{display:'flex',flexDirection:'column',gap:8}}>
-            {findings.filter(f=>['critical','high'].includes(f.severity)).slice(0,10).map((f,i)=>(
-              <div key={i} style={{display:'flex',alignItems:'flex-start',gap:10,padding:'9px 12px',border:'1px solid #f0f2f5',borderRadius:8}}>
-                <SevChip sev={f.severity}/>
-                <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,color:'#1a2332'}}>{f.message}</div><div style={{fontSize:11,color:'#9fadbf'}}>{f.category}{f.file?` · ${f.file}${f.line?':'+f.line:''}`:''}</div></div>
-              </div>
-            ))}
-          </div>
-        ) : <div style={{fontSize:13,color:'#7a8494'}}>No critical or high-severity findings.</div>}
-      </div>
+      {/* "What to scrutinise" removed — it duplicated the (superior) deduplicated,
+          ranked, triageable "Top issues to review" card shown above. */}
       <div className="card">
         <div className="section-heading"><i className="ti ti-topology-star-3"/>Blast radius</div>
         <div style={{display:'flex',gap:20,flexWrap:'wrap',fontSize:13}}>
@@ -1910,7 +1926,7 @@ function ChecklistTab({r, canOverride}) {
     if(r.security){const crit=(r.security.findings||[]).filter(f=>['critical','high'].includes((f.severity||'').toLowerCase()));const detail=crit.length?`${crit.length} finding(s): ${crit.slice(0,2).map(f=>[f.cwe,(f.description||'').slice(0,50)].filter(Boolean).join(' ')).join('; ')}`:'';items.push(item('security','No critical/high security vulnerabilities',crit.length?'fail':'pass',detail));items.push(item('security','No hardcoded secrets or credentials',r.security.secrets_detected?'fail':'pass',r.security.secrets_detected?'Secrets detected — rotate immediately':''))}else items.push(item('security','Security analysis','skip','Agent did not run'))
     if(r.data_privacy){items.push(item('privacy','PII fields encrypted/hashed',(r.data_privacy.unencrypted_pii_count||0)>0?'fail':'pass',(r.data_privacy.unencrypted_pii_count||0)>0?`${r.data_privacy.unencrypted_pii_count} unencrypted`:''));items.push(item('privacy','No PII logged or printed',(r.data_privacy.logging_violations||[]).length>0?'fail':'pass',(r.data_privacy.logging_violations||[]).length>0?`${(r.data_privacy.logging_violations||[]).length} violation(s)`:''))}else items.push(item('privacy','Data privacy review','skip','Agent did not run'))
     if(r.performance_impact){items.push(item('performance','No N+1 queries or unbounded DB calls',r.performance_impact.has_db_risk?'warn':'pass',r.performance_impact.has_db_risk?'DB query risk detected':''));items.push(item('performance','No algorithmic complexity regression',r.performance_impact.has_complexity_regression?'warn':'pass',r.performance_impact.has_complexity_regression?'Nested loop / O(n²) detected':''))}else items.push(item('performance','Performance review','skip','Agent did not run'))
-    if(r.test_coverage){const delta=parseFloat(r.test_coverage.coverage_delta||0);items.push(item('testing','Test coverage not reduced',delta<-5?'warn':'pass',delta<-5?`Coverage delta: ${delta.toFixed(1)}%`:''));const unt=r.test_coverage.untested_functions||[];items.push(item('testing','All changed functions have tests',unt.length?'warn':'pass',unt.length?`Untested: ${unt.slice(0,3).join(', ')}`:'' ))}else items.push(item('testing','Test coverage review','skip','Agent did not run'))
+    if(r.test_coverage){const unt=r.test_coverage.untested_functions||[];const gaps=(r.test_coverage.uncovered_paths||[]).length;items.push(item('testing','All changed functions have tests',unt.length?'warn':'pass',unt.length?`Untested: ${unt.slice(0,3).join(', ')}`:''));items.push(item('testing','No new test gaps introduced',gaps>0?'warn':'pass',gaps>0?`${gaps} changed file(s) without matching tests`:''))}else items.push(item('testing','Test coverage review','skip','Agent did not run'))
     if(r.interface){const br=r.interface.breaking_changes||[];items.push(item('interface','No breaking API changes',br.length?'fail':'pass',br.length?`${br.length} breaking change(s)`:''))}else items.push(item('interface','API contract review','skip','Agent did not run'))
     if(r.schema_change){const risky=(r.schema_change.changes||[]).filter(f=>['high','critical'].includes((f.severity||'').toLowerCase()));items.push(item('schema','Database migration is safe',risky.length?'fail':'pass',risky.length?`${risky.length} risky change(s)`:''))}else items.push(item('schema','Schema migration review','skip','Agent did not run'))
     if(r.license_compliance){items.push(item('license','No copyleft (GPL/AGPL) dependencies',r.license_compliance.has_copyleft?'fail':'pass',r.license_compliance.has_copyleft?'Copyleft licence detected':''))}else items.push(item('license','Licence compliance','skip','Agent did not run'))
@@ -1944,7 +1960,7 @@ function ChecklistTab({r, canOverride}) {
       {gateMismatch&&(
         <div style={{padding:'10px 14px',background:'#fffbeb',border:'1px solid #fcd34d',borderRadius:8,marginBottom:16,fontSize:12,color:'#92400e',display:'flex',alignItems:'flex-start',gap:8}}>
           <i className="ti ti-info-circle" style={{fontSize:14,marginTop:1}}/>
-          <span>Individual checks imply <strong>{checksImply}</strong>, but the overall gate is <strong>{realGate}</strong>. The gate reflects the AI risk assessment (risk score {r.risk_score||0}/100{r.rationale?` — ${r.rationale}`:''}), which weighs factors beyond these binary checks (e.g. coverage drop, change complexity).</span>
+          <span>Individual checks imply <strong>{checksImply}</strong>, but the overall gate is <strong>{realGate}</strong>. The gate reflects the AI risk assessment (risk score {r.risk_score||0}/100{r.rationale?` — ${r.rationale}`:''}), which weighs factors beyond these binary checks (e.g. change complexity, blast radius).</span>
         </div>
       )}
       <div style={{padding:'10px 14px',background:'#f7f8fa',border:'1px solid #e8eaed',borderRadius:8,marginBottom:16,fontSize:12,color:'#7a8494',display:'flex',alignItems:'center',gap:8}}>
@@ -2880,13 +2896,13 @@ function JudgePanel({ state, showToast }) {
                 <div key={i} style={{display:'flex',flexDirection:'column',gap:5}}>
                   <div style={{display:'flex',alignItems:'center',gap:7}}>
                     <span style={{fontSize:11,color:'#9fadbf',width:54,flexShrink:0}}>Judge {i+1}</span>
-                    <select value={j.provider} onChange={e=>updateJudge(i,{provider:e.target.value,model:(MODEL_PROVIDERS[e.target.value]?.models[0]||''),api_key:'',base_url:''})}
+                    <select value={j.provider} onChange={e=>{const m0=MODEL_PROVIDERS[e.target.value]?.models[0]; updateJudge(i,{provider:e.target.value,model:((m0?.value??m0)||''),api_key:'',base_url:''})}}
                       style={{flex:'0 0 150px',fontSize:12,padding:'5px 7px'}}>
                       {Object.entries(MODEL_PROVIDERS).map(([k,v])=><option key={k} value={k}>{v.label}</option>)}
                     </select>
                     {prov.models.length>0
                       ? <select value={j.model} onChange={e=>updateJudge(i,{model:e.target.value})} style={{flex:1,fontSize:12,padding:'5px 7px'}}>
-                          {prov.models.map(m=><option key={m} value={m}>{m}</option>)}
+                          {prov.models.map(m=>{const val=m?.value??m; const lab=m?.label??m; return <option key={val} value={val}>{lab}</option>})}
                         </select>
                       : <input type="text" value={j.model} onChange={e=>updateJudge(i,{model:e.target.value})} placeholder="model name"
                           style={{flex:1,fontSize:12,padding:'5px 7px'}}/>}
@@ -3284,7 +3300,7 @@ function ReviewModal({decision, state, onClose, onSubmit, showToast}) {
           <div style={{fontSize:18,fontWeight:600,color:meta.color,fontFamily:'Instrument Serif,serif'}}>{meta.title}</div>
           <div style={{fontSize:13,color:'#7a8494',marginTop:3}}>Your decision will be permanently logged in the audit trail.</div>
         </div>
-        <div className="field" style={{marginBottom:14}}><label>Your name / reviewer ID <span style={{color:'#b81c1c'}}>*</span></label><input type="text" value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Jane Smith"/></div>
+        <div className="field" style={{marginBottom:14}}><label>Your name / reviewer ID <span style={{color:'#b81c1c'}}>*</span></label><input type="text" value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Samba"/></div>
         <div className="field" style={{marginBottom:14}}><label>Reason / justification <span style={{color:'#b81c1c'}}>*</span></label><textarea value={reason} onChange={e=>setReason(e.target.value)} rows="3" placeholder="Explain your decision…" style={{resize:'vertical'}}/></div>
         <div className="field" style={{marginBottom:18}}><label>Additional notes <span style={{color:'#7a8494',fontWeight:400}}>(optional)</span></label><textarea value={notes} onChange={e=>setNotes(e.target.value)} rows="2" style={{resize:'vertical'}}/></div>
         <div style={{display:'flex',gap:10,justifyContent:'flex-end'}}>
@@ -3323,6 +3339,47 @@ const SECTIONS = [
 ]
 const ALL_TABS = SECTIONS.flatMap(s=>s.tabs.map(t=>t.id))
 const SECTION_FOR_TAB = Object.fromEntries(SECTIONS.flatMap(s=>s.tabs.map(t=>[t.id, s.id])))
+
+// Lightweight dropdown for the action bar — collapses several secondary buttons
+// into one labelled menu (click to open, click-outside / Esc to close). `items`
+// is an array of {label, icon, onClick, disabled, title, color, locked}; falsy
+// entries are skipped so callers can inline role conditions.
+function BarMenu({ label, icon, items, align = 'left' }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+  useEffect(() => {
+    if (!open) return
+    const onDoc = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    const onKey = e => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey) }
+  }, [open])
+  const visible = (items || []).filter(Boolean)
+  if (!visible.length) return null
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button className="btn" onClick={() => setOpen(o => !o)} aria-haspopup="menu" aria-expanded={open}>
+        {icon && <i className={`ti ${icon}`} />}{label} <i className="ti ti-chevron-down" style={{ fontSize: 11, opacity: .55, marginLeft: 2 }} />
+      </button>
+      {open && (
+        <div role="menu" style={{ position: 'absolute', top: 'calc(100% + 4px)', [align]: 0, background: '#fff', border: '1px solid #e3e7ee', borderRadius: 8, boxShadow: '0 6px 24px rgba(0,0,0,.12)', padding: 4, minWidth: 190, zIndex: 9000 }}>
+          {visible.map((it, i) => (
+            <button key={i} role="menuitem" disabled={it.disabled} title={it.title || ''}
+              onClick={() => { setOpen(false); it.onClick?.() }}
+              style={{ display: 'flex', alignItems: 'center', gap: 9, width: '100%', textAlign: 'left', border: 'none', background: 'none', borderRadius: 6, padding: '7px 10px', fontSize: 12.5, cursor: it.disabled ? 'not-allowed' : 'pointer', color: it.disabled ? '#9fadbf' : (it.color || '#1f2937') }}
+              onMouseEnter={e => { if (!it.disabled) e.currentTarget.style.background = '#f4f6f9' }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'none' }}>
+              {it.icon && <i className={`ti ${it.icon}`} style={{ fontSize: 14, opacity: .8 }} />}
+              <span style={{ flex: 1 }}>{it.label}</span>
+              {it.locked && <i className="ti ti-lock" style={{ fontSize: 12, opacity: .55 }} />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
 
 export default function ResultsView({ active, showView, showToast }) {
   const { state, update } = useApp()
@@ -3548,37 +3605,31 @@ export default function ResultsView({ active, showView, showToast }) {
 
       <div ref={tabContentRef}>{renderTab(activeTab, findingsSearch)}</div>
 
-      {/* Action bar */}
+      {/* Action bar — role-aware primary CTA + a couple of visible actions, with
+          artifacts (PR description / summary) tucked into a single More menu. */}
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:10,marginTop:16}}>
-        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-          <button className="btn btn-primary" onClick={()=>setShowReviewSummary(v=>!v)} id="btn-review-summary">
-            <i className={`ti ${showReviewSummary?'ti-x':'ti-clipboard-text'}`}/>{showReviewSummary?'Close Summary':'Review Summary'}
-          </button>
-          <button className="btn" onClick={()=>setShowPRDesc(true)} title="Generate a PR description to paste into GitHub/Bitbucket">
-            <i className="ti ti-file-description"/>PR Description
-          </button>
-          <button className="btn" onClick={()=>setActiveTab('checklist')} title="Open structured reviewer checklist">
-            <i className="ti ti-list-check"/>Checklist
-          </button>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
           {canPostToGit(state) ? (
-            <button className="btn" onClick={postPRComments} style={{background:'#f0fdf4',borderColor:'#86efac',color:'#166634'}} title="Post findings to the PR">
+            <button className="btn btn-primary" onClick={postPRComments} style={{background:'#16a34a',borderColor:'#16a34a'}} title="Post the validated findings to the pull request">
               <i className="ti ti-message-2-code"/>Post to PR
             </button>
           ) : (
-            <button className="btn" style={{opacity:.45,cursor:'not-allowed'}} onClick={()=>showToast('Post to PR requires Reviewer role. Ask your tech lead to assign reviewer access.','error')} title="Posting PR comments requires Reviewer role">
-              <i className="ti ti-lock"/>Post to PR
+            <button className="btn btn-primary" onClick={()=>setShowReviewSummary(v=>!v)} id="btn-review-summary" title="Open the reviewer-ready summary">
+              <i className={`ti ${showReviewSummary?'ti-x':'ti-clipboard-text'}`}/>{showReviewSummary?'Close summary':'Review summary'}
             </button>
           )}
-        </div>
-        <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
-          <button className="btn" onClick={()=>{update({report:null,analysisRequested:false,selectedPR:null,sourceBranch:'',commitSha:''});showView('configure')}}><i className="ti ti-plus"/>New analysis</button>
           <button className="btn" onClick={()=>setShowJudgePanel(v=>!v)} id="btn-judge" title="Evaluate analysis quality with multiple LLM judges">
             <i className="ti ti-gavel"/>Judge panel
           </button>
-          <button className="btn" onClick={()=>showToast(`Report ready. Backend: ${state.backendUrl||'not configured'}`, 'success')} title="Submit report to backend">
-            <i className="ti ti-upload"/>Submit to backend
-          </button>
-          <button className="btn btn-icon" onClick={()=>document.getElementById('kb-hint')?.style.setProperty('display','flex')} title="Keyboard shortcuts"><i className="ti ti-keyboard"/></button>
+          <BarMenu label="More" icon="ti-dots" items={[
+            canPostToGit(state) && { label:'Review summary', icon:'ti-clipboard-text', onClick:()=>setShowReviewSummary(true) },
+            { label:'PR description', icon:'ti-file-description', title:'Generate a PR description to paste into GitHub/Bitbucket', onClick:()=>setShowPRDesc(true) },
+            !canPostToGit(state) && { label:'Post to PR', icon:'ti-message-2-code', locked:true, disabled:true, title:'Requires Reviewer role — ask your tech lead', onClick:()=>showToast('Post to PR requires Reviewer role. Ask your tech lead to assign reviewer access.','error') },
+            { label:'Keyboard shortcuts', icon:'ti-keyboard', onClick:()=>document.getElementById('kb-hint')?.style.setProperty('display','flex') },
+          ]}/>
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+          <button className="btn" onClick={()=>{update({report:null,analysisRequested:false,selectedPR:null,sourceBranch:'',commitSha:''});showView('configure')}}><i className="ti ti-plus"/>New analysis</button>
         </div>
       </div>
 

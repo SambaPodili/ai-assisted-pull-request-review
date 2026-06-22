@@ -56,6 +56,34 @@ RHEL/Fedora/Rocky/Alma (`dnf`) and Debian/Ubuntu (`apt`).
 
 Manual equivalent and TLS front-end are in **Option A2** below.
 
+### Option A0b — Fully air-gapped (no internet on the target)
+
+For an isolated Linux box that can't reach PyPI/npm. You build a self-contained
+bundle on an **internet-connected Linux host** (matching the target's CPU arch +
+Python minor version — native wheels like `pydantic-core` are platform-specific),
+copy one tarball over, and install with zero network.
+
+```bash
+# 1. On an internet-connected LINUX host (same arch + Python as the target):
+./deploy/build-offline-bundle.sh            # or --minimal
+#   → produces ciaa-offline.tar.gz  (source + Linux wheelhouse + pre-built frontend/dist)
+
+# 2. Copy ciaa-offline.tar.gz to the air-gapped box (scp / USB / approved transfer)
+
+# 3. On the air-gapped box (needs python3 3.11+, git, python3-venv already present
+#    from your OS offline media — NO pip/npm internet needed):
+tar xzf ciaa-offline.tar.gz && cd impact-analyzer
+sudo ./deploy/install-vm.sh --offline       # installs from the bundled wheelhouse/
+sudo -u ciaa vi /opt/impact-analyzer/.env   # keys, SKIP_AUTH=false
+sudo systemctl start impact-analyzer
+curl -s http://localhost:8080/live
+# UI + API are both at http://<box>:8080/  (the backend serves the built frontend)
+```
+
+> ⚠ **Do not copy a `.venv`** between machines — virtualenvs hardcode absolute
+> paths and contain OS/arch-specific compiled binaries. The bundle ships *wheels*;
+> the installer builds a fresh venv from them on the target.
+
 ### Option A1 — Docker / Podman (simplest if you already have a runtime)
 
 ```bash

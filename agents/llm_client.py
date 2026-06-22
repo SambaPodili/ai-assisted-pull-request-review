@@ -167,7 +167,9 @@ class ModelConfig:
             key = "ollama"  # Ollama doesn't need a real key
             model = getattr(cfg, "llm_model", "llama3.2")
         else:
-            key = getattr(cfg, "openai_api_key", "") or cfg.anthropic_api_key
+            # custom / self-hosted (OpenAI-compatible). Prefer the dedicated
+            # LLM_API_KEY (shared across models on the same endpoint), then OpenAI.
+            key = getattr(cfg, "llm_api_key", "") or getattr(cfg, "openai_api_key", "") or cfg.anthropic_api_key
             model = getattr(cfg, "llm_model", "gpt-4o")
         return cls(
             provider=provider,
@@ -423,8 +425,26 @@ class UnifiedLLMClient:
             raise
 
         usage = resp.usage
+        msg   = resp.choices[0].message
+        text  = (getattr(msg, "content", None) or "")
+        # Reasoning models (Qwen/QwQ/DeepSeek-R1 via vLLM/SGLang) split the output:
+        # chain-of-thought goes to `reasoning_content`, the answer to `content`. If
+        # the answer is EMPTY but reasoning is present, the model ran out of tokens
+        # mid-think (raise LLM_MAX_OUTPUT_TOKENS) — OR some deployments put the whole
+        # output (JSON included) in reasoning_content. Fall back to it so the JSON
+        # can still be recovered, and log the situation so the cause is obvious.
+        if not text.strip():
+            reasoning = (getattr(msg, "reasoning_content", None)
+                         or (getattr(msg, "model_extra", None) or {}).get("reasoning_content")
+                         or "")
+            if reasoning.strip():
+                log.warning("[LLM] '%s' returned empty content but %d chars of reasoning_content "
+                            "— using it as fallback. If answers are still empty, raise "
+                            "LLM_MAX_OUTPUT_TOKENS (reasoning is consuming the output budget).",
+                            self._cfg.model, len(reasoning))
+                text = reasoning
         return LLMResponse(
-            text=resp.choices[0].message.content or "",
+            text=text,
             input_tokens=usage.prompt_tokens     if usage else 0,
             output_tokens=usage.completion_tokens if usage else 0,
         )

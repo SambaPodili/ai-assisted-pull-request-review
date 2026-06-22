@@ -109,7 +109,8 @@ class SQLiteUserStore:
         if row is None:
             return None
         return Subject(key_id=row["id"], roles=_parse_roles(row["roles"]),
-                       name=row["name"], team=row["team"])
+                       name=row["name"], team=row["team"],
+                       user_id=(row["user_id"] if "user_id" in row.keys() else ""))
 
     # ── CRUD ──────────────────────────────────────────────────────────────────
 

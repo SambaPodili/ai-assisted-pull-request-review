@@ -135,6 +135,38 @@ def test_index_on_new_table_is_downgraded():
     assert tbl.on_new_table is False
 
 
+def test_any_op_on_new_table_is_downgraded():
+    # ADD COLUMN NOT NULL + ALTER COLUMN on a table created in the same change —
+    # the model flags them high/critical "table lock / NOT NULL violation"; both
+    # are false positives on an empty new table and must be downgraded.
+    rep = _rep(schema_change=SchemaChangeResult(changes=[
+        SchemaChange(file_path="db/x.sql", change_type="add_table",
+                     table_name="t_new", severity=RiskLevel.MEDIUM, description="New table"),
+        SchemaChange(file_path="db/x.sql", change_type="add_column", table_name="t_new",
+                     column_name="status", severity=RiskLevel.HIGH,
+                     description="ADD COLUMN NOT NULL without default — locks the table"),
+        SchemaChange(file_path="db/x.sql", change_type="alter_column", table_name="t_new",
+                     column_name="amount", severity=RiskLevel.CRITICAL,
+                     description="ALTER COLUMN type change may rewrite the table"),
+    ]))
+    _, _, schema, _ = guard_false_positives(rep, {})
+    assert schema == 2
+    ops = [c for c in rep.schema_change.changes if c.change_type != "add_table"]
+    assert all(c.on_new_table and c.severity == RiskLevel.LOW for c in ops)
+
+
+def test_op_on_existing_table_not_downgraded():
+    # No CREATE for this table → it's a real existing table → leave the warning.
+    rep = _rep(schema_change=SchemaChangeResult(changes=[
+        SchemaChange(file_path="db/x.sql", change_type="add_column", table_name="prod_orders",
+                     column_name="status", severity=RiskLevel.HIGH,
+                     description="ADD COLUMN NOT NULL — locks a large table"),
+    ]))
+    _, _, schema, _ = guard_false_positives(rep, {})
+    assert schema == 0
+    assert rep.schema_change.changes[0].severity == RiskLevel.HIGH
+
+
 def test_index_on_existing_table_not_downgraded():
     rep = _rep(schema_change=SchemaChangeResult(changes=[
         SchemaChange(file_path="db/y.sql", change_type="add_index",

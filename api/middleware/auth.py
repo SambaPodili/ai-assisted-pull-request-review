@@ -29,6 +29,22 @@ _OPEN_PATHS = {
     "/metrics",
 }
 
+# Static UI assets are public so the SPA shell can load WITHOUT a key (the UI then
+# sends the X-API-Key on every /api call). Only the static shell is open; all API
+# routes (/api/…, /admin, etc.) still require auth.
+_STATIC_SUFFIXES = (
+    ".js", ".css", ".svg", ".ico", ".png", ".jpg", ".jpeg", ".gif",
+    ".woff", ".woff2", ".ttf", ".map", ".webmanifest", ".html", ".txt",
+)
+
+
+def _is_open_path(path: str) -> bool:
+    if path in _OPEN_PATHS:
+        return True
+    if path == "/" or path.startswith("/assets/"):
+        return True
+    return path.endswith(_STATIC_SUFFIXES)
+
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
 
@@ -59,7 +75,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         if request.method == "OPTIONS":
             return await call_next(request)
 
-        if self._skip_auth or request.url.path in _OPEN_PATHS:
+        if self._skip_auth or _is_open_path(request.url.path):
             return await call_next(request)
 
         key = (

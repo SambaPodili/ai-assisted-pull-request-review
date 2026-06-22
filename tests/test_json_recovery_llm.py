@@ -9,8 +9,32 @@ and prose wrappers must parse without the json-repair library installed.
 import json
 import pytest
 
-from agents.base_agent import _lenient_json_repair, _json_candidates
+from agents.base_agent import _lenient_json_repair, _json_candidates, _strip_reasoning
 from agents.code_analysis_agent import CodeAnalysisAgent
+
+
+# ── reasoning-model <think> stripping (Qwen/QwQ/R1) ───────────────────────────
+
+def test_strip_reasoning_closed_block():
+    out = _strip_reasoning('<think>let me reason about this diff…</think>\n{"change_type":"feature"}')
+    assert out == '{"change_type":"feature"}'
+
+
+def test_strip_reasoning_truncated_block_keeps_json():
+    out = _strip_reasoning('<think>partial reasoning {"change_type":"fix"} trailing')
+    assert out.startswith('{"change_type":"fix"}')
+
+
+def test_strip_reasoning_leaves_plain_untouched():
+    assert _strip_reasoning('{"change_type":"feature"}') == '{"change_type":"feature"}'
+
+
+def test_agent_parses_qwen_reasoning_output():
+    a = CodeAnalysisAgent(api_key="x")
+    raw = ('<think>The diff adds a field; low risk.</think>\n'
+           '{"summary":"adds field","change_type":"feature","complexity_delta":0,"findings":[]}')
+    res = a._parse_json(raw)
+    assert res.change_type == "feature"
 
 
 # ── lenient repair (no deps) ──────────────────────────────────────────────────

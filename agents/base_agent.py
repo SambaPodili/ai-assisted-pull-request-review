@@ -330,8 +330,13 @@ class BaseAgent(ABC, Generic[T]):
 
     def _call_llm(self, client: UnifiedLLMClient, user_prompt: str, remaining: int) -> tuple[T, int]:
         # Leave at least 200 tokens for the input; cap output at output_token_cap.
+        # Reasoning models (Qwen/QwQ/R1) spend output tokens "thinking" before the
+        # JSON, so a low cap yields an EMPTY answer. LLM_MAX_OUTPUT_TOKENS (>0)
+        # raises the cap globally for such endpoints.
+        from config.settings import get_settings as _gs
+        _cap = getattr(_gs(), "llm_max_output_tokens", 0) or self.output_token_cap
         prompt_tokens = estimate_tokens(user_prompt)
-        max_output    = min(self.output_token_cap, max(200, remaining - prompt_tokens))
+        max_output    = min(_cap, max(200, remaining - prompt_tokens))
 
         schema_hint = json.dumps(self.output_model.model_json_schema(), indent=2)
         full_user   = (
@@ -365,6 +370,7 @@ class BaseAgent(ABC, Generic[T]):
           5. json-repair library (if installed) — handles unescaped inner quotes,
              single quotes, missing brackets, etc.
         """
+        raw = _strip_reasoning(raw or "")   # drop <think>…</think> from reasoning models
         for candidate in _json_candidates(raw):
             try:
                 return self.output_model.model_validate_json(candidate)
@@ -398,16 +404,27 @@ class BaseAgent(ABC, Generic[T]):
             cfg = ModelConfig.from_dict(override)
             ui_named_model = bool((override.get("model") or "").strip())
 
-            # The UI key is authoritative for every provider; only fall back to
-            # the env key when the UI left it blank.
-            if not cfg.api_key and self._default_api_key:
-                cfg.api_key = self._default_api_key
-
-            # Honour per-agent fast/strong selection ONLY when the UI did not
-            # explicitly pick a model (otherwise the user's choice wins).
-            if cfg.provider == "anthropic" and not ui_named_model:
-                from core.token_manager import MODEL_FAST, MODEL_STRONG, _STRONG_AGENTS
-                cfg.model = MODEL_STRONG if agent_key in _STRONG_AGENTS else MODEL_FAST
+            if cfg.provider == "anthropic":
+                # The UI key is authoritative; fall back to the env key when blank.
+                if not cfg.api_key and self._default_api_key:
+                    cfg.api_key = self._default_api_key
+                # Honour per-agent fast/strong selection ONLY when the UI did not
+                # explicitly pick a model (otherwise the user's choice wins).
+                if not ui_named_model:
+                    from core.token_manager import MODEL_FAST, MODEL_STRONG, _STRONG_AGENTS
+                    cfg.model = MODEL_STRONG if agent_key in _STRONG_AGENTS else MODEL_FAST
+            else:
+                # Self-hosted / custom / OpenAI / Azure share ONE endpoint+key. When
+                # the UI omits the URL or key (e.g. several models — Llama, Qwen —
+                # behind the same gateway, only the model name differs), fall back to
+                # the backend env (LLM_BASE_URL / LLM_API_KEY) so the key stays
+                # server-side and is sent as a Bearer header, never in the URL.
+                from config.settings import get_settings as _gs
+                _s = _gs()
+                if not cfg.base_url:
+                    cfg.base_url = (getattr(_s, "llm_base_url", "") or "").strip()
+                if not cfg.api_key:
+                    cfg.api_key = (getattr(_s, "llm_api_key", "") or getattr(_s, "openai_api_key", "") or "").strip()
             return cfg
 
         cfg = ModelConfig.from_settings()
@@ -631,3 +648,24 @@ def _strip_fences(text: str) -> str:
     if inner and inner[-1].strip() == "```":
         inner = inner[:-1]
     return "\n".join(inner).strip()
+
+
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_reasoning(text: str) -> str:
+    """Remove <think>…</think> chain-of-thought that reasoning models (Qwen / QwQ /
+    DeepSeek-R1 style) emit BEFORE the JSON answer. Handles closed blocks and a
+    truncated/unclosed <think> (keep only what follows the last </think>, else the
+    first '{'). Leaves normal responses untouched."""
+    if not text or "<think>" not in text.lower():
+        return text
+    out = _THINK_RE.sub("", text)
+    if "<think>" in out.lower():                 # unclosed (truncated mid-think)
+        end = out.lower().rfind("</think>")
+        if end != -1:
+            out = out[end + len("</think>"):]
+        else:
+            brace = out.find("{")
+            out = out[brace:] if brace != -1 else ""
+    return out.strip()
