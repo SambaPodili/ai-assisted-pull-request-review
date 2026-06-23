@@ -76,17 +76,19 @@ def _report():
               top_issues=[1, 2, 3])
 
 
-def test_success_lifecycle_is_five_docs():
+def test_success_lifecycle_is_two_docs():
     cfg = _cfg()
     started = ut.started_doc("task-9", "SOMECLR/uncs16", "uobgroup.com", 4, cfg=cfg)
     completion = ut.completion_docs(_report(), "uobgroup.com", result_length=9700, duration_s=12.3, cfg=cfg)
+    # A run emits exactly 2 docs: started + a single consolidated success doc.
+    assert len(completion) == 1
     actions = [started["action"]] + [d["action"] for d in completion]
-    assert actions == ["code_analysis_started", "code_analysis_success",
-                       "security_review_success", "review_gate_hold", "report_generated"]
-    sec = next(d for d in completion if d["action"] == "security_review_success")
-    assert sec["metadata"] == {"repo_slug": "uncs16", "security_findings": 3, "critical": 1, "high": 1}
-    succ = next(d for d in completion if d["action"] == "code_analysis_success")
-    assert succ["metadata"]["result_length"] == 9700
+    assert actions == ["code_analysis_started", "code_analysis_success"]
+    md = completion[0]["metadata"]
+    # the one success doc carries analysis + security + gate + report metadata
+    assert md["result_length"] == 9700 and md["duration_s"] == 12.3
+    assert md["gate"] == "HOLD" and md["security_findings"] == 3
+    assert md["critical"] == 1 and md["high"] == 1
 
 
 def test_failure_path_is_two_docs():
@@ -114,7 +116,7 @@ def test_emit_posts_each_doc(monkeypatch):
     monkeypatch.setattr(requests, "post", _fake_post)
     docs = ut.completion_docs(_report(), "uobgroup.com", 100, 1.0, cfg=_cfg())
     sent = ut.emit(docs, cfg=_cfg())
-    assert sent == 4 and len(posted) == 4
+    assert sent == 1 and len(posted) == 1
     assert all(p[0] == "https://example/genai_usage/_doc/" for p in posted)
     # the configured content-negotiation + auth headers are sent on every doc
     h = posted[0][2]

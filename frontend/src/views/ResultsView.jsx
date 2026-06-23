@@ -243,8 +243,12 @@ function RunningView({ state, update, showToast }) {
           deep_scan: !!state.deepScan,
           llm_config: { provider:state.modelProvider, model:state.modelName, api_key:state.modelApiKey, base_url:state.modelBaseUrl, api_version:state.modelApiVer },
           metadata: { provider:state.provider, connected_repos:state.connectedRepos.map(repoName), diff_lines:diffLines,
-            // ELK telemetry user_id = the logged-in Bitbucket user (mapped slug), NOT the repo
-            user_id: state.ciaaPerms?.user_id || state.userInfo?.username || state.userInfo?.account_id || state.username || '',
+            // ELK telemetry user_id = the logged-in Bitbucket user (mapped slug,
+            // e.g. uncs16), NOT the repo and NOT "skip_auth". Bitbucket Server's
+            // verify returns the slug under `login`; Cloud uses username/account_id.
+            user_id: state.userInfo?.login || state.userInfo?.username || state.userInfo?.account_id
+                     || (state.ciaaPerms?.user_id && state.ciaaPerms.user_id !== 'skip_auth' ? state.ciaaPerms.user_id : '')
+                     || state.username || '',
             functional_docs:(state.functionalDocs||[]).map(d=>({name:d.name,text:(d.text||'').slice(0,40000)})).slice(0,10),
             existing_tests: existingTests, external_references: externalRefs, ...tgt.meta }
         }
@@ -1268,13 +1272,27 @@ function DependencyTab({r}) {
           </div>
         )}
       </div>
-      <MavenSca report={r}/>
+      <ScaScanner report={r} cfg={SCA_MAVEN}/>
+      <ScaScanner report={r} cfg={SCA_NUGET}/>
       <DepAutoUpdate r={r}/>
     </div>
   )
 }
 
-function MavenSca({ report }) {
+const SCA_MAVEN = {
+  endpoint:'/api/v1/sca/pom', title:'Maven dependency scan (SCA)', buttonLabel:'Upload pom.xml',
+  accept:'.xml,application/xml,text/xml',
+  hint:'Upload this repo’s <code>pom.xml</code> to check declared dependencies against OSV for known CVEs. Works on any branch — no lockfile or CI needed. <strong>Direct dependencies only</strong> (Maven has no lockfile for transitive resolution).',
+  unresolvedNote:'managed by a parent POM/BOM — not resolvable from this pom alone',
+}
+const SCA_NUGET = {
+  endpoint:'/api/v1/sca/nuget', title:'NuGet (.NET) dependency scan (SCA)', buttonLabel:'Upload .csproj / packages.config',
+  accept:'.csproj,.config,.props,.xml,application/xml,text/xml',
+  hint:'Upload a <code>.csproj</code>, <code>packages.config</code>, or <code>Directory.Packages.props</code> to check NuGet dependencies against OSV for known CVEs. <strong>Direct dependencies only</strong>.',
+  unresolvedNote:'managed by central package management (CPM) — not resolvable from this file alone',
+}
+
+function ScaScanner({ report, cfg }) {
   const { state } = useApp()
   const [data,setData]=useState(null); const [err,setErr]=useState(''); const [loading,setLoading]=useState(false)
   async function scan(text){
@@ -1282,7 +1300,9 @@ function MavenSca({ report }) {
     setLoading(true);setErr('');setData(null)
     try{
       const h={'Content-Type':'application/xml'}; if(state.backendKey)h['X-API-Key']=state.backendKey
-      const r=await fetch(`${state.backendUrl}/api/v1/sca/pom`,{method:'POST',headers:h,body:text})
+      if(state.mavenRepoUrl)h['X-Maven-Repo-Url']=state.mavenRepoUrl
+      if(state.mavenRepoAuth)h['X-Maven-Repo-Auth']=state.mavenRepoAuth
+      const r=await fetch(`${state.backendUrl}${cfg.endpoint}`,{method:'POST',headers:h,body:text})
       const d=await r.json().catch(()=>({}))
       if(!r.ok) throw new Error(d.detail||('HTTP '+r.status))
       setData(d)
@@ -1292,18 +1312,17 @@ function MavenSca({ report }) {
   const sevColor=s=>({CRITICAL:'#b91c1c',HIGH:'#9a3412',MEDIUM:'#8a5200',LOW:'#6b7280'})[s]||'#6b7280'
   return (
     <div className="card">
-      <div className="section-heading"><i className="ti ti-shield-bolt"/>Maven dependency scan (SCA)</div>
-      <div style={{fontSize:12.5,color:'#7a8494',lineHeight:1.6,marginBottom:10}}>
-        Upload this repo’s <code>pom.xml</code> to check declared dependencies against OSV for known CVEs.
-        Works on any branch — no lockfile or CI needed. <strong>Direct dependencies only</strong> (Maven has no lockfile for transitive resolution).
-      </div>
-      <label className="btn btn-sm" style={{cursor:'pointer'}}><i className="ti ti-upload"/> Upload pom.xml
-        <input type="file" accept=".xml,application/xml,text/xml" onChange={onFile} style={{display:'none'}}/></label>
+      <div className="section-heading"><i className="ti ti-shield-bolt"/>{cfg.title}</div>
+      <div style={{fontSize:12.5,color:'#7a8494',lineHeight:1.6,marginBottom:10}} dangerouslySetInnerHTML={{__html:cfg.hint}}/>
+      <label className="btn btn-sm" style={{cursor:'pointer'}}><i className="ti ti-upload"/> {cfg.buttonLabel}
+        <input type="file" accept={cfg.accept} onChange={onFile} style={{display:'none'}}/></label>
       {loading&&<div style={{marginTop:10,fontSize:13,color:'#7a8494',display:'flex',alignItems:'center',gap:6}}><span className="spinner" style={{width:14,height:14}}/>Scanning against OSV…</div>}
       {err&&<div className="info-msg" style={{marginTop:10}}><i className="ti ti-alert-circle"/>{err}</div>}
       {data&&(
         <div style={{marginTop:12}}>
-          <div style={{fontSize:12.5,fontWeight:700,marginBottom:8,color:data.vulnerabilities.length?'#b91c1c':'#166534'}}>{data.summary}</div>
+          {data.osv_error
+            ? <div className="info-msg" style={{marginBottom:8,background:'#fffbeb',borderColor:'#fcd34d',color:'#92400e'}}><i className="ti ti-alert-triangle"/> Could not reach the OSV vulnerability database — <strong>this scan did not run</strong> (not “no vulnerabilities”). Check network access to api.osv.dev, or set <code>OSV_CA_BUNDLE</code> / <code>OSV_VERIFY_SSL</code> / <code>OSV_BASE_URL</code> in the backend .env.</div>
+            : <div style={{fontSize:12.5,fontWeight:700,marginBottom:8,color:data.vulnerabilities.length?'#b91c1c':'#166534'}}>{data.summary}</div>}
           {data.vulnerabilities.map((v,i)=>(
             <div key={i} className="finding">
               <span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:10,background:`${sevColor(v.severity)}1a`,color:sevColor(v.severity),border:`1px solid ${sevColor(v.severity)}55`,whiteSpace:'nowrap',flexShrink:0}}>{v.severity}</span>
@@ -1314,7 +1333,7 @@ function MavenSca({ report }) {
               </div>
             </div>
           ))}
-          {(data.unresolved||[]).length>0&&<div style={{marginTop:8,fontSize:11,color:'#9fadbf'}}><i className="ti ti-info-circle" style={{marginRight:4}}/>{data.unresolved.length} version(s) managed by a parent POM/BOM — not resolvable from this pom alone: {data.unresolved.slice(0,5).join(', ')}{data.unresolved.length>5?'…':''}</div>}
+          {(data.unresolved||[]).length>0&&<div style={{marginTop:8,fontSize:11,color:'#9fadbf'}}><i className="ti ti-info-circle" style={{marginRight:4}}/>{data.unresolved.length} version(s) {cfg.unresolvedNote}: {data.unresolved.slice(0,5).join(', ')}{data.unresolved.length>5?'…':''}</div>}
         </div>
       )}
     </div>

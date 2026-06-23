@@ -39,8 +39,36 @@ def test_invalid_pom_raises():
         parse_pom_dependencies("not xml")
 
 
+@pytest.fixture(autouse=True)
+def _offline(monkeypatch):
+    # keep unit tests offline — disable the transitive-closure Maven fetches
+    monkeypatch.setenv("MAVEN_SCAN_TRANSITIVE", "false")
+
+
+def test_resolves_versions_from_parent_bom(monkeypatch):
+    # Spring-Boot-style pom: the dependency declares NO version (managed by parent).
+    pom = ('<project><parent><groupId>org.springframework.boot</groupId>'
+           '<artifactId>spring-boot-starter-parent</artifactId><version>2.7.3</version></parent>'
+           '<dependencies><dependency><groupId>org.springframework.boot</groupId>'
+           '<artifactId>spring-boot-starter-web</artifactId></dependency></dependencies></project>')
+    parent = ('<project><dependencyManagement><dependencies>'
+              '<dependency><groupId>org.springframework.boot</groupId>'
+              '<artifactId>spring-boot-starter-web</artifactId><version>2.7.3</version></dependency>'
+              '</dependencies></dependencyManagement></project>')
+    monkeypatch.setattr("ingestion.pom_sca._fetch_pom", lambda *a, **k: parent)
+    def fake_qv(items, timeout_s=15, raise_on_error=False):
+        return {("org.springframework.boot:spring-boot-starter-web", "2.7.3"): [
+            OsvVuln(package="org.springframework.boot:spring-boot-starter-web", vuln_id="GHSA-x",
+                    summary="x", severity="HIGH", aliases=["CVE-2022-0001"])]}
+    monkeypatch.setattr("ingestion.osv_client.query_versioned", fake_qv)
+    res = scan_pom(pom)
+    assert res["unresolved"] == []                 # version filled from the parent BOM
+    assert res["direct_scanned"] == 1
+    assert any(v["cve"] == "CVE-2022-0001" for v in res["vulnerabilities"])
+
+
 def test_scan_reports_cve_and_unresolved():
-    def fake_qv(items, timeout_s=15):
+    def fake_qv(items, timeout_s=15, raise_on_error=False):
         return {("com.fasterxml.jackson.core:jackson-databind", "2.9.8"): [
             OsvVuln(package="com.fasterxml.jackson.core:jackson-databind", vuln_id="GHSA-x",
                     summary="Deserialization RCE", severity="CRITICAL", aliases=["CVE-2019-12384"])]}
@@ -60,7 +88,7 @@ def client():
 
 
 def test_endpoint_scans_pom(client):
-    def fake_qv(items, timeout_s=15):
+    def fake_qv(items, timeout_s=15, raise_on_error=False):
         return {}
     with patch("ingestion.osv_client.query_versioned", fake_qv):
         r = client.post("/api/v1/sca/pom", content=POM.encode())

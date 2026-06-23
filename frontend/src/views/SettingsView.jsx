@@ -1,5 +1,15 @@
 import { useState } from 'react'
 import { useApp } from '../AppContext'
+import { isSuperAdmin } from '../state'
+
+// Small "super admin only" lock badge for gated settings cards.
+function Lock({ on }) {
+  return on ? null : (
+    <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 600, color: '#92400e', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 10, padding: '1px 8px' }}>
+      <i className="ti ti-lock" style={{ fontSize: 11, marginRight: 3 }} />Super admin only
+    </span>
+  )
+}
 
 function PasswordInput({ value, onChange, placeholder }) {
   const [show, setShow] = useState(false)
@@ -34,11 +44,15 @@ export default function SettingsView({ showToast }) {
   const { state, update } = useApp()
   const [url, setUrl]         = useState(state.backendUrl)
   const [key, setKey]         = useState(state.backendKey)
+  const [mvnUrl, setMvnUrl]   = useState(state.mavenRepoUrl || '')
+  const [mvnAuth, setMvnAuth] = useState(state.mavenRepoAuth || '')
+  const [mvnMsg, setMvnMsg]   = useState('')
   const [settingsMsg, setMsg] = useState('')
   const [digestMsg, setDMsg]  = useState('')
   const [purgeRepo, setPurgeRepo] = useState('')
   const [purgeDays, setPurgeDays] = useState('')
   const [purgeMsg, setPMsg]   = useState('')
+  const superAdmin = isSuperAdmin(state)
 
   function saveSettings() {
     const newUrl = url.replace(/\/$/, '')
@@ -164,9 +178,10 @@ export default function SettingsView({ showToast }) {
   return (
     <div style={{ maxWidth: 860 }}>
 
-      {/* ── Backend connection ── */}
+      {/* ── Backend connection (super admin only) ── */}
       <div className="card">
-        <div className="card-title"><i className="ti ti-server" />Backend API connection</div>
+        <div className="card-title"><i className="ti ti-server" />Backend API connection<Lock on={superAdmin} /></div>
+        <fieldset disabled={!superAdmin} style={{ border:'none', padding:0, margin:0, minWidth:0, opacity: superAdmin ? 1 : 0.6 }}>
         <div className="field">
           <label>Backend URL</label>
           <input type="url" value={url} onChange={e => setUrl(e.target.value)} placeholder="http://localhost:8080" />
@@ -182,6 +197,26 @@ export default function SettingsView({ showToast }) {
           <button className="btn" onClick={testBackend}><i className="ti ti-plug-connected" />Test connection</button>
           {settingsMsg && <span style={{ fontSize:12, color: settingsMsg.startsWith('✓') ? '#3fb950' : '#b81c1c' }}>{settingsMsg}</span>}
         </div>
+        </fieldset>
+      </div>
+
+      {/* ── Maven / Artifactory (for SCA parent-POM resolution) ── */}
+      <div className="card">
+        <div className="card-title"><i className="ti ti-package" />Maven repository (SCA)</div>
+        <div className="field">
+          <label>Maven repository URL</label>
+          <input type="url" value={mvnUrl} onChange={e => setMvnUrl(e.target.value)} placeholder="https://artifactory.company.com/artifactory/maven-virtual" />
+          <div className="field-hint">Your internal Artifactory/Nexus. Used to resolve parent/BOM versions (e.g. Spring Boot) when scanning a <code>pom.xml</code>. Leave blank to use the backend <code>MAVEN_REPO_URL</code> (default Maven Central).</div>
+        </div>
+        <div className="field">
+          <label>Auth token <span style={{ color:'#7a8494', fontWeight:400 }}>(optional)</span></label>
+          <PasswordInput value={mvnAuth} onChange={e => setMvnAuth(e.target.value)} placeholder="Bearer xxxxx   or   Basic xxxxx" />
+          <div className="field-hint">Sent as the <code>Authorization</code> header to the Maven repo. Include the scheme (<code>Bearer</code> / <code>Basic</code>). Leave blank if the repo is anonymous.</div>
+        </div>
+        <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+          <button className="btn btn-primary" onClick={() => { update({ mavenRepoUrl: mvnUrl.replace(/\/$/, ''), mavenRepoAuth: mvnAuth }); setMvnMsg('✓ Saved'); setTimeout(() => setMvnMsg(''), 2000) }}><i className="ti ti-device-floppy" />Save</button>
+          {mvnMsg && <span style={{ fontSize:12, color:'#3fb950' }}>{mvnMsg}</span>}
+        </div>
       </div>
 
       {/* ── Export / Import ── */}
@@ -196,9 +231,10 @@ export default function SettingsView({ showToast }) {
         </div>
       </div>
 
-      {/* ── Email digest ── */}
+      {/* ── Email digest (super admin only) ── */}
       <div className="card">
-        <div className="card-title"><i className="ti ti-mail" />Email daily digest</div>
+        <div className="card-title"><i className="ti ti-mail" />Email daily digest<Lock on={superAdmin} /></div>
+        <fieldset disabled={!superAdmin} style={{ border:'none', padding:0, margin:0, minWidth:0, opacity: superAdmin ? 1 : 0.6 }}>
         <div style={{ fontSize:13, color:'#7a8494', lineHeight:1.7, marginBottom:12 }}>
           Sends a daily summary (PRs needing review, blocked count, API spend) to your team.
           Configure SMTP in the backend <code>.env</code>, then test or preview here.
@@ -213,11 +249,13 @@ export default function SettingsView({ showToast }) {
           <button className="btn btn-primary" onClick={sendDigestNow}><i className="ti ti-send" />Send test now</button>
           {digestMsg && <span style={{ fontSize:12, color:'#7a8494' }}>{digestMsg}</span>}
         </div>
+        </fieldset>
       </div>
 
-      {/* ── Purge stored reports ── */}
+      {/* ── Purge stored reports (super admin only) ── */}
       <div className="card">
-        <div className="card-title"><i className="ti ti-trash" />Purge stored reports</div>
+        <div className="card-title"><i className="ti ti-trash" />Purge stored reports<Lock on={superAdmin} /></div>
+        <fieldset disabled={!superAdmin} style={{ border:'none', padding:0, margin:0, minWidth:0, opacity: superAdmin ? 1 : 0.6 }}>
         <div style={{ fontSize:13, color:'#7a8494', lineHeight:1.7, marginBottom:12 }}>
           Remove demo/test analyses so Insights reflects only real data. Filter by a repo
           substring and/or age. <strong>Preview</strong> first — delete is permanent. Admin key required.
@@ -247,29 +285,7 @@ export default function SettingsView({ showToast }) {
           <button className="btn" onClick={()=>purge(false)} style={{ borderColor:'#fca5a5', color:'#b91c1c' }}><i className="ti ti-trash" />Delete matching</button>
           {purgeMsg && <span style={{ fontSize:12, color:purgeMsg.startsWith('✓')?'#0c7c4b':'#7a8494' }}>{purgeMsg}</span>}
         </div>
-      </div>
-
-      {/* ── How to start ── */}
-      <div className="card">
-        <div className="card-title"><i className="ti ti-terminal" />Quick start (Python)</div>
-        <div style={{ fontSize:13, lineHeight:1.8, color:'#7a8494', marginBottom:8 }}>
-          1. Extract <code>impact-analyzer-complete.zip</code> and navigate to the folder<br />
-          2. Copy <code>.env.example</code> to <code>.env</code> and set your API key
-        </div>
-        {['pip install -r requirements.txt', 'cp .env.example .env', 'python main.py'].map(cmd => (
-          <CopyCode key={cmd} code={cmd} />
-        ))}
-      </div>
-
-      {/* ── Docker ── */}
-      <div className="card">
-        <div className="card-title"><i className="ti ti-brand-docker" />Docker (recommended)</div>
-        <div style={{ fontSize:13, color:'#7a8494', marginBottom:8 }}>
-          Full stack (app + Redis + ChromaDB + Neo4j) starts on port 8080.
-        </div>
-        {['cp .env.example .env', 'docker-compose up -d'].map(cmd => (
-          <CopyCode key={cmd} code={cmd} />
-        ))}
+        </fieldset>
       </div>
 
       {/* ── Env vars table ── */}

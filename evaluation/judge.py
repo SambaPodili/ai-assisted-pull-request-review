@@ -14,6 +14,7 @@ import time
 from typing import Any
 
 from agents.llm_client import make_llm_client, ModelConfig
+from agents.base_agent import _json_candidates, _strip_reasoning
 from evaluation.models import JudgeScore
 
 log = logging.getLogger(__name__)
@@ -149,11 +150,17 @@ class LLMJudge:
         user_prompt = _build_user_prompt(agent_name, diff_text, findings_json)
         t0 = time.monotonic()
 
+        # A reasoning model (Qwen/QwQ/R1) spends most of its output budget on
+        # chain-of-thought, so 1500 tokens truncates the JSON (or leaves content
+        # empty). Give the judge real headroom and honour the same env knobs the
+        # agents use (LLM_MAX_OUTPUT_TOKENS / LLM_BUDGET_MULTIPLIER).
+        eff_tokens = _judge_budget(max_tokens)
+
         try:
             response = self._client.create(
                 system=_SYSTEM_PROMPT,
                 user=user_prompt,
-                max_tokens=max_tokens,
+                max_tokens=eff_tokens,
             )
             raw      = _strip_fences(response.text.strip())
             duration = round(time.monotonic() - t0, 2)
@@ -181,6 +188,25 @@ class LLMJudge:
                 duration_s=duration,
                 fallback_used=True,
             )
+
+
+# ── Budget ────────────────────────────────────────────────────────────────────
+
+_JUDGE_TOKEN_FLOOR = 4000   # reasoning models need room for CoT + the JSON answer
+
+
+def _judge_budget(requested: int) -> int:
+    """Effective judge max_tokens: an explicit LLM_MAX_OUTPUT_TOKENS wins, else a
+    reasoning-safe floor; then scaled by LLM_BUDGET_MULTIPLIER."""
+    try:
+        from config.settings import get_settings
+        cfg = get_settings()
+        override = int(getattr(cfg, "llm_max_output_tokens", 0) or 0)
+        mult     = float(getattr(cfg, "llm_budget_multiplier", 1.0) or 1.0)
+    except Exception:
+        override, mult = 0, 1.0
+    base = override if override > 0 else max(requested, _JUDGE_TOKEN_FLOOR)
+    return max(requested, int(base * mult))
 
 
 # ── Prompt builder ────────────────────────────────────────────────────────────
@@ -219,30 +245,33 @@ _REQUIRED_KEYS = {
 
 
 def _parse_response(raw: str, judge_id: str, agent_name: str) -> dict:
-    """Two-attempt JSON parsing with repair. Validation errors propagate immediately."""
-    # Attempt 1: direct parse
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        data = None
-
-    if data is not None:
-        _validate_judge_data(data)   # raises ValueError with specific message on bad data
-        return data
-
-    # Attempt 2: extract outermost {}
-    m = re.search(r"\{.*\}", raw, re.DOTALL)
-    if m:
+    """Robust JSON parsing — the SAME recovery the agents use, so reasoning models
+    (Qwen / QwQ / DeepSeek-R1) parse too: strip <think>…</think> chain-of-thought,
+    then try progressively-repaired candidates (handles trailing prose, comments,
+    Python literals and TRUNCATED JSON when the model ran out of output budget).
+    Validation errors on an otherwise-complete object propagate immediately."""
+    cleaned = _strip_reasoning(raw or "")
+    first_dict = None
+    for candidate in _json_candidates(cleaned):
         try:
-            data = json.loads(m.group())
-        except json.JSONDecodeError:
-            data = None
-        if data is not None:
-            _validate_judge_data(data)
+            data = json.loads(candidate)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        if _REQUIRED_KEYS.issubset(data.keys()):
+            _validate_judge_data(data)   # raises with a specific message on bad values
             return data
+        if first_dict is None:
+            first_dict = data            # parseable but incomplete — keep for a precise error
+
+    # A judge-shaped object that's merely missing fields gets the specific error;
+    # genuinely-unparseable output gets the generic one.
+    if first_dict is not None:
+        _validate_judge_data(first_dict)
 
     raise ValueError(
-        f"Judge {judge_id} returned unparseable output for agent {agent_name}: {raw[:200]!r}"
+        f"Judge {judge_id} returned unparseable output for agent {agent_name}: {(raw or '')[:200]!r}"
     )
 
 

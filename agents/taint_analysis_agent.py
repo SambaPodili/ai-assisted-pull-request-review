@@ -68,6 +68,15 @@ _SOURCES: list[tuple[re.Pattern, str]] = [
     # CLI arguments
     (re.compile(r'(\w+)\s*=\s*(?:sys\.argv|argv|args\.parse)\b'),                                            'cli_arg'),
     (re.compile(r'(\w+)\s*=\s*(?:getopt|argparse)\b'),                                                        'cli_arg'),
+
+    # ── C# / .NET ──────────────────────────────────────────────────────────────
+    # ASP.NET request input: Request.Query["q"] / Request.Form[...] / QueryString
+    (re.compile(r'(\w+)\s*=\s*\w*Request\.(?:Query|Form|QueryString|Params|Headers|Cookies)\b'),            'request_param'),
+    # Controller binding: [FromQuery] string q / [FromBody] OrderDto order
+    (re.compile(r'\[(?:FromQuery|FromBody|FromRoute|FromForm|FromHeader)(?:\([^)]*\))?\]\s+(?:[A-Za-z_][\w<>\[\].]*\s+)?(\w+)'), 'request_param'),
+    # Config / env: Environment.GetEnvironmentVariable("X") / Configuration["X"]
+    (re.compile(r'(\w+)\s*=\s*Environment\.GetEnvironmentVariable\s*\('),                                    'env_var'),
+    (re.compile(r'(\w+)\s*=\s*_?[cC]onfiguration\s*\['),                                                     'env_var'),
 ]
 
 # ── Sink patterns ─────────────────────────────────────────────────────────────
@@ -100,6 +109,23 @@ _SINKS: list[tuple[re.Pattern, str, str, RiskLevel]] = [
 
     # Deserialization
     (re.compile(r'(?:pickle\.loads|yaml\.load\b|ObjectInputStream|fromJson|deserialize)\s*\(\s*[^)]*(\w+)'),                 'deserialization', 'CWE-502', RiskLevel.CRITICAL),
+
+    # ── C# / .NET sinks ─────────────────────────────────────────────────────────
+    # SQL injection: new SqlCommand("..."+x) / cmd.CommandText = "..."+x / EF raw SQL
+    (re.compile(r'new\s+Sql\w*Command\s*\([^)]*\+'),                                                                         'sql_query', 'CWE-89', RiskLevel.CRITICAL),
+    (re.compile(r'\.CommandText\s*=\s*[^;]*\+'),                                                                             'sql_query', 'CWE-89', RiskLevel.CRITICAL),
+    (re.compile(r'\.(?:FromSqlRaw|ExecuteSqlRaw|ExecuteSqlInterpolated|FromSqlInterpolated)\s*\(\s*[^)]*(\w+)'),             'sql_query', 'CWE-89', RiskLevel.CRITICAL),
+    # Command injection: Process.Start(x)
+    (re.compile(r'Process\.Start\s*\(\s*[^)]*(\w+)'),                                                                        'exec',      'CWE-78',  RiskLevel.CRITICAL),
+    # Path traversal: new StreamReader(x) / File.ReadAllText(x)
+    (re.compile(r'new\s+(?:FileStream|StreamReader|StreamWriter)\s*\(\s*[^)]*(\w+)'),                                        'file_write', 'CWE-22', RiskLevel.HIGH),
+    (re.compile(r'File\.(?:ReadAllText|ReadAllBytes|WriteAllText|WriteAllBytes|Open\w*)\s*\(\s*[^)]*(\w+)'),                 'file_write', 'CWE-22', RiskLevel.HIGH),
+    # SSRF: WebClient/HttpClient download from a tainted URL
+    (re.compile(r'(?:WebClient|HttpClient)\b[^;]*\.(?:DownloadString|DownloadData|GetAsync|GetStringAsync|PostAsync)\s*\(\s*[^)]*(\w+)'), 'http_request', 'CWE-918', RiskLevel.HIGH),
+    # XSS: Response.Write(x) / Html.Raw(x)
+    (re.compile(r'(?:Response\.Write|Html\.Raw)\s*\(\s*[^)]*(\w+)'),                                                         'http_response', 'CWE-79', RiskLevel.HIGH),
+    # Insecure deserialization: BinaryFormatter / JavaScriptSerializer / XmlSerializer
+    (re.compile(r'(?:BinaryFormatter|JavaScriptSerializer|NetDataContractSerializer|XmlSerializer)\b[^;]*\.(?:Deserialize|ReadObject)\s*\(\s*[^)]*(\w+)'), 'deserialization', 'CWE-502', RiskLevel.CRITICAL),
 ]
 
 # ── Propagation pattern ───────────────────────────────────────────────────────

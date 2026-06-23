@@ -153,12 +153,22 @@ class SQLiteReportStore:
         import sqlite3
         with sqlite3.connect(self._path) as conn:
             row = conn.execute(
-                "SELECT payload FROM reports WHERE request_id = ?", (request_id,)
+                "SELECT payload, gate, risk FROM reports WHERE request_id = ?", (request_id,)
             ).fetchone()
         if not row:
             return None
         try:
-            return AnalysisReport.model_validate_json(row[0])
+            report = AnalysisReport.model_validate_json(row[0])
+            # Re-inject the policy-ENFORCED gate/risk. They live in PrivateAttrs
+            # (_gate_decision/_final_risk) which model_dump_json() drops, so without
+            # this a reloaded report reverts to the LLM's pre-policy gate (e.g. a
+            # policy HOLD on a critical finding would show as APPROVE).
+            from core.models import GateDecision, RiskLevel
+            if row[1]:
+                object.__setattr__(report, "_gate_decision", GateDecision(row[1]))
+            if row[2]:
+                object.__setattr__(report, "_final_risk", RiskLevel(row[2]))
+            return report
         except Exception as e:
             log.error("Failed to deserialise report %s: %s", request_id, e)
             return None

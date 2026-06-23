@@ -111,6 +111,8 @@ export function createInitialState() {
     ciaaPerms: JSON.parse(localStorage.getItem('ciaaPerms') || 'null') || null,
     backendUrl: localStorage.getItem('backendUrl') || 'http://localhost:8080',
     backendKey: localStorage.getItem('backendKey') || '',
+    mavenRepoUrl: localStorage.getItem('mavenRepoUrl') || '',
+    mavenRepoAuth: localStorage.getItem('mavenRepoAuth') || '',
     modelProvider: localStorage.getItem('modelProvider') || 'anthropic',
     modelName: localStorage.getItem('modelName') || 'claude-sonnet-4-6',
     modelApiKey: localStorage.getItem('modelApiKey') || '',
@@ -138,7 +140,7 @@ export function createInitialState() {
 export function saveState(state) {
   const keys = ['provider','authMode','token','username','workspace','projectKey','baseUrl',
     'modelProvider','modelName','modelApiKey','modelBaseUrl','modelApiVer',
-    'backendUrl','backendKey'];
+    'backendUrl','backendKey','mavenRepoUrl','mavenRepoAuth'];
   keys.forEach(k => {
     if (state[k] !== undefined && state[k] !== null) localStorage.setItem(k, state[k]);
   });
@@ -202,4 +204,14 @@ export function canOverrideGate(state) {
 export function canManageUsers(state) {
   if (!state.ciaaPerms) return true;
   return (state.ciaaPerms.permissions || []).includes('user:manage');
+}
+
+// STRICT super-admin gate for sensitive settings (backend connection, digest,
+// purge). Returns false unless the connected user resolves to super_admin —
+// including when NOT connected (no ciaaPerms). The connection itself is loaded
+// via the (ungated) Config import card or shipped settings, then Configure →
+// Connect & verify resolves the role and unlocks these cards.
+export function isSuperAdmin(state) {
+  const p = state.ciaaPerms;
+  return !!p && (p.primary_role === 'super_admin' || (p.roles || []).includes('super_admin'));
 }

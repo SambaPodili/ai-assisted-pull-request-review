@@ -171,6 +171,10 @@ async def submit_analysis(
             _elk_user = (_subj.user_id or _subj.name or "").strip()
         except Exception:
             _elk_user = ""
+    # Never publish the SKIP_AUTH sentinel as a real user — it isn't a person.
+    # Cleared → usage_telemetry falls back to the repo slug instead.
+    if _elk_user.lower() in ("skip_auth", "anonymous"):
+        _elk_user = ""
 
     # Mark queued up-front; flips to running once a slot is acquired.
     _in_flight.set(request_id, "queued")
@@ -237,8 +241,29 @@ async def scan_pom_xml(request: Request):
     data = await request.body()
     if not data:
         raise HTTPException(400, detail="Empty pom.xml.")
+    # Maven repo + auth can be supplied per-request from the UI (Settings), else env.
+    repo = request.headers.get("X-Maven-Repo-Url") or None
+    auth = request.headers.get("X-Maven-Repo-Auth")
     try:
-        return scan_pom(data.decode("utf-8", "ignore"))
+        return scan_pom(data.decode("utf-8", "ignore"), repo=repo, auth=auth)
+    except ValueError as exc:
+        raise HTTPException(422, detail=str(exc))
+
+
+@router.post("/sca/nuget")
+async def scan_nuget_manifest(request: Request):
+    """
+    Software Composition Analysis for a .NET NuGet manifest (Path A — direct deps).
+    POST the raw .csproj / packages.config / Directory.Packages.props body. Returns
+    CVEs for the declared dependencies (matched against OSV ecosystem "NuGet" by
+    exact version). Works on any branch — no lockfile, no CI.
+    """
+    from ingestion.nuget_sca import scan_nuget
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, detail="Empty manifest.")
+    try:
+        return scan_nuget(data.decode("utf-8", "ignore"))
     except ValueError as exc:
         raise HTTPException(422, detail=str(exc))
 

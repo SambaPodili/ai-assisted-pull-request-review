@@ -19,8 +19,8 @@ Per the agreed mapping:
   • metadata  = repo_slug + per-event subfields (result_length, findings, gate…)
   • tool_*/app_code defaults come from settings (G040 / Code Analysis and Review).
 
-A successful run emits 5 docs (started → analysis_success → security_review →
-gate → report_generated); a failed run emits 2 (started → analysis_failure).
+A run emits 2 docs: started → code_analysis_success (which consolidates duration,
+gate, risk, security findings, top issues); a failed run emits started → failure.
 
 ALL emission is best-effort and fire-and-forget: any error is logged and
 swallowed so telemetry can never affect or fail an analysis.
@@ -119,7 +119,8 @@ def _sev_counts(findings) -> tuple[int, int]:
 
 def completion_docs(report, domain: str, result_length: int = 0,
                     duration_s: float = 0.0, user_id: str = "", cfg=None) -> list[dict]:
-    """The 4 success docs (analysis_success, security_review, gate, report)."""
+    """A SINGLE end-of-run success doc consolidating analysis + security + gate +
+    report metadata (so a run emits just 2 ELK docs: started + completed)."""
     cfg = _cfg(cfg)
     rid  = getattr(report, "request_id", "") or ""
     repo = getattr(report, "repo_url", "") or ""
@@ -133,16 +134,16 @@ def completion_docs(report, domain: str, result_length: int = 0,
     return [
         _doc(cfg, action="code_analysis_success", task_id=rid, repo_url=repo, domain=domain, user_id=user_id,
              description=f"Code analysis completed for task: {rid}",
-             metadata={"result_length": int(result_length), "duration_s": round(duration_s, 2)}),
-        _doc(cfg, action="security_review_success", task_id=rid, repo_url=repo, domain=domain, user_id=user_id,
-             description=f"Security review completed for task: {rid}",
-             metadata={"security_findings": len(sec_findings), "critical": crit, "high": high}),
-        _doc(cfg, action=f"review_gate_{str(gate).lower()}", task_id=rid, repo_url=repo, domain=domain, user_id=user_id,
-             description=f"Review gate {gate} for task: {rid}",
-             metadata={"gate": gate, "risk_score": risk}),
-        _doc(cfg, action="report_generated", task_id=rid, repo_url=repo, domain=domain, user_id=user_id,
-             description=f"Report generated for task: {rid}",
-             metadata={"top_issues": top_issues, "result_length": int(result_length)}),
+             metadata={
+                 "result_length":     int(result_length),
+                 "duration_s":        round(duration_s, 2),
+                 "gate":              gate,
+                 "risk_score":        risk,
+                 "security_findings": len(sec_findings),
+                 "critical":          crit,
+                 "high":              high,
+                 "top_issues":        top_issues,
+             }),
     ]
 
 

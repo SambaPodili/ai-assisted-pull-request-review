@@ -32,6 +32,9 @@ _MANIFEST_FILES = {
     "package.json", "package-lock.json",
     "requirements.txt", "Pipfile", "Pipfile.lock",
     "go.mod", "go.sum", "Cargo.toml",
+    # .NET / NuGet (matched by endswith — ".csproj" catches App.csproj, etc.)
+    ".csproj", "packages.config", "Directory.Packages.props",
+    "Directory.Build.props", "paket.dependencies",
 }
 
 

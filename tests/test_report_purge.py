@@ -83,3 +83,21 @@ def test_demo_only_targets_non_uuid_ids(client):
     assert deleted.status_code == 200
     assert st.get("purge-0") is None        # seed row removed
     assert st.get(real_id) is not None      # real UUID report kept
+
+
+def test_policy_gate_survives_store_roundtrip(tmp_path):
+    # The policy-enforced gate lives in a PrivateAttr (_gate_decision) that
+    # model_dump_json() drops — the store must re-inject it on reload so a
+    # policy HOLD on a critical finding doesn't revert to the LLM's APPROVE.
+    from core.models import (AnalysisReport, RiskResult, RiskLevel, GateDecision, ChangeType)
+    from storage.report_store import SQLiteReportStore
+    store = SQLiteReportStore(str(tmp_path / "r.db"))
+    rep = AnalysisReport(request_id="g1", change_type=ChangeType.PR, repo_url="r",
+                         source_ref="a", target_ref="b",
+                         risk=RiskResult(overall_risk=RiskLevel.LOW, risk_score=18,
+                                         gate_decision=GateDecision.APPROVE))
+    object.__setattr__(rep, "_gate_decision", GateDecision.HOLD)   # policy raised it
+    store.save(rep)
+    back = store.get("g1")
+    assert back.gate_decision == GateDecision.HOLD                 # not the APPROVE on risk
+    assert back.risk.gate_decision == GateDecision.APPROVE

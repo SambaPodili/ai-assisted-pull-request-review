@@ -82,11 +82,18 @@ def _bb_server_whoami(cfg: GitConfig, h: dict) -> str:
         except requests.exceptions.RequestException:
             return None
 
-    r = _fetch(f"{root}/rest/api/1.0/application-properties")
-    if r is not None:
-        who = unquote(r.headers.get("X-AUSERNAME", "") or "").strip()
-        if who and who.lower() != "anonymous":
-            return who
+    # X-AUSERNAME is only set on AUTHENTICATED responses. /application-properties
+    # is served ANONYMOUSLY, so it frequently omits the header (→ caller shows up
+    # as "Connected"). Hit endpoints that REQUIRE auth first so the token is
+    # actually used and the username header is populated.
+    for path in ("/rest/api/1.0/inbox/pull-requests/count",
+                 "/rest/api/1.0/dashboard/pull-request-suggestions?limit=1",
+                 "/rest/api/1.0/application-properties"):
+        r = _fetch(f"{root}{path}")
+        if r is not None:
+            who = unquote(r.headers.get("X-AUSERNAME", "") or "").strip()
+            if who and who.lower() != "anonymous":
+                return who
 
     r = _fetch(f"{root}/plugins/servlet/applinks/whoami")
     if r is not None and r.status_code == 200:
