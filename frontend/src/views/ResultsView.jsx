@@ -2809,10 +2809,15 @@ function DepAutoUpdate() {
 
 // ── Judge Panel ─────────────────────────────────────────────────────────────────
 
+// Judge results cached by request_id so they survive the panel being toggled
+// off/on (which unmounts JudgePanel and would otherwise drop its local state).
+const _judgeCache = {}
+
 function JudgePanel({ state, showToast }) {
   const { update } = useApp()
+  const reqId = state.lastRequestId
   const [loading, setLoading] = useState(false)
-  const [data, setData] = useState(null)
+  const [data, setData] = useState(() => _judgeCache[reqId] || null)
   const [error, setError] = useState('')
   const [showCfg, setShowCfg] = useState(false)
 
@@ -2859,7 +2864,9 @@ function JudgePanel({ state, showToast }) {
         body:JSON.stringify({ diff_text:state.diffText||'', async_mode:false, judges: judgePayload })
       })
       if (!resp.ok) throw new Error('HTTP '+resp.status)
-      setData(await resp.json())
+      const result = await resp.json()
+      if (reqId) _judgeCache[reqId] = result   // persist across panel toggles
+      setData(result)
     } catch(e) { setError(e.message) } finally { setLoading(false) }
   }
 
@@ -3644,7 +3651,6 @@ export default function ResultsView({ active, showView, showToast }) {
             canPostToGit(state) && { label:'Review summary', icon:'ti-clipboard-text', onClick:()=>setShowReviewSummary(true) },
             { label:'PR description', icon:'ti-file-description', title:'Generate a PR description to paste into GitHub/Bitbucket', onClick:()=>setShowPRDesc(true) },
             !canPostToGit(state) && { label:'Post to PR', icon:'ti-message-2-code', locked:true, disabled:true, title:'Requires Reviewer role — ask your tech lead', onClick:()=>showToast('Post to PR requires Reviewer role. Ask your tech lead to assign reviewer access.','error') },
-            { label:'Keyboard shortcuts', icon:'ti-keyboard', onClick:()=>document.getElementById('kb-hint')?.style.setProperty('display','flex') },
           ]}/>
         </div>
         <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
@@ -3661,16 +3667,6 @@ export default function ResultsView({ active, showView, showToast }) {
       {/* PR Description Modal */}
       {showPRDesc && <PRDescModal r={r} state={state} onClose={()=>setShowPRDesc(false)}/>}
 
-      {/* Keyboard shortcuts help */}
-      <div id="kb-hint" style={{display:'none',position:'fixed',bottom:20,right:20,background:'#1a2332',color:'#fff',borderRadius:10,padding:'14px 18px',fontSize:11,zIndex:8000,lineHeight:1.8,boxShadow:'0 4px 20px rgba(0,0,0,.3)'}}>
-        <div style={{fontWeight:700,marginBottom:6}}>⌨️ Keyboard shortcuts</div>
-        <div><kbd style={{background:'#2d3f55',padding:'1px 5px',borderRadius:3}}>← →</kbd> Previous / next tab</div>
-        <div><kbd style={{background:'#2d3f55',padding:'1px 5px',borderRadius:3}}>P</kbd> Generate PR description</div>
-        <div><kbd style={{background:'#2d3f55',padding:'1px 5px',borderRadius:3}}>C</kbd> Load reviewer checklist</div>
-        <div><kbd style={{background:'#2d3f55',padding:'1px 5px',borderRadius:3}}>N</kbd> New analysis</div>
-        <div><kbd style={{background:'#2d3f55',padding:'1px 5px',borderRadius:3}}>?</kbd> Toggle this help</div>
-        <button onClick={()=>document.getElementById('kb-hint').style.display='none'} style={{marginTop:8,width:'100%',border:'1px solid #2d3f55',background:'none',color:'#9fadbf',borderRadius:6,padding:4,cursor:'pointer',fontSize:11}}>Close</button>
-      </div>
     </div>
   )
 }

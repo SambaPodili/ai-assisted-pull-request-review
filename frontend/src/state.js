@@ -206,12 +206,15 @@ export function canManageUsers(state) {
   return (state.ciaaPerms.permissions || []).includes('user:manage');
 }
 
-// STRICT super-admin gate for sensitive settings (backend connection, digest,
-// purge). Returns false unless the connected user resolves to super_admin —
-// including when NOT connected (no ciaaPerms). The connection itself is loaded
-// via the (ungated) Config import card or shipped settings, then Configure →
-// Connect & verify resolves the role and unlocks these cards.
+// Super-admin gate for sensitive settings (backend connection, digest, purge).
+// Permissive when NOT connected (no ciaaPerms) so the user can still enter their
+// API key in the Backend connection card and authenticate — otherwise, with
+// SKIP_AUTH=false, the card that holds the key would be locked before you have a
+// role, making it impossible to ever log in (401 deadlock). Once connected, a
+// non-super user (e.g. developer) sees these cards locked. The backend still
+// enforces the underlying admin permissions on every call regardless.
 export function isSuperAdmin(state) {
   const p = state.ciaaPerms;
-  return !!p && (p.primary_role === 'super_admin' || (p.roles || []).includes('super_admin'));
+  if (!p) return true;                       // not connected → allow (needed to connect)
+  return p.primary_role === 'super_admin' || (p.roles || []).includes('super_admin');
 }

@@ -76,22 +76,32 @@ def _default_judges() -> list[dict]:
 
 
 def _fill_judge_keys(cfgs: list[dict]) -> None:
-    """For any judge missing an api_key, inject the backend env key for its
-    provider so the judge panel works without per-judge keys (the UI only sends
-    a key when the judge's provider matches the chosen analysis model)."""
+    """For any judge missing an api_key (and, for custom/org models, a base_url),
+    inject the backend env values for its provider so the judge panel works
+    without per-judge config. The UI freezes the custom URL/key in the backend
+    env (LLM_BASE_URL / LLM_API_KEY) and does NOT resend them, so a custom judge
+    arrives with provider+model only — without this it falls back to OpenAI's
+    public endpoint and fails with a Connection error on an air-gapped host."""
     from config.settings import get_settings
     cfg = get_settings()
     anth = cfg.anthropic_api_key or ""
     oai  = getattr(cfg, "openai_api_key", "") or ""
+    llm_key = getattr(cfg, "llm_api_key", "") or ""
+    llm_url = getattr(cfg, "llm_base_url", "") or ""
     for j in cfgs:
-        if j.get("api_key"):
-            continue
         p = (j.get("provider") or "anthropic").lower()
-        if p == "anthropic":
-            j["api_key"] = anth
-        elif p in ("openai", "azure_openai"):
-            j["api_key"] = oai
-        # ollama / custom: leave blank (no key required)
+        if not j.get("api_key"):
+            if p == "anthropic":
+                j["api_key"] = anth
+            elif p in ("openai", "azure_openai"):
+                j["api_key"] = oai
+            elif p == "custom":
+                j["api_key"] = llm_key      # shared key for the org endpoint
+            # ollama: no key required
+        # Custom/org models keep their URL+key in the env, not the request —
+        # supply the endpoint so the judge hits the same server as the agents.
+        if p == "custom" and not j.get("base_url") and llm_url:
+            j["base_url"] = llm_url
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
