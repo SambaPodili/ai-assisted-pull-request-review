@@ -125,7 +125,9 @@ def completion_docs(report, domain: str, result_length: int = 0,
     rid  = getattr(report, "request_id", "") or ""
     repo = getattr(report, "repo_url", "") or ""
     gate = getattr(getattr(report, "gate_decision", None), "value", None) or "HOLD"
-    risk = int(getattr(report, "risk_score", 0) or 0)
+    # risk_score lives on the nested RiskResult (report.risk.risk_score), NOT on
+    # the report itself — reading report.risk_score always yielded 0 in ELK.
+    risk = int(getattr(getattr(report, "risk", None), "risk_score", 0) or 0)
     sec  = getattr(report, "security", None)
     sec_findings = list(getattr(sec, "findings", None) or []) if sec else []
     crit, high = _sev_counts(sec_findings)

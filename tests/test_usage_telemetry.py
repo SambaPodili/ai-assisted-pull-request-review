@@ -70,7 +70,10 @@ def test_doc_shape_matches_portal_schema():
 # ── lifecycle ─────────────────────────────────────────────────────────────────
 
 def _report():
-    return NS(request_id="task-9", repo_url="SOMECLR/uncs16", risk_score=42,
+    # risk_score lives on the nested RiskResult (report.risk.risk_score), matching
+    # the real AnalysisReport — NOT a top-level attribute.
+    return NS(request_id="task-9", repo_url="SOMECLR/uncs16",
+              risk=NS(risk_score=42),
               gate_decision=NS(value="HOLD"),
               security=NS(findings=[NS(severity="critical"), NS(severity="high"), NS(severity="low")]),
               top_issues=[1, 2, 3])
@@ -87,6 +90,7 @@ def test_success_lifecycle_is_two_docs():
     md = completion[0]["metadata"]
     # the one success doc carries analysis + security + gate + report metadata
     assert md["result_length"] == 9700 and md["duration_s"] == 12.3
+    assert md["risk_score"] == 42
     assert md["gate"] == "HOLD" and md["security_findings"] == 3
     assert md["critical"] == 1 and md["high"] == 1
 

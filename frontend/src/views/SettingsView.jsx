@@ -53,6 +53,10 @@ export default function SettingsView({ showToast }) {
   const [purgeDays, setPurgeDays] = useState('')
   const [purgeMsg, setPMsg]   = useState('')
   const superAdmin = isSuperAdmin(state)
+  // The backend URL is editable for super admins OR while NOT yet connected (so a
+  // first-time super admin can point the UI at their backend before logging in);
+  // once connected as a non-super user it locks.
+  const canEditUrl = superAdmin || !state.ciaaPerms
 
   function saveSettings() {
     const newUrl = url.replace(/\/$/, '')
@@ -178,26 +182,30 @@ export default function SettingsView({ showToast }) {
   return (
     <div style={{ maxWidth: 860 }}>
 
-      {/* ── Backend connection (super admin only) ── */}
+      {/* ── Backend connection — the URL is a super-admin-only infra setting;
+            the API key is each user's own login credential (always editable),
+            so non-super users can still authenticate without a lockout. ── */}
       <div className="card">
-        <div className="card-title"><i className="ti ti-server" />Backend API connection<Lock on={superAdmin} /></div>
-        <fieldset disabled={!superAdmin} style={{ border:'none', padding:0, margin:0, minWidth:0, opacity: superAdmin ? 1 : 0.6 }}>
+        <div className="card-title"><i className="ti ti-server" />Backend API connection</div>
         <div className="field">
-          <label>Backend URL</label>
-          <input type="url" value={url} onChange={e => setUrl(e.target.value)} placeholder="http://localhost:8080" />
-          <div className="field-hint">The URL where your impact-analyzer backend is running.</div>
+          <label>Backend URL <Lock on={canEditUrl} /></label>
+          <fieldset disabled={!canEditUrl} style={{ border:'none', padding:0, margin:0, minWidth:0, opacity: canEditUrl ? 1 : 0.6 }}>
+            <input type="url" value={url} onChange={e => setUrl(e.target.value)} placeholder="http://localhost:8080" />
+          </fieldset>
+          <div className="field-hint">{canEditUrl
+            ? 'The URL where your backend is running.'
+            : 'Set by your super admin — ask them to change the backend URL.'}</div>
         </div>
         <div className="field">
           <label>API Key</label>
-          <PasswordInput value={key} onChange={e => setKey(e.target.value)} placeholder="Leave blank if SKIP_AUTH=true" />
-          <div className="field-hint">Matches <code>API_KEYS</code> in your backend .env file.</div>
+          <PasswordInput value={key} onChange={e => setKey(e.target.value)} placeholder="Your CIAA API key (from keys.json)" />
+          <div className="field-hint">Your personal key — it determines your role (developer / reviewer / super admin).</div>
         </div>
         <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
           <button className="btn btn-primary" onClick={saveSettings}><i className="ti ti-device-floppy" />Save</button>
           <button className="btn" onClick={testBackend}><i className="ti ti-plug-connected" />Test connection</button>
           {settingsMsg && <span style={{ fontSize:12, color: settingsMsg.startsWith('✓') ? '#3fb950' : '#b81c1c' }}>{settingsMsg}</span>}
         </div>
-        </fieldset>
       </div>
 
       {/* ── Maven / Artifactory (for SCA parent-POM resolution) ── */}

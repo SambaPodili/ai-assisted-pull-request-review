@@ -187,34 +187,36 @@ export function agentEngine(model, opts = {}) {
   return opts.completed ? FALLBACK : null   // completed with no model = fell back; else pending
 }
 
+// Default-DENY for elevated capabilities: a user whose role is not yet resolved
+// (not connected / no role) is treated as a plain DEVELOPER — never elevated.
+// The backend already defaults roleless keys to 'developer'; these mirror that so
+// the UI never shows admin/reviewer/super-admin affordances before a role is
+// confirmed. The login itself (API key field) is NOT gated by any of these, so
+// there is no lockout. The backend still enforces every permission server-side.
 export function canPostToGit(state) {
   if (!state.backendKey || !state.backendUrl) return false;
-  if (!state.ciaaPerms) return true;
+  if (!state.ciaaPerms) return false;        // no role → developer → cannot post
   return !!state.ciaaPerms.can_comment;
 }
 
 export function canOverrideGate(state) {
-  if (!state.ciaaPerms) return true;
+  if (!state.ciaaPerms) return false;        // no role → developer → cannot override
   return !!state.ciaaPerms.can_override;
 }
 
 // Admin / Super Admin only — drives visibility of the user-management screen.
-// Permissive when the role is unknown (skip_auth / not connected); the backend
-// still enforces the user:manage permission + role hierarchy on every call.
 export function canManageUsers(state) {
-  if (!state.ciaaPerms) return true;
+  if (!state.ciaaPerms) return false;        // no role → developer → no user mgmt
   return (state.ciaaPerms.permissions || []).includes('user:manage');
 }
 
-// Super-admin gate for sensitive settings (backend connection, digest, purge).
-// Permissive when NOT connected (no ciaaPerms) so the user can still enter their
-// API key in the Backend connection card and authenticate — otherwise, with
-// SKIP_AUTH=false, the card that holds the key would be locked before you have a
-// role, making it impossible to ever log in (401 deadlock). Once connected, a
-// non-super user (e.g. developer) sees these cards locked. The backend still
-// enforces the underlying admin permissions on every call regardless.
+// Super-admin gate for sensitive settings (digest, purge, backend URL).
+// STRICT: only an authenticated super_admin is elevated; everyone else (incl.
+// not-yet-connected) is a developer. Safe because the login (API key field) is
+// not gated by this — the Backend URL stays editable while not connected so a
+// first-time super admin can still point at their backend, then it locks.
 export function isSuperAdmin(state) {
   const p = state.ciaaPerms;
-  if (!p) return true;                       // not connected → allow (needed to connect)
+  if (!p) return false;                      // no role → developer, NOT super admin
   return p.primary_role === 'super_admin' || (p.roles || []).includes('super_admin');
 }
