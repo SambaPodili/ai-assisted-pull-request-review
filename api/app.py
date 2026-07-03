@@ -58,6 +58,18 @@ def create_app(settings=None) -> FastAPI:
     from config.settings import get_settings
     cfg = settings or get_settings()
 
+    # Configure ROOT logging here (not only in main.py): with uvicorn --reload or
+    # --workers, the worker imports api.app directly and main.py's basicConfig
+    # never runs — leaving app INFO logs invisible (only WARNING+ via Python's
+    # last-resort handler). Without this, diagnostics like "[id] Analyse
+    # submitted — diff=N bytes → M hunks" silently vanish.
+    import logging as _logging
+    if not _logging.getLogger().handlers:
+        _logging.basicConfig(
+            level=getattr(_logging, str(getattr(cfg, "log_level", "INFO")).upper(), _logging.INFO),
+            format="%(asctime)s %(levelname)-8s %(name)s %(message)s",
+        )
+
     if getattr(cfg, "otlp_endpoint", ""):
         init_tracing(cfg.otlp_endpoint)
 

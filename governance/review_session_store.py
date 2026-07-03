@@ -213,7 +213,8 @@ def get_review_store():
     if _store is None:
         try:
             from config.settings import get_settings
-            path = getattr(get_settings(), "review_session_db_path", "") or DEFAULT_DB_PATH
+            _cfg = get_settings()
+            path = getattr(_cfg, "review_session_db_path", "") or _cfg.data_path("review_sessions.db")
             _store = SQLiteReviewSessionStore(path)
             log.info("Review-session store: SQLite (%s)", path)
         except Exception as exc:

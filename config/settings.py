@@ -131,6 +131,29 @@ class Settings(BaseSettings):
     # prefer trusting the corporate CA. Off by default; opt in per deployment.
     git_ssl_no_verify:         bool = Field(default=False, alias="GIT_SSL_NO_VERIFY")
 
+    # SCA / dependency TLS + endpoints. Declared so .env values are honoured (the
+    # SSL helpers read these via the Settings object, not just os.getenv — a value
+    # in .env is NOT pushed to os.environ by pydantic-settings).
+    osv_verify_ssl:            bool = Field(default=True,  alias="OSV_VERIFY_SSL")    # false → INSECURE skip
+    osv_ca_bundle:             str  = Field(default="",    alias="OSV_CA_BUNDLE")     # corporate CA path
+    osv_base_url:              str  = Field(default="",    alias="OSV_BASE_URL")      # internal OSV mirror
+    osv_proxy_url:             str  = Field(default="",    alias="OSV_PROXY_URL")     # corporate forward proxy for OSV only
+    # Directory of pre-downloaded OSV snapshot zips (Maven.zip / NuGet.zip …) —
+    # the LAST-RESORT lookup when every live source is down (air-gapped).
+    osv_offline_dir:           str  = Field(default="",    alias="OSV_OFFLINE_DIR")
+    maven_repo_url:            str  = Field(default="",    alias="MAVEN_REPO_URL")
+    maven_repo_auth:           str  = Field(default="",    alias="MAVEN_REPO_AUTH")
+    maven_scan_transitive:     bool = Field(default=True,  alias="MAVEN_SCAN_TRANSITIVE")
+    # Vulnerability source for SCA scans: "osv" (public DB) or "xray" (JFrog Xray
+    # on your Artifactory — fully in-house). UI selection overrides per request.
+    vuln_source:               str  = Field(default="osv", alias="VULN_SOURCE")
+    # When the primary source is down (after retries), try this one: osv | xray |
+    # none. OPT-IN (default none) — e.g. security must approve dependency names
+    # leaving the bank to public OSV as a fallback side effect.
+    vuln_fallback_source:      str  = Field(default="none", alias="VULN_FALLBACK_SOURCE")
+    xray_base_url:             str  = Field(default="",    alias="XRAY_BASE_URL")   # e.g. https://artifactory.uobnet.com/xray
+    xray_auth:                 str  = Field(default="",    alias="XRAY_AUTH")       # Bearer <token> (or raw token)
+
     bitbucket_api_url:         str = Field(default="https://api.bitbucket.org/2.0", alias="BITBUCKET_API_URL")
     bitbucket_token:           str = Field(default="", alias="BITBUCKET_TOKEN")
     bitbucket_workspace:       str = Field(default="", alias="BITBUCKET_WORKSPACE")
@@ -157,7 +180,10 @@ class Settings(BaseSettings):
     # manage, diff in git, and reload without restarting the server.
     # Roles: admin | analyst | reviewer | developer | auditor | ci_system
     api_keys:       Annotated[list, NoDecode] = Field(default_factory=list, alias="API_KEYS")
-    api_keys_file:  str       = Field(default="",           alias="API_KEYS_FILE")
+    # Defaults to the conventional config/keys.json so editing that file "just
+    # works". Point it at an ABSOLUTE path outside the code for production so a
+    # re-deploy doesn't overwrite your keys.
+    api_keys_file:  str       = Field(default="config/keys.json", alias="API_KEYS_FILE")
     skip_auth:      bool      = Field(default=False,        alias="SKIP_AUTH")
 
     # ── Output integrations ────────────────────────────────────────────────────
@@ -190,7 +216,7 @@ class Settings(BaseSettings):
     otlp_endpoint: str = Field(default="", alias="OTLP_ENDPOINT")
 
     # ── Governance ────────────────────────────────────────────────────────────
-    audit_log_path:         str = Field(default="logs/audit.jsonl", alias="AUDIT_LOG_PATH")
+    audit_log_path:         str = Field(default="", alias="AUDIT_LOG_PATH")   # → <DATA_DIR>/audit.jsonl
     compliance_frameworks:  Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["MAS TRM", "PCI-DSS 4.0", "OWASP ASVS L2"],
         alias="COMPLIANCE_FRAMEWORKS",
@@ -207,7 +233,7 @@ class Settings(BaseSettings):
     # Default OFF: conservative banking posture (any verified high holds).
     gate_require_confirmed_highs: bool = Field(default=False, alias="GATE_REQUIRE_CONFIRMED_HIGHS")
     capability_map_path:     str   = Field(default="config/capability_map.json", alias="CAPABILITY_MAP_PATH")
-    feedback_db_path:        str   = Field(default="data/feedback.db", alias="FEEDBACK_DB_PATH")
+    feedback_db_path:        str   = Field(default="", alias="FEEDBACK_DB_PATH")   # → <DATA_DIR>/feedback.db
 
     # ── Logging ───────────────────────────────────────────────────────────────
     log_level:        str  = Field(default="INFO",  alias="LOG_LEVEL")
@@ -221,7 +247,7 @@ class Settings(BaseSettings):
     max_diff_bytes:   int  = Field(default=5_000_000, alias="MAX_DIFF_BYTES")   # 5 MB
 
     # ── Rate limiting ─────────────────────────────────────────────────────────
-    rate_limit_rpm:   int  = Field(default=60, alias="RATE_LIMIT_RPM")   # requests per minute per key
+    rate_limit_rpm:   int  = Field(default=240, alias="RATE_LIMIT_RPM")   # requests per minute per key (UI polls a lot)
 
     # ── Analysis reliability ──────────────────────────────────────────────────
     analysis_timeout_s: int = Field(default=600, alias="ANALYSIS_TIMEOUT_S")   # 10 min hard cap (20 agents, potential 529 retries)
@@ -317,10 +343,24 @@ class Settings(BaseSettings):
     # Disable if the analyser runs in an air-gapped environment.
 
     # ── Storage ───────────────────────────────────────────────────────────────
-    sqlite_path:      str  = Field(default="", alias="SQLITE_PATH")
-    # When empty, make_report_store uses data/reports.db as the default.
+    # ONE base dir for everything the app writes (reports/users/feedback/audit…).
+    # Set DATA_DIR to an ABSOLUTE path OUTSIDE the code tree so re-deploying the
+    # code never overwrites runtime state. Per-store overrides below still win.
+    data_dir:         str  = Field(default="data", alias="DATA_DIR")
+    sqlite_path:      str  = Field(default="", alias="SQLITE_PATH")               # → <DATA_DIR>/reports.db
+    review_session_db_path: str = Field(default="", alias="REVIEW_SESSION_DB_PATH")  # → <DATA_DIR>/review_sessions.db
+    user_db_path:     str  = Field(default="", alias="USER_DB_PATH")             # → <DATA_DIR>/users.db
+    temporal_db_path: str  = Field(default="", alias="TEMPORAL_DB_PATH")         # → <DATA_DIR>/temporal.db
 
     # ── Derived helpers ───────────────────────────────────────────────────────
+    def data_path(self, name: str) -> str:
+        """Absolute/relative path under DATA_DIR for a runtime file, ensuring the
+        directory exists. All stores default through here so a single DATA_DIR
+        keeps every piece of state together and outside the deployable code."""
+        import os
+        os.makedirs(self.data_dir, exist_ok=True)
+        return os.path.join(self.data_dir, name)
+
     @property
     def agent_budgets(self) -> dict[str, int]:
         base = {

@@ -332,10 +332,14 @@ def _compute_trend(scores: list[float]) -> str:
 _store: SQLiteTemporalStore | InMemoryTemporalStore | None = None
 
 
-def get_temporal_store(db_path: str = DEFAULT_DB_PATH) -> SQLiteTemporalStore | InMemoryTemporalStore:
+def get_temporal_store(db_path: str = "") -> SQLiteTemporalStore | InMemoryTemporalStore:
     global _store
     if _store is None:
         try:
+            if not db_path:
+                from config.settings import get_settings
+                _cfg = get_settings()
+                db_path = getattr(_cfg, "temporal_db_path", "") or _cfg.data_path("temporal.db")
             _store = SQLiteTemporalStore(db_path)
             log.info("Temporal store: SQLite at %s", db_path)
         except Exception as e:

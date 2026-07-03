@@ -72,7 +72,20 @@ class DiffCache:
         if not data:
             return None
         try:
-            report = AnalysisReport.model_validate_json(data)
+            # Envelope format: {"gate","final_risk","payload"} — the policy-enforced
+            # gate lives in PrivateAttrs which model_dump_json() drops, so it must be
+            # carried alongside and re-injected (else a cached HOLD reverts to the
+            # LLM's APPROVE). Legacy entries (raw report JSON) still parse.
+            outer = json.loads(data)
+            if isinstance(outer, dict) and "payload" in outer:
+                report = AnalysisReport.model_validate_json(outer["payload"])
+                from core.models import GateDecision, RiskLevel
+                if outer.get("gate"):
+                    object.__setattr__(report, "_gate_decision", GateDecision(outer["gate"]))
+                if outer.get("final_risk"):
+                    object.__setattr__(report, "_final_risk", RiskLevel(outer["final_risk"]))
+            else:
+                report = AnalysisReport.model_validate_json(data)
             log.info("[DiffCache] HIT for %s → %s", request.request_id, key[:12])
             return report
         except Exception as e:
@@ -81,7 +94,11 @@ class DiffCache:
 
     def set(self, request: "AnalysisRequest", report: "AnalysisReport") -> None:
         key  = _diff_fingerprint(request)
-        data = report.model_dump_json()
+        data = json.dumps({
+            "gate":       report.gate_decision.value,
+            "final_risk": report.final_risk.value,
+            "payload":    report.model_dump_json(),
+        })
         try:
             if self._redis:
                 self._redis.setex(key, self._ttl, data)

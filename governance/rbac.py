@@ -247,6 +247,17 @@ class APIKeyRegistry:
                  sum(1 for e in self._entries.values() if Role.ADMIN in e.subject.roles
                                                        or Role.ANALYST in e.subject.roles))
 
+        # Auth is ON but no keys were loaded → EVERY request will 401. Make the
+        # cause obvious instead of leaving the operator guessing.
+        if not self._entries:
+            log.error("APIKeyRegistry: 0 keys loaded while auth is ENABLED — every request "
+                      "will return 401. Set API_KEYS_FILE (default config/keys.json) to a "
+                      "readable JSON array, or set API_KEYS, then restart.")
+        # Flag the shipped placeholder so it isn't silently trusted in production.
+        if any(k.startswith("superadmin_CHANGE_ME") for k in self._entries):
+            log.warning("APIKeyRegistry: the PLACEHOLDER super-admin key is active — "
+                        "rotate it in your keys file immediately.")
+
     def _load_one(self, raw_key) -> None:
         if isinstance(raw_key, str):
             subject = Subject(key_id=raw_key, roles=[Role.DEVELOPER])

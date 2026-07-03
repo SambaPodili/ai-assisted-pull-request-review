@@ -14,6 +14,15 @@ from fastapi.testclient import TestClient
 from ingestion.nuget_sca import parse_nuget_dependencies, scan_nuget
 from ingestion.osv_client import OsvVuln
 
+
+@pytest.fixture(autouse=True)
+def _isolated_sca_cache(monkeypatch, tmp_path):
+    # Isolate the Layer-3 last-known-good cache per test — otherwise a successful
+    # scan cached by an earlier test makes the failure test serve a STALE result
+    # instead of the honest error it asserts.
+    import ingestion.sca_cache as sc
+    monkeypatch.setattr(sc, "_db_path", lambda: str(tmp_path / "sca_cache.db"))
+
 CSPROJ = """<Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />

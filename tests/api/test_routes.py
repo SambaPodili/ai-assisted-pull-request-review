@@ -381,3 +381,18 @@ class TestAdminEndpoints:
     def test_metrics_endpoint(self, client):
         r = client.get("/metrics")
         assert r.status_code == 200
+
+
+def test_analyse_empty_diff_short_circuits_no_agents(client):
+    """An empty/whitespace diff must NOT spin up the agents — it returns no_diff."""
+    r = client.post("/api/v1/analyse", json={
+        "change_type": "pull_request", "repo_url": "r",
+        "source_ref": "a", "target_ref": "b", "diff_text": "  \n ",
+    })
+    assert r.status_code in (200, 202)
+    body = r.json()
+    assert body["status"] == "no_diff"
+    assert "no" in body.get("message", "").lower()
+    # No report should have been created for it
+    rep = client.get(f"/api/v1/report/{body['request_id']}?fmt=full")
+    assert rep.status_code == 404

@@ -131,6 +131,10 @@ class NullAuditLogger:
 def make_audit_logger(settings=None) -> FileAuditLogger | NullAuditLogger:
     from config.settings import get_settings
     cfg = settings or get_settings()
-    if cfg.audit_log_path:
-        return FileAuditLogger(cfg.audit_log_path)
-    return NullAuditLogger()
+    # Default the audit trail under DATA_DIR so it persists across code deployments
+    # (was logs/audit.jsonl). Override with AUDIT_LOG_PATH.
+    path = cfg.audit_log_path or cfg.data_path("audit.jsonl")
+    try:
+        return FileAuditLogger(path)
+    except Exception:
+        return NullAuditLogger()

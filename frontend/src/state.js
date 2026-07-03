@@ -113,6 +113,10 @@ export function createInitialState() {
     backendKey: localStorage.getItem('backendKey') || '',
     mavenRepoUrl: localStorage.getItem('mavenRepoUrl') || '',
     mavenRepoAuth: localStorage.getItem('mavenRepoAuth') || '',
+    // SCA vulnerability source: 'osv' (public DB) or 'xray' (JFrog Xray, in-house)
+    vulnSource: localStorage.getItem('vulnSource') || 'osv',
+    xrayUrl: localStorage.getItem('xrayUrl') || '',
+    xrayAuth: localStorage.getItem('xrayAuth') || '',
     modelProvider: localStorage.getItem('modelProvider') || 'anthropic',
     modelName: localStorage.getItem('modelName') || 'claude-sonnet-4-6',
     modelApiKey: localStorage.getItem('modelApiKey') || '',
@@ -140,7 +144,7 @@ export function createInitialState() {
 export function saveState(state) {
   const keys = ['provider','authMode','token','username','workspace','projectKey','baseUrl',
     'modelProvider','modelName','modelApiKey','modelBaseUrl','modelApiVer',
-    'backendUrl','backendKey','mavenRepoUrl','mavenRepoAuth'];
+    'backendUrl','backendKey','mavenRepoUrl','mavenRepoAuth','vulnSource','xrayUrl','xrayAuth'];
   keys.forEach(k => {
     if (state[k] !== undefined && state[k] !== null) localStorage.setItem(k, state[k]);
   });

@@ -28,6 +28,34 @@ log = logging.getLogger(__name__)
 _DEFAULT_MAVEN_REPO = "https://repo1.maven.org/maven2"
 
 
+def test_connection(repo: str = "", auth: str = "", timeout_s: int = 10) -> dict:
+    """Probe the configured Maven repo (Artifactory/Nexus) — verifies the URL is
+    reachable and the auth + TLS work, BEFORE a real scan needs it. Returns
+    {ok, status, message}. Mirrors how _fetch_pom connects (same auth header +
+    TLS context honouring OSV_CA_BUNDLE / OSV_VERIFY_SSL)."""
+    repo = (repo or os.getenv("MAVEN_REPO_URL", "") or _DEFAULT_MAVEN_REPO).rstrip("/")
+    auth = (auth if auth else os.getenv("MAVEN_REPO_AUTH", "")).strip()
+    from ingestion.osv_client import _ssl_context
+    headers = {"Authorization": auth} if auth else {}
+    req = urllib.request.Request(repo + "/", headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s, context=_ssl_context()) as r:
+            return {"ok": True, "status": r.status,
+                    "message": f"Connected — HTTP {r.status} from {repo}"}
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            return {"ok": False, "status": exc.code,
+                    "message": f"Reachable, but authentication failed (HTTP {exc.code}) — check the token/credentials."}
+        if exc.code in (404, 405):
+            return {"ok": True, "status": exc.code,
+                    "message": f"Host reachable (HTTP {exc.code} on base path) — auth/TLS OK; verify the exact repo path."}
+        return {"ok": False, "status": exc.code, "message": f"HTTP {exc.code} from {repo}"}
+    except (urllib.error.URLError, OSError) as exc:
+        return {"ok": False, "status": 0,
+                "message": (f"Could not reach {repo}: {exc}. Check the URL (incl. https://), "
+                            f"network egress, and TLS/CA (OSV_CA_BUNDLE / OSV_VERIFY_SSL).")}
+
+
 def _localname(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]   # strip XML namespace
 
@@ -242,11 +270,73 @@ def _transitive_closure(direct, managed, repo, auth, timeout, cap: int = 800) ->
     return closure
 
 
+def _query_one_source(src, items, timeout_s, xray_url="", xray_auth=""):
+    if src == "xray":
+        from ingestion.xray_client import query_versioned_xray
+        return query_versioned_xray(items, timeout_s=timeout_s, raise_on_error=True,
+                                    base_url=xray_url, auth=xray_auth)
+    from ingestion.osv_client import query_versioned
+    return query_versioned(items, timeout_s=timeout_s, raise_on_error=True)
+
+
+def _vuln_lookup(items, timeout_s, source="", xray_url="", xray_auth=""):
+    """Query the SELECTED vulnerability source ('osv' public / 'xray' in-house).
+    Layer-2 fallback: when the primary is down (after retries), try the
+    VULN_FALLBACK_SOURCE if configured (opt-in, default none). Returns
+    (source_used, hits, note) — note is set when a fallback served the result.
+    Raises OsvUnavailable when every configured source failed."""
+    from config.settings import get_settings
+    from ingestion.osv_client import OsvUnavailable
+    cfg = get_settings()
+    src = (source or getattr(cfg, "vuln_source", "osv") or "osv").strip().lower()
+    def _offline_last_resort(err_msg):
+        """Final fallback: pre-downloaded OSV snapshot zips (OSV_OFFLINE_DIR)."""
+        from ingestion import osv_offline
+        ecos = {e for (_n, e, _v) in items}
+        if not osv_offline.available(ecos):
+            return None
+        try:
+            hits = osv_offline.query_versioned_offline(items)
+        except Exception as off_exc:
+            log.warning("Offline OSV snapshot lookup failed: %s", off_exc)
+            return None
+        age = max((osv_offline.snapshot_age_days(e) for e in ecos), default=-1)
+        note = (f"Live vulnerability sources unreachable ({err_msg}) — results served from "
+                f"the OFFLINE OSV snapshot"
+                + (f" downloaded {age} day(s) ago" if age >= 0 else "")
+                + ". CVEs published since the snapshot are not reflected.")
+        return "osv-offline", hits, note
+
+    try:
+        return src, _query_one_source(src, items, timeout_s, xray_url, xray_auth), ""
+    except OsvUnavailable as primary_exc:
+        fb = (getattr(cfg, "vuln_fallback_source", "none") or "none").strip().lower()
+        if fb in ("none", "", src):
+            off = _offline_last_resort(str(primary_exc))
+            if off:
+                return off
+            raise
+        log.warning("Primary vuln source '%s' unavailable (%s) — falling back to '%s'",
+                    src, primary_exc, fb)
+        try:
+            hits = _query_one_source(fb, items, timeout_s, xray_url, xray_auth)
+        except OsvUnavailable as fb_exc:
+            off = _offline_last_resort(f"{src}: {primary_exc}; {fb}: {fb_exc}")
+            if off:
+                return off
+            raise OsvUnavailable(f"{src}: {primary_exc}; fallback {fb}: {fb_exc}") from fb_exc
+        note = (f"Primary vulnerability source '{src}' was unreachable — results served "
+                f"from fallback '{fb}'. Coverage may differ between sources.")
+        return fb, hits, note
+
+
 def scan_pom(pom_text: str, timeout_s: int = 15, resolve_parents: bool = True,
-             repo: str | None = None, auth: str | None = None) -> dict:
+             repo: str | None = None, auth: str | None = None,
+             vuln_source: str = "", xray_url: str = "", xray_auth: str = "") -> dict:
     """Parse pom.xml, resolve parent/BOM-managed versions (Spring Boot etc.), query
-    OSV for the resolved deps, and return a structured SCA result. `repo`/`auth`
-    (e.g. from the UI) override the MAVEN_REPO_URL / MAVEN_REPO_AUTH env."""
+    the selected vulnerability source (OSV or Xray) for the resolved deps, and
+    return a structured SCA result. `repo`/`auth` (e.g. from the UI) override the
+    MAVEN_REPO_URL / MAVEN_REPO_AUTH env."""
     deps = parse_pom_dependencies(pom_text)
     direct_keys = {f"{d['group']}:{d['artifact']}" for d in deps}
 
@@ -283,12 +373,22 @@ def scan_pom(pom_text: str, timeout_s: int = 15, resolve_parents: bool = True,
             log.warning("Transitive closure failed: %s", exc)
 
     scan_set = resolved + transitive
-    from ingestion.osv_client import query_versioned, OsvUnavailable
+    from ingestion.osv_client import OsvUnavailable
+    from ingestion import sca_cache
     items = [(f"{d['group']}:{d['artifact']}", "Maven", d["version"]) for d in scan_set]
-    osv_error = ""
+    _ck = sca_cache.cache_key(pom_text, "Maven", vuln_source)
+    osv_error, used_source, fb_note = "", "osv", ""
     try:
-        hits = query_versioned(items, timeout_s=timeout_s, raise_on_error=True) if items else {}
+        used_source, hits, fb_note = _vuln_lookup(items, timeout_s, vuln_source, xray_url, xray_auth) if items else ("osv", {}, "")
     except OsvUnavailable as exc:
+        # Layer-3 fallback: serve the LAST SUCCESSFUL scan of this exact manifest,
+        # clearly labelled stale, instead of an empty error.
+        cached, ts = sca_cache.load(_ck)
+        if cached:
+            return {**cached, "stale": True, "stale_from": ts, "osv_error": None,
+                    "stale_note": (f"Vulnerability database unreachable — showing the last successful "
+                                   f"scan from {sca_cache.age_label(ts)}. New CVEs since then are NOT "
+                                   f"reflected. ({exc})")}
         hits, osv_error = {}, str(exc)
 
     vulns: list[dict] = []
@@ -317,7 +417,7 @@ def scan_pom(pom_text: str, timeout_s: int = 15, resolve_parents: bool = True,
                    + (f", {n_trans} in BOM-managed/transitive" if n_trans else "")
                    + f") across {len(scan_set)} dependenc{'y' if len(scan_set)==1 else 'ies'} scanned"
                    + (f"; {len(unresolved)} still unresolved" if unresolved else ""))
-    return {
+    result = {
         "ecosystem": "Maven",
         "depth": "direct+transitive" if transitive else "direct",
         "dependencies_scanned": len(scan_set),
@@ -325,5 +425,10 @@ def scan_pom(pom_text: str, timeout_s: int = 15, resolve_parents: bool = True,
         "unresolved": [f"{d['group']}:{d['artifact']}" for d in unresolved],
         "vulnerabilities": vulns,
         "osv_error": osv_error or None,
+        "vuln_source": used_source,
+        "fallback_note": fb_note or None,
         "summary": summary,
     }
+    if not osv_error:
+        sca_cache.save(_ck, result)   # last-known-good for Layer-3 fallback
+    return result

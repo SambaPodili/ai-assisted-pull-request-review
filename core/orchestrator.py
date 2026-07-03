@@ -132,9 +132,26 @@ class ImpactAnalysisOrchestrator:
         """Synchronous entry point. Returns completed AnalysisReport."""
         try:
             cache = get_diff_cache()
-            cached = cache.get(request)
+            # force_reanalyse (UI "Re-analyse fresh") bypasses the cache lookup;
+            # the fresh result still refreshes the cache entry afterwards.
+            _force = bool((request.metadata or {}).get("force_reanalyse"))
+            if _force:
+                log.info("[%s] force_reanalyse — bypassing diff cache", request.request_id)
+            cached = None if _force else cache.get(request)
             if cached:
-                log.info("[%s] Cache HIT — returning cached report", request.request_id)
+                # RE-KEY the cached report to THIS request's id. The cached copy
+                # carries the ORIGINAL run's request_id — returning it as-is made
+                # the API save it under the OLD id while the client polls the NEW
+                # one → 404 forever ("2nd run of the same diff never completes").
+                # Also re-freeze the enforced gate: the cached payload loses the
+                # PrivateAttr gate on serialisation, silently reverting HOLD→APPROVE.
+                enforced_gate, enforced_risk = cached.gate_decision, cached.final_risk
+                cached = cached.model_copy(deep=True, update={"request_id": request.request_id,
+                                                              "from_cache": True})
+                object.__setattr__(cached, "_gate_decision", enforced_gate)
+                object.__setattr__(cached, "_final_risk", enforced_risk)
+                log.info("[%s] Cache HIT — returning cached report re-keyed to this run (gate=%s)",
+                         request.request_id, enforced_gate.value)
                 return cached
         except Exception as e:
             log.warning("[%s] Cache lookup failed (%s) — running fresh analysis", request.request_id, e)

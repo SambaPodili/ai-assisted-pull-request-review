@@ -11,7 +11,7 @@ export default class ErrorBoundary extends Component {
   }
 
   componentDidCatch(error, info) {
-    console.error('[CIAA ErrorBoundary]', error, info)
+    console.error('[CAR ErrorBoundary]', error, info)
   }
 
   render() {

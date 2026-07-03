@@ -52,12 +52,25 @@ def _ssl_context() -> ssl.SSLContext:
       OSV_VERIFY_SSL=false        → INSECURE: skip verification (last resort)
     Otherwise falls back to certifi's CA bundle, which fixes the common
     'unable to get local issuer certificate' error on macOS / minimal images."""
-    if os.getenv("OSV_VERIFY_SSL", "true").strip().lower() in ("false", "0", "no"):
+    # Read from Settings FIRST (honours .env, which pydantic does NOT push into
+    # os.environ), then fall back to os.getenv for plain exported env vars.
+    verify, ca = True, ""
+    try:
+        from config.settings import get_settings
+        _s = get_settings()
+        verify = bool(getattr(_s, "osv_verify_ssl", True))
+        ca = (getattr(_s, "osv_ca_bundle", "") or "").strip()
+    except Exception:
+        pass
+    if os.getenv("OSV_VERIFY_SSL", "").strip().lower() in ("false", "0", "no"):
+        verify = False
+    ca = (os.getenv("OSV_CA_BUNDLE", "").strip() or ca)
+
+    if not verify:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         return ctx
-    ca = os.getenv("OSV_CA_BUNDLE", "").strip()
     if ca:
         return ssl.create_default_context(cafile=ca)
     try:
@@ -65,6 +78,49 @@ def _ssl_context() -> ssl.SSLContext:
         return ssl.create_default_context(cafile=certifi.where())
     except Exception:
         return ssl.create_default_context()
+
+
+def _open_with_retries(open_fn, req, timeout_s, attempts=(0, 1.0, 3.0), label="vuln-db"):
+    """Layer-1 fallback: retry a network call briefly before declaring the source
+    down. Corporate proxies / Xray under load throw transient 5xx/timeouts all
+    the time — two quick retries eliminate most false 'outages' without hiding a
+    real one. Retries NETWORK errors only (URLError/OSError/timeouts)."""
+    import time as _t
+    last = None
+    for i, delay in enumerate(attempts):
+        if delay:
+            _t.sleep(delay)
+        try:
+            return open_fn(req, timeout_s)
+        except (urllib.error.URLError, OSError) as exc:
+            last = exc
+            if i < len(attempts) - 1:
+                log.warning("%s request failed (attempt %d/%d): %s — retrying",
+                            label, i + 1, len(attempts), exc)
+    raise last
+
+
+def _osv_urlopen(req, timeout_s):
+    """urlopen for OSV requests, routed through OSV_PROXY_URL when configured
+    (corporate forward proxy, e.g. http://proxy.bank.com:8080). Scoped to OSV
+    ONLY — internal Artifactory/Xray traffic must never go via the proxy.
+    Reads Settings first (honours .env), then the env var; blank → direct."""
+    proxy = ""
+    try:
+        from config.settings import get_settings
+        proxy = (getattr(get_settings(), "osv_proxy_url", "") or "").strip()
+    except Exception:
+        pass
+    proxy = os.getenv("OSV_PROXY_URL", "").strip() or proxy
+    ctx = _ssl_context()
+    if proxy:
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy, "https": proxy}),
+            urllib.request.HTTPSHandler(context=ctx),
+        )
+        return opener.open(req, timeout=timeout_s)
+    return urllib.request.urlopen(req, timeout=timeout_s, context=ctx)
+
 
 _LANG_TO_ECOSYSTEM: dict[str, str] = {
     "python":     "PyPI",
@@ -174,7 +230,7 @@ def _fetch_vuln_details(ids, timeout_s: int = 15) -> dict[str, dict]:
         def _one(vid):
             try:
                 req = urllib.request.Request(f"{_OSV_BASE}/v1/vulns/{vid}")
-                with urllib.request.urlopen(req, timeout=timeout_s, context=_ssl_context()) as r:
+                with _osv_urlopen(req, timeout_s) as r:
                     _vuln_cache[vid] = json.loads(r.read())
             except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
                 log.debug("OSV vuln detail fetch failed (%s): %s", vid, exc)
@@ -202,10 +258,10 @@ def query_versioned(
         headers={"Content-Type": "application/json"}, method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout_s, context=_ssl_context()) as resp:
+        with _open_with_retries(_osv_urlopen, req, timeout_s, label="OSV") as resp:
             data = json.loads(resp.read())
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
-        log.warning("OSV versioned query failed: %s", exc)
+        log.warning("OSV versioned query failed (after retries): %s", exc)
         if raise_on_error:
             raise OsvUnavailable(str(exc)) from exc
         return {}
@@ -254,7 +310,7 @@ def query_batch(
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=timeout_s, context=_ssl_context()) as resp:
+        with _osv_urlopen(req, timeout_s) as resp:
             data = json.loads(resp.read())
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
         log.warning("OSV batch query failed: %s", exc)
@@ -354,7 +410,7 @@ def fixed_version_for(
         headers={"Content-Type": "application/json"}, method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout_s, context=_ssl_context()) as resp:
+        with _osv_urlopen(req, timeout_s) as resp:
             data = json.loads(resp.read())
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
         log.warning("OSV fixed-version query failed for %s: %s", package, exc)

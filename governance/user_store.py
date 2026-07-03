@@ -213,7 +213,8 @@ def get_user_store():
     if _store is None:
         try:
             from config.settings import get_settings
-            path = getattr(get_settings(), "user_db_path", "") or DEFAULT_DB_PATH
+            _cfg = get_settings()
+            path = getattr(_cfg, "user_db_path", "") or _cfg.data_path("users.db")
             _store = SQLiteUserStore(path)
         except Exception as exc:
             log.warning("User store unavailable (%s) — using no-op", exc)

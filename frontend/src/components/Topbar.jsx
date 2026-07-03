@@ -36,7 +36,7 @@ export default function Topbar({ view, state, showView, dark, setDark }) {
         <BuildBadge state={state} />
 
         {/* Logged-in user + role — role is ALWAYS shown (falls back to the default
-            role when no CIAA key / skip-auth), so "what role am I?" is answerable
+            role when no CAR key / skip-auth), so "what role am I?" is answerable
             at a glance on every screen. Name appears when known. */}
         {(() => {
           const perms = state.ciaaPerms
@@ -45,7 +45,7 @@ export default function Topbar({ view, state, showView, dark, setDark }) {
           const name = perms?.name
           const tip = perms
             ? `${name||''}${perms.team?' · '+perms.team:''} — ${perms.description||roleLabel}`
-            : `Role: ${roleLabel} (no CIAA key configured — using the default role)`
+            : `Role: ${roleLabel} (no CAR key configured — using the default role)`
           return (
             <span style={{ display:'flex', alignItems:'center', gap:7 }} title={tip}>
               {name && (

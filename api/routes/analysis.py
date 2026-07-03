@@ -40,6 +40,12 @@ class _InFlight:
     """
     Thread-safe dict with TTL-based eviction so completed entries don't
     accumulate indefinitely in long-running processes.
+
+    WRITE-THROUGH to SQLite (<DATA_DIR>/run_status.db) with the owning PID, so
+    /status stays truthful across process restarts (uvicorn --reload killing a
+    run mid-flight), multiple workers, and mismatched code versions: a run whose
+    owning process died is reported as an explicit error instead of the client
+    polling 404s forever.
     """
     _TTL = 3600      # keep entries for 1 hour after completion
     _GC_INTERVAL = 300  # run GC every 5 minutes
@@ -49,22 +55,75 @@ class _InFlight:
         self._lock = threading.Lock()
         self._last_gc = time.monotonic()
 
+    # ── persistence (best-effort — a DB problem must never break requests) ─────
+    def _db(self):
+        import sqlite3, os
+        from config.settings import get_settings
+        cfg = get_settings()
+        path = (cfg.data_path("run_status.db") if hasattr(cfg, "data_path")
+                else os.path.join(getattr(cfg, "data_dir", "data") or "data", "run_status.db"))
+        conn = sqlite3.connect(path, timeout=2)
+        conn.execute("CREATE TABLE IF NOT EXISTS run_status ("
+                     "request_id TEXT PRIMARY KEY, status TEXT, pid INTEGER, updated REAL)")
+        return conn
+
+    def _persist(self, request_id: str, status: str) -> None:
+        try:
+            import os, time as _t
+            with self._db() as c:
+                c.execute("INSERT INTO run_status (request_id, status, pid, updated) "
+                          "VALUES (?,?,?,?) ON CONFLICT(request_id) DO UPDATE SET "
+                          "status=excluded.status, pid=excluded.pid, updated=excluded.updated",
+                          (request_id, status, os.getpid(), _t.time()))
+        except Exception:
+            pass
+
+    def _load(self, request_id: str) -> str | None:
+        try:
+            import os
+            with self._db() as c:
+                row = c.execute("SELECT status, pid FROM run_status WHERE request_id=?",
+                                (request_id,)).fetchone()
+            if not row:
+                return None
+            status, pid = row[0] or "", int(row[1] or 0)
+            if status.startswith("error") or status in ("done",):
+                return status                      # terminal — always valid
+            # queued/running: only meaningful if the owning process is alive.
+            alive = False
+            if pid:
+                try:
+                    os.kill(pid, 0)
+                    alive = True
+                except OSError:
+                    alive = False
+            if alive:
+                return status                      # another worker owns it — trust it
+            return ("error: the backend process (pid %d) that owned this run died or was "
+                    "restarted mid-analysis (auto-reload?) — re-run the analysis." % pid)
+        except Exception:
+            return None
+
     def set(self, request_id: str, status: str) -> None:
         expires = time.monotonic() + self._TTL
         with self._lock:
             self._data[request_id] = (status, expires)
             self._maybe_gc()
+        self._persist(request_id, status)
 
     def get(self, request_id: str) -> str | None:
         with self._lock:
             entry = self._data.get(request_id)
-            if entry is None:
-                return None
-            status, expires = entry
-            if time.monotonic() > expires:
-                del self._data[request_id]
-                return None
-            return status
+            if entry is not None:
+                status, expires = entry
+                if time.monotonic() > expires:
+                    del self._data[request_id]
+                    return None
+                return status
+        # Not in this process's memory → consult the shared DB (other worker /
+        # previous process). Returns an explicit dead-process error when the
+        # owner vanished, instead of None → 'unknown' → endless 404 polling.
+        return self._load(request_id)
 
     def _maybe_gc(self) -> None:
         now = time.monotonic()
@@ -93,6 +152,7 @@ class AnalyseRequest(BaseModel):
     llm_config:   dict[str, Any] = {}
     model_config_override: dict[str, Any] = {}
     deep_scan:    bool = False     # analyse ALL changed files in batches (no sampling)
+    force:        bool = False     # bypass the diff cache ("Re-analyse fresh")
 
     @field_validator("diff_text")
     @classmethod
@@ -137,6 +197,46 @@ async def submit_analysis(
 
     request_id = getattr(request.state, "request_id", None) or str(uuid.uuid4())
     hunks      = parse_diff(payload.diff_text) if payload.diff_text else []
+    # ALWAYS log what arrived — makes "agents didn't start" diagnosable from the
+    # console instead of guessing (empty diff? unparseable format? stale target?).
+    log.info("[%s] Analyse submitted — %s %s→%s | diff=%d bytes → %d hunk(s)",
+             request_id, getattr(payload.change_type, "value", payload.change_type),
+             payload.source_ref, payload.target_ref, len(payload.diff_text or ""), len(hunks))
+
+    # No changes between the selected refs → nothing to review. Stop here instead
+    # of spinning up ~22 agents on an empty diff (common for an up-to-date branch
+    # or an empty PR). The UI shows a clear "No diff found" instead of a report.
+    if not hunks:
+        if payload.diff_text and payload.diff_text.strip():
+            txt = payload.diff_text
+            # Diff arrived but produced ZERO hunks. Most common real-world cause:
+            # the change is METADATA-ONLY — renames, mode changes, or binary files
+            # (images/zips) — which have diff headers but no @@ hunks to analyse.
+            metadata_only = ("diff --git" in txt) and any(
+                m in txt for m in ("Binary files ", "rename from ", "similarity index",
+                                   "old mode ", "new file mode ", "deleted file mode "))
+            head = txt.strip()[:200].replace("\n", "\\n")
+            if metadata_only:
+                log.info("[%s] Diff is metadata-only (renames/binary/mode) — %d bytes, 0 hunks. head=%r",
+                         request_id, len(txt), head)
+                msg = ("This change contains only renames, file-mode changes or binary files "
+                       "(e.g. images/archives) — there is no analysable code diff, so no agents were run.")
+            else:
+                log.warning("[%s] Diff text present (%d bytes) but parsed to 0 hunks — "
+                            "parser/format issue? head=%r", request_id, len(txt), head)
+                msg = ("The diff was received but could not be parsed into hunks "
+                       "(unexpected diff format?) — no agents were run. "
+                       "Check the backend log for the diff head.")
+        else:
+            msg = "No code changes found between the selected branches / in this PR — nothing to analyse."
+        # Leave a terminal status so ANY client polling this id (e.g. an older UI
+        # build that doesn't know 'no_diff') gets a clear error from /status
+        # instead of polling 404s forever with "agents not starting".
+        _in_flight.set(request_id, f"error: {msg}")
+        log.info("[%s] No hunks (%s %s→%s) — analysis skipped, no agents run.",
+                 request_id, payload.change_type, payload.source_ref, payload.target_ref)
+        return {"request_id": request_id, "status": "no_diff", "message": msg}
+
     llm_cfg    = payload.llm_config or payload.model_config_override or {}
 
     req = AnalysisRequest(
@@ -146,7 +246,7 @@ async def submit_analysis(
         source_ref=payload.source_ref,
         target_ref=payload.target_ref,
         hunks=hunks,
-        metadata=payload.metadata,
+        metadata={**(payload.metadata or {}), **({"force_reanalyse": True} if payload.force else {})},
         model_config_=llm_cfg,
         deep_scan=bool(payload.deep_scan),
     )
@@ -205,6 +305,14 @@ async def submit_analysis(
                 report.diff_text = (payload.diff_text or "")[:500_000]
             except Exception:
                 pass
+            # Persist the PR number so 'Post to PR' / reviewer actions still work
+            # when the report is reopened from Insights (where selectedPR is gone).
+            try:
+                _pid = str((payload.metadata or {}).get("pr_id") or "").strip()
+                if _pid and getattr(report, "pr", None) is not None and not report.pr.pr_number:
+                    report.pr.pr_number = int(_pid)
+            except Exception:
+                pass
             store.save(report)
             _in_flight.set(request_id, "done")
             log.info("[%s] Analysis complete — gate=%s", request_id, report.gate_decision.value)
@@ -245,9 +353,50 @@ async def scan_pom_xml(request: Request):
     repo = request.headers.get("X-Maven-Repo-Url") or None
     auth = request.headers.get("X-Maven-Repo-Auth")
     try:
-        return scan_pom(data.decode("utf-8", "ignore"), repo=repo, auth=auth)
+        result = scan_pom(data.decode("utf-8", "ignore"), repo=repo, auth=auth,
+                          vuln_source=request.headers.get("X-Vuln-Source") or "",
+                          xray_url=request.headers.get("X-Xray-Url") or "",
+                          xray_auth=request.headers.get("X-Xray-Auth") or "")
+        _save_report_scan(request.headers.get("X-Request-Id"), "pom", result)
+        return result
     except ValueError as exc:
         raise HTTPException(422, detail=str(exc))
+
+
+def _save_report_scan(request_id: str | None, kind: str, result: dict) -> None:
+    """Persist an SCA scan against the report it was run for, so reopening the
+    report from Insights/History shows the scan instead of an empty tab."""
+    rid = (request_id or "").strip()
+    if not rid:
+        return
+    try:
+        from ingestion import sca_cache
+        sca_cache.save(f"report:{rid}:{kind}", result)
+    except Exception:
+        pass
+
+
+@router.get("/report/{request_id}/sca")
+def get_report_sca(request_id: str):
+    """Return the SCA scans previously run for this report (pom/nuget), or nulls."""
+    from ingestion import sca_cache
+    out = {}
+    for kind in ("pom", "nuget"):
+        result, ts = sca_cache.load(f"report:{request_id}:{kind}")
+        out[kind] = result
+        out[f"{kind}_saved_at"] = ts or None
+    return out
+
+
+@router.post("/sca/maven/test")
+async def test_maven_repo(request: Request):
+    """Test connectivity to the configured Maven repo (Artifactory/Nexus) — URL,
+    auth and TLS — without running a scan. URL/auth come from the UI headers
+    (Settings → Maven repository), falling back to env. Returns {ok, status, message}."""
+    from ingestion.pom_sca import test_connection
+    repo = request.headers.get("X-Maven-Repo-Url") or ""
+    auth = request.headers.get("X-Maven-Repo-Auth") or ""
+    return await asyncio.to_thread(test_connection, repo, auth)
 
 
 @router.post("/sca/nuget")
@@ -263,9 +412,25 @@ async def scan_nuget_manifest(request: Request):
     if not data:
         raise HTTPException(400, detail="Empty manifest.")
     try:
-        return scan_nuget(data.decode("utf-8", "ignore"))
+        result = scan_nuget(data.decode("utf-8", "ignore"),
+                            vuln_source=request.headers.get("X-Vuln-Source") or "",
+                            xray_url=request.headers.get("X-Xray-Url") or "",
+                            xray_auth=request.headers.get("X-Xray-Auth") or "")
+        _save_report_scan(request.headers.get("X-Request-Id"), "nuget", result)
+        return result
     except ValueError as exc:
         raise HTTPException(422, detail=str(exc))
+
+
+@router.post("/sca/xray/test")
+async def test_xray(request: Request):
+    """Test connectivity to JFrog Xray (system/ping) — URL, auth and TLS — before
+    selecting it as the vulnerability source. Returns {ok, status, message}."""
+    from ingestion.xray_client import test_connection
+    return await asyncio.to_thread(
+        test_connection,
+        request.headers.get("X-Xray-Url") or "",
+        request.headers.get("X-Xray-Auth") or "")
 
 
 @router.post("/docs/extract")
@@ -777,7 +942,7 @@ def _build_pr_description(report) -> str:
 
     lines += [
         "---",
-        f"*Generated by CIAA Impact Analyzer · Analysis ID: `{report.request_id}`*",
+        f"*Generated by Code Analysis & Review · Analysis ID: `{report.request_id}`*",
     ]
 
     return "\n".join(lines)

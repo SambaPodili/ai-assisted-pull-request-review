@@ -58,8 +58,8 @@ async function icon(Comp, color = "#0E1A33", size = 256) {
   const p = new pptxgen();
   p.defineLayout({ name: "W", width: W, height: H });
   p.layout = "W";
-  p.author = "CIAA";
-  p.title  = "CIAA — Code Impact & Analysis Agent";
+  p.author = "CAR";
+  p.title  = "CAR — Code Impact & Analysis Agent";
 
   // ── helpers ─────────────────────────────────────────────────────────────────
   const title = (s, t, col = C.ink, sub) => {
@@ -122,7 +122,7 @@ async function icon(Comp, color = "#0E1A33", size = 256) {
     s.addShape(p.shapes.OVAL, { x: 10.6 + (i % 3) * 0.62, y: 0.7 + Math.floor(i / 3) * 0.62, w: 0.16, h: 0.16, fill: { color: C.teal, transparency: 30 + i * 8 } });
   s.addShape(p.shapes.RECTANGLE, { x: 0, y: 0, w: 0.18, h: H, fill: { color: C.teal } });
   eyebrow(s, "Enterprise AI Code Governance", C.teal, MX, 1.7, 9);
-  s.addText("CIAA", { x: MX, y: 2.05, w: 11, h: 1.0, fontFace: HF, fontSize: 60, bold: true, color: C.light, margin: 0 });
+  s.addText("CAR", { x: MX, y: 2.05, w: 11, h: 1.0, fontFace: HF, fontSize: 60, bold: true, color: C.light, margin: 0 });
   s.addText("Code Impact & Analysis Agent", { x: MX, y: 3.15, w: 11.5, h: 0.7, fontFace: HF, fontSize: 28, color: C.ice, margin: 0 });
   s.addText("An AI multi-agent framework for Pull-Request review and code-impact analysis —\nbuilt to catch production issues before they merge.",
     { x: MX, y: 3.95, w: 10.5, h: 0.9, fontFace: BF, fontSize: 15, color: "AAB7D4", margin: 0, lineSpacingMultiple: 1.1 });
@@ -290,7 +290,7 @@ async function icon(Comp, color = "#0E1A33", size = 256) {
   leftCol(s, C.indigo,
     "Taint analysis tracks data from where it enters the system to where it is used, following it through assignments and method calls.",
     ["SQL / command / LDAP injection", "Cross-site scripting (XSS)", "Path traversal & SSRF", "Any unsanitised value reaching a sensitive sink"],
-    "Most high-severity breaches are a tainted value reaching a dangerous sink. CIAA shows the exact source → sink path with its CWE.");
+    "Most high-severity breaches are a tainted value reaching a dangerous sink. CAR shows the exact source → sink path with its CWE.");
   dpanel(s);
   { const bx = RX + 0.55, bw = RW - 1.1, cxp = RX + RW / 2;
     flowBox(s, bx, 2.35, bw, 1.05, C.green,  "①  SOURCE",       'request.getParameter("id")', "untrusted user input");
@@ -304,7 +304,7 @@ async function icon(Comp, color = "#0E1A33", size = 256) {
   eyebrow(s, "Deep dive · Technique", C.blue);
   title(s, "AST Analysis — understanding code structure");
   leftCol(s, C.blue,
-    "Tree-sitter parses source into a real syntax tree (Java, Kotlin, C#, JS/TS, Go — plus Python via stdlib ast), which CIAA walks to measure exact complexity without executing the code.",
+    "Tree-sitter parses source into a real syntax tree (Java, Kotlin, C#, JS/TS, Go — plus Python via stdlib ast), which CAR walks to measure exact complexity without executing the code.",
     ["Unreachable / dead code", "Null-dereference & none-type risk", "Type confusion / unsafe casts", "Complexity & deep-nesting hot-spots"],
     "Catches latent bugs a regex linter can't see, because it reasons over structure — not just text.");
   dpanel(s);
@@ -382,7 +382,7 @@ async function icon(Comp, color = "#0E1A33", size = 256) {
   eyebrow(s, "Deep dive · Technique", C.teal);
   title(s, "Blast Radius — how far a change ripples");
   leftCol(s, C.teal,
-    "CIAA walks the service-dependency graph (NetworkX / Neo4j) — or derives it from real signals — to find everything that transitively depends on what you changed.",
+    "CAR walks the service-dependency graph (NetworkX / Neo4j) — or derives it from real signals — to find everything that transitively depends on what you changed.",
     ["Directly & transitively affected services", "Shared-library edits with wide fan-out", "Breaking changes that amplify reach", "A 0–100 reach score with a breakdown"],
     "Tells reviewers and release managers how risky a merge is, and which teams to involve — before it ships.");
   dpanel(s);
@@ -488,7 +488,7 @@ async function icon(Comp, color = "#0E1A33", size = 256) {
     ["On-prem / self-hosted LLM (Bitbucket Server)", "◐", "●"],
   ];
   const mark = (v) => v === "●" ? yes : v === "—" ? no : v === "◐" ? part : { text: "●", options: { color: C.muted, bold: true } };
-  const table = [[hdr("Capability"), cellH("Traditional SAST"), cellH("CIAA")]];
+  const table = [[hdr("Capability"), cellH("Traditional SAST"), cellH("CAR")]];
   rows.forEach((r, i) => {
     const fill = i % 2 ? "EEF2F8" : "FFFFFF";
     table.push([
@@ -585,7 +585,7 @@ async function icon(Comp, color = "#0E1A33", size = 256) {
   // ════════════════ SLIDE — ROADMAP ════════════════
   s = mkSlide(); s.background = { color: C.light };
   eyebrow(s, "Roadmap", C.teal);
-  title(s, "Where CIAA goes next");
+  title(s, "Where CAR goes next");
   s.addText("Detection quality is production-grade today — the roadmap scales it to an organisation-wide platform.",
     { x: MX, y: 1.38, w: W - 2 * MX, h: 0.4, fontFace: BF, fontSize: 13, color: C.muted, margin: 0 });
 
@@ -734,7 +734,7 @@ async function icon(Comp, color = "#0E1A33", size = 256) {
       ["C3", "Risk prediction model", "Learn from change history + incident outcomes to predict defect probability per file as a first-class gate signal", "Advanced AI"],
       ["C4", "Generated-test execution", "Compile and run the QA agent's test skeletons in a sandbox — close the loop from “should test X” to “X was tested”", "Advanced AI"],
       ["C5", "Shadow mode & A/B prompts", "Run candidate prompts/models silently beside production; promote only when the judge panel + golden gate confirm improvement", "Advanced AI"],
-      ["C6", "IDE inline feedback", "CIAA findings in VS Code / IntelliJ at commit time — issues caught before the PR even opens", "Advanced AI"],
+      ["C6", "IDE inline feedback", "CAR findings in VS Code / IntelliJ at commit time — issues caught before the PR even opens", "Advanced AI"],
     ],
     { Efficiency: C.blue, "Advanced AI": C.amber }, "Theme",
     "⭐ = quick win. Efficiency items compound: routing + caching + tiering apply to every analysis the org runs.");
@@ -742,7 +742,7 @@ async function icon(Comp, color = "#0E1A33", size = 256) {
   // ── Roadmap E/F/G: platform front (vs SonarQube & Veracode) ──
   roadmapTable(
     "Roadmap · Detail 3 of 3", "Platform front — parity with SonarQube & Veracode",
-    "Program-management features that turn CIAA from a PR checker into an org-wide code-quality platform. Detection stays our edge.",
+    "Program-management features that turn CAR from a PR checker into an org-wide code-quality platform. Detection stays our edge.",
     [
       ["E1", "Baseline scan + new-code mode", "Scan the whole repo once as a baseline; judge PRs only on NEW code while tracking legacy debt separately", "Clean as You Code"],
       ["E2", "Quality profiles / rule manager", "Enable/disable rules, adjust severities and define custom regex/AST rules per repo or team — from the UI", "Quality Profiles"],
@@ -767,7 +767,7 @@ async function icon(Comp, color = "#0E1A33", size = 256) {
   s = mkSlide(); s.background = { color: C.navy };
   s.addShape(p.shapes.RECTANGLE, { x: 0, y: 0, w: W, h: 0.18, fill: { color: C.teal } });
   s.addText("Catch production issues before they merge", { x: MX, y: 2.25, w: W - 2 * MX, h: 1.1, fontFace: HF, fontSize: 36, bold: true, color: C.light, align: "center", margin: 0 });
-  s.addText("CIAA turns every Pull Request into a deep, consistent, evidence-backed review —\ncombining real impact analysis with a deterministic merge gate, at PR scale.",
+  s.addText("CAR turns every Pull Request into a deep, consistent, evidence-backed review —\ncombining real impact analysis with a deterministic merge gate, at PR scale.",
     { x: 1.5, y: 3.55, w: W - 3.0, h: 1.0, fontFace: BF, fontSize: 15, color: C.ice, align: "center", margin: 0, lineSpacingMultiple: 1.15 });
   const tags = ["Deep PR Review", "Real Impact Analysis", "Deterministic Governance"];
   let tcx = (W - (tags.reduce((a, t) => a + 0.5 + t.length * 0.11, 0) + (tags.length - 1) * 0.25)) / 2;
@@ -778,6 +778,6 @@ async function icon(Comp, color = "#0E1A33", size = 256) {
     tcx += wt + 0.25;
   });
 
-  await p.writeFile({ fileName: "/Users/samba/Documents/CIAA/impact-analyzer-2/deck/CIAA_Overview.pptx" });
-  console.log("WROTE deck/CIAA_Overview.pptx");
+  await p.writeFile({ fileName: "/Users/samba/Documents/CAR/impact-analyzer-2/deck/CAR_Overview.pptx" });
+  console.log("WROTE deck/CAR_Overview.pptx");
 })();

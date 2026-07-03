@@ -15,12 +15,15 @@ function buildAnalysisTarget(state) {
 }
 
 async function fetchRealDiff(state, target) {
+  // Returns { diff, error }. A FAILED fetch (429 rate limit, auth, network) must
+  // not be silently treated as an EMPTY diff — that submits '' to the backend,
+  // which short-circuits no_diff and looks like "agents not starting".
   try {
     const slug = repoName(state.primaryRepo)
     const body = { cfg: gitCfg(state), change_type: target.changeType, repo_slug: slug, source: target.source||'', target: target.target||'', pr_id: target.meta?.pr_id||'' }
     const d = await backendPost(state, '/api/v1/git/diff', body)
-    return d.diff || ''
-  } catch (e) { console.warn('Diff fetch failed:', e.message); return '' }
+    return { diff: d.diff || '', error: '' }
+  } catch (e) { console.warn('Diff fetch failed:', e.message); return { diff: '', error: e.message || 'diff fetch failed' } }
 }
 
 // Candidate paths of the test file(s) that would cover a given source file.
@@ -174,6 +177,7 @@ function RunningView({ state, update, showToast }) {
   const [diffInfo, setDiffInfo] = useState('')
   const [xrefInfo, setXrefInfo] = useState('')
   const [simHint, setSimHint] = useState('')
+  const [noDiff, setNoDiff] = useState(false)
   const target = useRef(buildAnalysisTarget(state))
   const startTime = useRef(Date.now())
   const aborted = useRef(false)
@@ -199,7 +203,16 @@ function RunningView({ state, update, showToast }) {
 
     setAgentStatus('Fetching diff…')
     setProgress(5)
-    const diffText = await fetchRealDiff(state, tgt)
+    const { diff: diffText, error: diffError } = await fetchRealDiff(state, tgt)
+    // A FAILED diff fetch (rate limit / auth / network) must stop the run — never
+    // submit an empty diff for a change that really has one.
+    if (diffError && !diffText && state.backendUrl) {
+      setAgentStatus('Diff fetch failed'); setProgress(100)
+      setNoDiff(true)
+      setProgressLabel(`Could not fetch the diff from your Git provider: ${diffError}. `
+        + 'Wait a few seconds and retry (rate limit), or check the token/permissions. No agents were run.')
+      return
+    }
     update({ diffText: diffText||'' })
     const diffLines = diffText ? diffText.split('\n').length : 0
     const diffKb = diffText ? Math.round(diffText.length/1024) : 0
@@ -241,6 +254,7 @@ function RunningView({ state, update, showToast }) {
           source_ref: tgt.source, target_ref: tgt.target, change_type: tgt.changeType,
           diff_text: diffText,
           deep_scan: !!state.deepScan,
+          force: !!state.forceFresh,   // "Re-analyse fresh" — bypass the diff cache
           llm_config: { provider:state.modelProvider, model:state.modelName, api_key:state.modelApiKey, base_url:state.modelBaseUrl, api_version:state.modelApiVer },
           metadata: { provider:state.provider, connected_repos:state.connectedRepos.map(repoName), diff_lines:diffLines,
             // ELK telemetry user_id = the logged-in Bitbucket user (mapped slug,
@@ -256,8 +270,16 @@ function RunningView({ state, update, showToast }) {
         const submitResp = await fetch(state.backendUrl+'/api/v1/analyse', { method:'POST', headers, body:JSON.stringify(payload) })
         if (submitResp.status===401) throw new Error('Backend 401 — set SKIP_AUTH=true in .env')
         if (!submitResp.ok) throw new Error(`Backend error ${submitResp.status}`)
-        const { request_id: rid } = await submitResp.json()
-        update({ lastRequestId: rid })
+        const submitJson = await submitResp.json()
+        // No changes between the selected refs → stop. Don't poll, don't fall back
+        // to simulation — show a clear "No diff found" instead of an empty report.
+        if (submitJson.status === 'no_diff') {
+          setNoDiff(true); setProgress(100)
+          setAgentStatus('No diff found'); setProgressLabel(submitJson.message || 'No code changes to analyse.')
+          return
+        }
+        const rid = submitJson.request_id
+        update({ lastRequestId: rid, forceFresh: false })   // force is one-shot
         setAgentStatus('Agents running…'); setProgress(15)
 
         let lastProg = {}
@@ -280,6 +302,7 @@ function RunningView({ state, update, showToast }) {
 
         let report = null
         let netFails = 0
+        let unknownCount = 0             // consecutive 'unknown' status responses
         let runningSince = null          // ms when the backend actually started running
         const QUEUE_MAX_MS = 15*60*1000  // tolerate up to 15 min waiting in the queue
         const RUN_MAX_MS   = 12*60*1000  // up to 12 min of actual processing
@@ -300,7 +323,27 @@ function RunningView({ state, update, showToast }) {
               continue   // do NOT count queue time against the processing timeout
             }
             if (s.startsWith('error')) throw new Error('Backend: '+s.replace(/^error:\s*/,''))
+            // 'unknown' means the backend has NO record of this run — it restarted
+            // (uvicorn --reload killed mid-run) or a different worker is answering.
+            // Fail fast with the real cause instead of silently polling for 12 min.
+            if (s === 'unknown') {
+              unknownCount++
+              if (unknownCount >= 8) throw new Error(
+                'The backend lost this run — it likely RESTARTED right after submit '
+                + '(uvicorn --reload / auto-reload kills in-flight analyses) or is running '
+                + 'multiple workers. Disable --reload / set workers=1, restart the backend, and re-run.')
+              continue
+            }
+            unknownCount = 0
             if (runningSince === null) runningSince = Date.now()
+
+            // Still processing → poll status only (progress comes from the separate
+            // /progress timer). Skip the heavy full-report fetch until it's done, so
+            // a long run doesn't hammer the backend (and rate-limit itself).
+            if (s === 'running') {
+              if (Date.now()-runningSince > RUN_MAX_MS) throw new Error('Timed out while the backend was processing. Check the model API key (Configure → AI Model) and that the backend isn’t rate-limited.')
+              continue
+            }
 
             const poll = await fetch(state.backendUrl+'/api/v1/report/'+rid+'?fmt=full', {headers})
             netFails = 0
@@ -375,6 +418,25 @@ function RunningView({ state, update, showToast }) {
     const history = saveHistory(mockReport, tgt, state)
     update({ report: mockReport, history, analysisRequested: false })
   }
+
+  if (noDiff) return (
+    <div style={{maxWidth:640,margin:'40px auto',padding:'20px 0'}}>
+      <div className="card" style={{textAlign:'center',padding:'34px 28px'}}>
+        <div style={{width:54,height:54,margin:'0 auto 14px',borderRadius:'50%',background:'#eef4ff',display:'flex',alignItems:'center',justifyContent:'center'}}>
+          <i className="ti ti-git-compare" style={{fontSize:26,color:'#1a6cf6'}}/>
+        </div>
+        <div style={{fontSize:20,fontWeight:700,color:'#0d1117',marginBottom:6}}>
+          {(progressLabel||'').startsWith('Could not fetch') ? 'Diff fetch failed' : 'No diff found'}
+        </div>
+        <div style={{fontSize:13.5,color:'#7a8494',lineHeight:1.6,marginBottom:18}}>
+          {progressLabel || 'No code changes between the selected branches / in this PR — nothing to analyse.'}
+        </div>
+        <button className="btn btn-primary" onClick={()=>update({ analysisRequested:false, report:null })}>
+          <i className="ti ti-target"/> Choose a different target
+        </button>
+      </div>
+    </div>
+  )
 
   return (
     <div style={{maxWidth:700,margin:'0 auto',padding:'20px 0'}}>
@@ -479,7 +541,7 @@ function UnvBadge({ f }) {
     <i className="ti ti-map-pin-off" style={{fontSize:11,marginRight:3}}/>location unverified</span>
 }
 
-// "Tune CIAA" feedback control — distinct in INTENT from the workflow triage in
+// "Tune CAR" feedback control — distinct in INTENT from the workflow triage in
 // Top Issues. This does NOT decide the PR; it feeds the suppression loop so a
 // noisy check surfaces in Insights / stops being flagged for this repo over
 // future runs. Same segmented LOOK as the workflow control (visual consistency)
@@ -519,7 +581,7 @@ function FindingFeedback({ r, agent, category='', file='' }) {
   return (
     <span style={{display:'inline-flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
       <span style={{fontSize:10,color:'#9fadbf',textTransform:'uppercase',letterSpacing:.4}}
-        title="Tunes CIAA for FUTURE runs (suppression) — separate from the PR review decision in Top Issues.">Tune CIAA:</span>
+        title="Tunes CAR for FUTURE runs (suppression) — separate from the PR review decision in Top Issues.">Tune CAR:</span>
       <div style={{display:'inline-flex',borderRadius:8,overflow:'hidden',border:'1px solid #e3e7ee'}}>
         <button type="button" disabled={busy} onClick={()=>send('valid')}
           title="This check was useful — keep surfacing it"
@@ -527,7 +589,7 @@ function FindingFeedback({ r, agent, category='', file='' }) {
           onMouseEnter={e=>{if(!busy)e.currentTarget.style.background='#16653412'}}
           onMouseLeave={e=>{e.currentTarget.style.background='#fff'}}>👍 Useful</button>
         <button type="button" disabled={busy} onClick={()=>send('false_positive')}
-          title="Noisy or irrelevant here — teach CIAA to stop flagging it for this repo. Does NOT change this PR's decision."
+          title="Noisy or irrelevant here — teach CAR to stop flagging it for this repo. Does NOT change this PR's decision."
           style={seg('#9a3412',true)}
           onMouseEnter={e=>{if(!busy)e.currentTarget.style.background='#9a341212'}}
           onMouseLeave={e=>{e.currentTarget.style.background='#fff'}}>🔇 Mute this check</button>
@@ -576,7 +638,7 @@ function triageKey({ agent, file = '', line = '', title = '' }) {
 
 // Formal dev→reviewer validation controls for a SINGLE finding on any agent tab.
 // Same workflow as Top Issues (✓Valid/⚐False-positive → ✓Confirm/✗Reject, stage-
-// gated, sharing one session). Falls back to the lightweight "teach CIAA" feedback
+// gated, sharing one session). Falls back to the lightweight "teach CAR" feedback
 // when there's no backend/request to drive the workflow (e.g. offline demo).
 function FindingTriage({ r, agent, title = '', file = '', line = '', severity = '', category = '' }) {
   const { state } = useApp()
@@ -642,6 +704,35 @@ function FindingTriage({ r, agent, title = '', file = '', line = '', severity = 
 //  deterministic "why" reasons now live solely in the persistent top gate banner,
 //  so the gate isn't repeated inside the Summary persona views.)
 
+// Per-domain pass/warn/fail rollup — shared by the Reviewer headline (fail
+// reasons) and the "Domain status at a glance" card.
+function domainStatusFor(r) {
+  return [
+    ['Security',(r.security?.findings||[]).some(f=>['critical','high'].includes((f.severity||'').toLowerCase()))||r.security?.secrets_detected?'fail':'pass'],
+    ['Privacy',(r.data_privacy?.unencrypted_pii_count||0)>0?'fail':'pass'],
+    ['Performance',r.performance_impact?.has_db_risk||r.performance_impact?.has_complexity_regression?'warn':'pass'],
+    ['API',(r.interface?.breaking_changes||[]).length?'fail':'pass'],
+    ['Schema',r.schema_change?.has_destructive||r.schema_change?.has_irreversible?'fail':'pass'],
+    ['Tests',((r.test_coverage?.untested_functions?.length||r.test_coverage?.uncovered_paths?.length||0)>0)?'warn':'pass'],
+    ['Licence',r.license_compliance?.has_copyleft?'fail':'pass'],
+  ]
+}
+
+function DomainStatusCard({ r }) {
+  const stColor={pass:['#f0fdf4','#166534','✅'],warn:['#fffbeb','#92400e','⚠️'],fail:['#fff1f2','#991b1b','❌']}
+  return (
+    <div className="card">
+      <div className="section-heading"><i className="ti ti-layout-grid"/>Domain status at a glance</div>
+      <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+        {domainStatusFor(r).map(([d,st])=>{
+          const c=stColor[st]
+          return <div key={d} style={{background:c[0],color:c[1],border:`1px solid ${c[1]}33`,borderRadius:8,padding:'6px 12px',fontSize:12,fontWeight:600}}>{c[2]} {d}</div>
+        })}
+      </div>
+    </div>
+  )
+}
+
 function SummaryTab({r, snipCache, state, showToast}) {
   const [persona, setPersona] = useState(null)
   const effectivePersona = persona || (canOverrideGate({ciaaPerms:r._ciaaPerms}) ? 'reviewer' : 'developer')
@@ -670,6 +761,8 @@ function SummaryTab({r, snipCache, state, showToast}) {
         </div>
       )}
       <LlmCoverageBanner r={r}/>
+      {/* Reviewer: domain rollup FIRST — the 5-second overview before the plan */}
+      {effectivePersona==='reviewer' && <DomainStatusCard r={r}/>}
       <ReviewPlanCard r={r}/>
       <TopIssues r={r} persona={effectivePersona} state={state} showToast={showToast}/>
       {effectivePersona==='developer' ? <DeveloperView r={r} findings={findings} blockers={blockers} fixes={fixes} scenarios={scenarios}/> : <ReviewerView r={r} findings={findings}/>}
@@ -967,32 +1060,23 @@ function DeveloperView({r, findings, blockers, fixes, scenarios}) {
       <Headline {...dh}/>
       <div className="card">
         <div className="section-heading"><i className="ti ti-code"/>What you changed</div>
-        <p style={{fontSize:13,marginBottom:8}}>{r.code_analysis?.summary||'No summary available.'}</p>
+        {(()=>{
+          // Render the change summary as bullet points (one per sentence) instead
+          // of a wall-of-text paragraph; falls back to a paragraph when short.
+          const pts=(r.code_analysis?.summary||'').split(/(?<=[.!?])\s+(?=[A-Z`"'(])/).map(s=>s.trim()).filter(Boolean)
+          return pts.length>1
+            ? <ul style={{margin:'0 0 10px 18px',padding:0,fontSize:13,lineHeight:1.75,color:'#3d4652'}}>{pts.map((s,i)=><li key={i} style={{marginBottom:3}}>{s}</li>)}</ul>
+            : <p style={{fontSize:13,marginBottom:8}}>{pts[0]||'No summary available.'}</p>
+        })()}
         <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
           <span className="badge badge-dim">{r.code_analysis?.change_type||'unknown'}</span>
           <span className={`badge ${(r.code_analysis?.complexity_delta||0)>0?'badge-amber':'badge-dim'}`}>complexity {(r.code_analysis?.complexity_delta||0)>0?'+':''}{r.code_analysis?.complexity_delta||0}</span>
           {(r.test_coverage?.uncovered_paths?.length||0)>0 && <span className="badge badge-amber">{r.test_coverage.uncovered_paths.length} test gap(s)</span>}
         </div>
       </div>
-      <div className="card">
-        <div className="section-heading" style={{color:blockers.length?'#b91c1c':'#166534'}}>
-          <i className={`ti ${blockers.length?'ti-alert-triangle':'ti-circle-check'}`}/>
-          {blockers.length?`Fix before requesting review (${blockers.length})`:'No blockers — looks good to submit'}
-        </div>
-        {blockers.length ? (
-          <div style={{display:'flex',flexDirection:'column',gap:8}}>
-            {blockers.slice(0,12).map((f,i)=>(
-              <div key={i} style={{display:'flex',alignItems:'flex-start',gap:10,padding:'9px 12px',border:'1px solid #f0f2f5',borderRadius:8}}>
-                <SevChip sev={f.severity}/>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:13,color:'#1a2332'}}>{f.message}</div>
-                  <div style={{fontSize:11,color:'#9fadbf'}}>{f.category}{f.file?` · ${f.file}${f.line?':'+f.line:''}`:''}</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : <div style={{fontSize:13,color:'#7a8494'}}>No critical or high-severity findings. Address any medium/low items in the domain tabs if relevant.</div>}
-      </div>
+      {/* ("Fix before requesting review" card removed — it duplicated the
+          Top Issues triage list above, which carries the same blockers with
+          per-issue verdict/comment controls. The headline keeps the count.) */}
       {fixes.length>0&&<div className="card"><div className="section-heading"><i className="ti ti-tool"/>Suggested fixes</div><ol style={{margin:'0 0 0 18px',fontSize:13,lineHeight:1.9,color:'#3d4652'}}>{fixes.slice(0,6).map((f,i)=><li key={i}>{f}</li>)}</ol></div>}
       {scenarios.length>0&&<div className="card"><div className="section-heading"><i className="ti ti-test-pipe"/>Tests to add / run ({scenarios.length})</div><div style={{display:'flex',flexDirection:'column',gap:6}}>{scenarios.slice(0,6).map((s,i)=><div key={i} style={{fontSize:13,color:'#3d4652'}}>☐ {s.title||s.description||''} {s.priority&&<span style={{fontSize:10,color:'#9fadbf'}}>[{s.priority}]</span>}</div>)}</div></div>}
       <SimilarPRs r={r}/>
@@ -1003,16 +1087,7 @@ function DeveloperView({r, findings, blockers, fixes, scenarios}) {
 function ReviewerView({r, findings}) {
   const crit=findings.filter(f=>f.severity==='critical').length
   const high=findings.filter(f=>f.severity==='high').length
-  const domainStatus=[
-    ['Security',(r.security?.findings||[]).some(f=>['critical','high'].includes((f.severity||'').toLowerCase()))||r.security?.secrets_detected?'fail':'pass'],
-    ['Privacy',(r.data_privacy?.unencrypted_pii_count||0)>0?'fail':'pass'],
-    ['Performance',r.performance_impact?.has_db_risk||r.performance_impact?.has_complexity_regression?'warn':'pass'],
-    ['API',(r.interface?.breaking_changes||[]).length?'fail':'pass'],
-    ['Schema',r.schema_change?.has_destructive||r.schema_change?.has_irreversible?'fail':'pass'],
-    ['Tests',((r.test_coverage?.untested_functions?.length||r.test_coverage?.uncovered_paths?.length||0)>0)?'warn':'pass'],
-    ['Licence',r.license_compliance?.has_copyleft?'fail':'pass'],
-  ]
-  const stColor={pass:['#f0fdf4','#166534','✅'],warn:['#fffbeb','#92400e','⚠️'],fail:['#fff1f2','#991b1b','❌']}
+  const domainStatus=domainStatusFor(r)
   const affected=r.dependency?.affected_services||[]
   const blast=r.dependency?.blast_radius_score||0
   const refs=r.reference_impact?.total_references||0
@@ -1038,15 +1113,8 @@ function ReviewerView({r, findings}) {
   return (
     <div>
       <Headline {...rh}/>
-      <div className="card">
-        <div className="section-heading"><i className="ti ti-layout-grid"/>Domain status at a glance</div>
-        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-          {domainStatus.map(([d,st])=>{
-            const c=stColor[st]
-            return <div key={d} style={{background:c[0],color:c[1],border:`1px solid ${c[1]}33`,borderRadius:8,padding:'6px 12px',fontSize:12,fontWeight:600}}>{c[2]} {d}</div>
-          })}
-        </div>
-      </div>
+      {/* (Domain-status card moved to the top of the Reviewer view, above the
+          Review Plan — rendered by SummaryTab as DomainStatusCard.) */}
       {(r.capabilities_affected||[]).length>0 && (
         <div className="card">
           <div className="section-heading"><i className="ti ti-affiliate"/>Business capabilities affected</div>
@@ -1280,12 +1348,14 @@ function DependencyTab({r}) {
 }
 
 const SCA_MAVEN = {
+  kind:'pom',
   endpoint:'/api/v1/sca/pom', title:'Maven dependency scan (SCA)', buttonLabel:'Upload pom.xml',
   accept:'.xml,application/xml,text/xml',
   hint:'Upload this repo’s <code>pom.xml</code> to check declared dependencies against OSV for known CVEs. Works on any branch — no lockfile or CI needed. <strong>Direct dependencies only</strong> (Maven has no lockfile for transitive resolution).',
   unresolvedNote:'managed by a parent POM/BOM — not resolvable from this pom alone',
 }
 const SCA_NUGET = {
+  kind:'nuget',
   endpoint:'/api/v1/sca/nuget', title:'NuGet (.NET) dependency scan (SCA)', buttonLabel:'Upload .csproj / packages.config',
   accept:'.csproj,.config,.props,.xml,application/xml,text/xml',
   hint:'Upload a <code>.csproj</code>, <code>packages.config</code>, or <code>Directory.Packages.props</code> to check NuGet dependencies against OSV for known CVEs. <strong>Direct dependencies only</strong>.',
@@ -1295,6 +1365,22 @@ const SCA_NUGET = {
 function ScaScanner({ report, cfg }) {
   const { state } = useApp()
   const [data,setData]=useState(null); const [err,setErr]=useState(''); const [loading,setLoading]=useState(false)
+
+  // Reload the scan previously run for THIS report (persisted server-side in
+  // sca_cache keyed by request_id) — so reopening from Insights/History shows
+  // the result instead of an empty tab.
+  const reqId = report?.request_id
+  useEffect(()=>{
+    if(!reqId || !state.backendUrl) return
+    let alive = true
+    const h = {}; if(state.backendKey)h['X-API-Key']=state.backendKey
+    fetch(`${state.backendUrl}/api/v1/report/${reqId}/sca`,{headers:h})
+      .then(r=>r.ok?r.json():null)
+      .then(d=>{ if(alive && d && d[cfg.kind]) setData(d[cfg.kind]) })
+      .catch(()=>{})
+    return ()=>{ alive=false }
+  },[reqId])
+
   async function scan(text){
     if(!state.backendUrl){setErr('Configure a Backend URL in Settings to run the scan.');return}
     setLoading(true);setErr('');setData(null)
@@ -1302,6 +1388,11 @@ function ScaScanner({ report, cfg }) {
       const h={'Content-Type':'application/xml'}; if(state.backendKey)h['X-API-Key']=state.backendKey
       if(state.mavenRepoUrl)h['X-Maven-Repo-Url']=state.mavenRepoUrl
       if(state.mavenRepoAuth)h['X-Maven-Repo-Auth']=state.mavenRepoAuth
+      // Vulnerability source selection (Settings → Vulnerability database)
+      if(state.vulnSource)h['X-Vuln-Source']=state.vulnSource
+      if(state.vulnSource==='xray'&&state.xrayUrl)h['X-Xray-Url']=state.xrayUrl
+      if(state.vulnSource==='xray'&&state.xrayAuth)h['X-Xray-Auth']=state.xrayAuth
+      if(reqId)h['X-Request-Id']=reqId   // persist the scan against this report
       const r=await fetch(`${state.backendUrl}${cfg.endpoint}`,{method:'POST',headers:h,body:text})
       const d=await r.json().catch(()=>({}))
       if(!r.ok) throw new Error(d.detail||('HTTP '+r.status))
@@ -1320,8 +1411,16 @@ function ScaScanner({ report, cfg }) {
       {err&&<div className="info-msg" style={{marginTop:10}}><i className="ti ti-alert-circle"/>{err}</div>}
       {data&&(
         <div style={{marginTop:12}}>
+          {data.stale_note && (
+            <div className="info-msg" style={{marginBottom:8,background:'#fffbeb',borderColor:'#fcd34d',color:'#92400e'}}>
+              <i className="ti ti-history"/> <strong>Stale result</strong> — {data.stale_note}
+            </div>)}
+          {data.fallback_note && (
+            <div className="info-msg" style={{marginBottom:8,background:'#f3f7ff',borderColor:'#cfe0ff',color:'#1e3a8a'}}>
+              <i className="ti ti-arrows-shuffle"/> {data.fallback_note}
+            </div>)}
           {data.osv_error
-            ? <div className="info-msg" style={{marginBottom:8,background:'#fffbeb',borderColor:'#fcd34d',color:'#92400e'}}><i className="ti ti-alert-triangle"/> Could not reach the OSV vulnerability database — <strong>this scan did not run</strong> (not “no vulnerabilities”). Check network access to api.osv.dev, or set <code>OSV_CA_BUNDLE</code> / <code>OSV_VERIFY_SSL</code> / <code>OSV_BASE_URL</code> in the backend .env.</div>
+            ? <div className="info-msg" style={{marginBottom:8,background:'#fffbeb',borderColor:'#fcd34d',color:'#92400e'}}><i className="ti ti-alert-triangle"/> Could not reach the vulnerability database — <strong>this scan did not run</strong> (not “no vulnerabilities”). Check the source in Settings → Vulnerability database, network/proxy access, or <code>OSV_CA_BUNDLE</code> / <code>OSV_VERIFY_SSL</code> / <code>OSV_PROXY_URL</code> in the backend .env.</div>
             : <div style={{fontSize:12.5,fontWeight:700,marginBottom:8,color:data.vulnerabilities.length?'#b91c1c':'#166534'}}>{data.summary}</div>}
           {data.vulnerabilities.map((v,i)=>(
             <div key={i} className="finding">
@@ -1345,7 +1444,7 @@ function InterfaceTab({r}) {
   const breaking = r.interface?.breaking_changes || []
   const additive = r.interface?.additive_changes || []
   // Downstream repos the reviewer flagged as dependents (DependencyResult.affected_services,
-  // populated from the connected-repos selection). CIAA can't see their source, so when a
+  // populated from the connected-repos selection). CAR can't see their source, so when a
   // breaking change exists these must be verified manually.
   const declaredDeps = r.dependency?.affected_services || []
   return (
@@ -1408,7 +1507,7 @@ function InterfaceTab({r}) {
           </div>
           <div style={{fontSize:12,color:'#7a8494',marginBottom:10,lineHeight:1.55}}>
             {breaking.length
-              ? <>This PR has <strong>{breaking.length} breaking change(s)</strong> and you flagged these repos as dependents. CIAA can’t read their source code, so <strong>verify each one</strong> still compiles/calls correctly against the new contract.</>
+              ? <>This PR has <strong>{breaking.length} breaking change(s)</strong> and you flagged these repos as dependents. CAR can’t read their source code, so <strong>verify each one</strong> still compiles/calls correctly against the new contract.</>
               : <>You flagged these repos as dependents. No breaking interface changes were detected, so they’re likely unaffected — but confirm if this PR changes shared behaviour.</>}
           </div>
           <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
@@ -1422,7 +1521,7 @@ function InterfaceTab({r}) {
           </div>
           <div style={{fontSize:11,color:'#9fadbf',marginTop:10,lineHeight:1.5}}>
             <i className="ti ti-info-circle" style={{marginRight:4}}/>
-            To trace exact call-sites inside these repos automatically, run CIAA with <code>REPO_LOCAL_PATH</code> pointing at their clones (or a <code>SERVICE_MAP_PATH</code> graph). Otherwise this is a manual checklist.
+            To trace exact call-sites inside these repos automatically, run CAR with <code>REPO_LOCAL_PATH</code> pointing at their clones (or a <code>SERVICE_MAP_PATH</code> graph). Otherwise this is a manual checklist.
           </div>
         </div>
       )}
@@ -2653,7 +2752,7 @@ function buildLocalPRDescription(r) {
   lines.push('## Testing','')
   if((r.qa_scenarios?.scenarios||[]).length)(r.qa_scenarios.scenarios||[]).slice(0,5).forEach(s=>lines.push(`- [ ] ${s.description||s}`))
   else lines.push('- [ ] Unit tests pass','- [ ] Integration tests pass','- [ ] Smoke test completed')
-  lines.push('','---',`*Generated by CIAA · Analysis ID: \`${r.request_id||''}\`*`)
+  lines.push('','---',`*Generated by CAR · Analysis ID: \`${r.request_id||''}\`*`)
   return lines.join('\n')
 }
 
@@ -3128,7 +3227,7 @@ function ReviewSummaryPanel({ r, onClose }) {
       lines.push('#### Pre-release Checklist')
       checklist.forEach(c=>lines.push(`- [ ] ${typeof c==='string'?c:c.item||''}`))
     }
-    lines.push('','---',`*Generated by CIAA · Analysis ID: \`${r.request_id||''}\`*`)
+    lines.push('','---',`*Generated by CAR · Analysis ID: \`${r.request_id||''}\`*`)
     return lines.join('\n')
   }
 
@@ -3287,10 +3386,10 @@ function HumanReviewPanel({r, state, showToast}) {
         </div>
       )}
       <div style={{fontSize:11,color:'#9fadbf',display:'flex',alignItems:'center',gap:5}}>
-        <i className="ti ti-shield-lock"/>All review decisions are permanently logged. Request ID: <code style={{fontSize:10}}>{state.lastRequestId||'—'}</code>
+        <i className="ti ti-shield-lock"/>All review decisions are permanently logged. Request ID: <code style={{fontSize:10}}>{r.request_id||state.lastRequestId||'—'}</code>
       </div>
       {showModal && (
-        <ReviewModal decision={pendingDecision} state={state} showToast={showToast}
+        <ReviewModal decision={pendingDecision} reqId={r.request_id||state.lastRequestId} state={state} showToast={showToast}
           onClose={()=>setShowModal(false)}
           onSubmit={(review)=>{setReviewDone(review);setShowModal(false);showToast(`${review.decision==='APPROVED'?'✅':'review.decision'==='CHANGES'?'⚠️':'🚫'} Review submitted`,'success')}}/>
       )}
@@ -3298,23 +3397,47 @@ function HumanReviewPanel({r, state, showToast}) {
   )
 }
 
-function ReviewModal({decision, state, onClose, onSubmit, showToast}) {
+function ReviewModal({decision, reqId, state, onClose, onSubmit, showToast}) {
   const [name, setName] = useState('')
   const [reason, setReason] = useState('')
   const [notes, setNotes] = useState('')
   const [loading, setLoading] = useState(false)
   const meta={APPROVED:{title:'Approve Merge',color:'#0c7c4b',btnTxt:'Confirm Approval'},CHANGES:{title:'Request Changes',color:'#8a5200',btnTxt:'Confirm Request'},REJECTED:{title:'Block Merge',color:'#b81c1c',btnTxt:'Confirm Block'}}[decision]||{}
+  // Target the report being reviewed (reqId), NOT lastRequestId — which can point
+  // at a DIFFERENT, still-running analysis (→ 404 'report not found').
+  const rid = reqId || state.lastRequestId
   async function submit() {
     if(!name){alert('Reviewer name is required.');return}
     if(!reason||reason.length<10){alert('Reason must be at least 10 characters.');return}
     setLoading(true)
-    const record={decision,reviewer:name,reason,notes,timestamp:new Date().toISOString(),request_id:state.lastRequestId||'',gate:decision}
-    if(state.backendUrl&&state.lastRequestId){
+    const record={decision,reviewer:name,reason,notes,timestamp:new Date().toISOString(),request_id:rid||'',gate:decision}
+    if(state.backendUrl&&rid){
       try {
         const h={'Content-Type':'application/json'}; if(state.backendKey)h['X-API-Key']=state.backendKey
         const override_to={APPROVED:'APPROVE',CHANGES:'HOLD',REJECTED:'BLOCK'}[decision]||'BLOCK'
-        await fetch(`${state.backendUrl}/api/v1/gate/${state.lastRequestId}/override`,{method:'POST',headers:h,body:JSON.stringify({override_to,reason:`[${decision}] ${reason} — ${name}`})})
-      } catch(_){}
+        // Send git context so the decision is reflected on the PR (review status +
+        // commit status check) — never merges or closes it.
+        const pr=state.selectedPR; const prId=pr?(pr.number||pr.id||''):''
+        const body={ override_to, reason:`[${decision}] ${reason} — ${name}`,
+          provider:state.provider, token:state.token, base_url:state.baseUrl||'',
+          workspace:state.workspace||'', repo_slug:repoName(state.primaryRepo), pr_id:String(prId||'') }
+        const resp=await fetch(`${state.backendUrl}/api/v1/gate/${rid}/override`,{method:'POST',headers:h,body:JSON.stringify(body)})
+        if(!resp.ok){
+          setLoading(false)
+          alert(resp.status===404
+            ? 'Could not record the decision — this analysis isn’t in the backend store. It may still be running or wasn’t saved; wait for it to finish (or re-run) and try again.'
+            : `Could not record the decision (HTTP ${resp.status}).`)
+          return   // do NOT report success — the audit record didn't persist
+        }
+        const d=await resp.json().catch(()=>({}))
+        const pa=d&&d.pr_action
+        if(pa&&!pa.ok) alert(`Decision recorded & audited, but updating the PR had issues:\n${(pa.errors||[]).join('\n').slice(0,300)}`)
+        else if(pa&&pa.ok) record.pr_updated=true
+      } catch(e){
+        setLoading(false)
+        alert('Could not reach the backend to record the decision: '+e.message)
+        return
+      }
     }
     setLoading(false)
     onSubmit(record)
@@ -3514,17 +3637,29 @@ export default function ResultsView({ active, showView, showToast }) {
   }
 
   async function postPRComments() {
-    if(!state.backendUrl||!state.lastRequestId){showToast('Need a backend URL and a completed analysis first.','error');return}
-    const pr=state.selectedPR; const prId=pr?(pr.number||pr.id||''):''
-    if(!prId){showToast('Select a PR in Analysis Target first.','error');return}
+    const rep = state.report || {}
+    const rid = state.lastRequestId || rep.request_id
+    if(!state.backendUrl||!rid){showToast('Need a backend URL and a completed analysis first.','error');return}
+    // Fall back to the report's own PR/repo when reopened from Insights/History
+    // (where selectedPR / primaryRepo aren't restored).
+    const pr=state.selectedPR
+    const prId=(pr&&(pr.number||pr.id))||rep.pr_number||''
+    if(!prId){showToast('No pull request linked to this analysis — open a PR in Analysis Target (or this was a branch-to-branch run).','error');return}
+    if(!state.token){showToast('Connect to your Git provider first (Configure) so the PR can be updated.','error');return}
+    const slugFromUrl = u => { if(!u) return ''; const p=String(u).replace(/\.git$/,'').replace(/\/+$/,'').split('/').filter(Boolean); return p.length>=2?p.slice(-2).join('/'):(p[0]||'') }
+    const repoSlug = repoName(state.primaryRepo) || slugFromUrl(rep.repo_url)
     showToast('Posting comments to PR…','info')
     try {
       const h={'Content-Type':'application/json'}; if(state.backendKey)h['X-API-Key']=state.backendKey
-      const body={provider:state.provider,token:state.token,base_url:state.baseUrl||'',workspace:state.workspace||'',repo_slug:repoName(state.primaryRepo),pr_id:String(prId),inline:true}
-      const resp=await fetch(`${state.backendUrl}/api/v1/report/${state.lastRequestId}/comment-pr`,{method:'POST',headers:h,body:JSON.stringify(body)})
-      const d=await resp.json()
-      if(d.ok)showToast(`✅ Posted to PR — ${d.files_commented} file comment(s) + summary`,'success')
-      else showToast('Failed to post comments — check server logs','error')
+      const body={provider:state.provider||rep.provider||'',token:state.token,base_url:state.baseUrl||'',workspace:state.workspace||'',repo_slug:repoSlug,pr_id:String(prId),inline:true}
+      const resp=await fetch(`${state.backendUrl}/api/v1/report/${rid}/comment-pr`,{method:'POST',headers:h,body:JSON.stringify(body)})
+      const d=await resp.json().catch(()=>({}))
+      if(resp.ok && d.ok){ showToast(`✅ Posted to PR — ${d.files_commented} file comment(s) + summary`,'success'); return }
+      if(resp.status===404){
+        showToast('This analysis is no longer in the backend store (lost on restart or in-memory store) — re-run the analysis, then Post to PR.','error'); return
+      }
+      const detail = (typeof d.detail==='string'?d.detail:'') || `HTTP ${resp.status}`
+      showToast(`Failed to post comments: ${detail}`,'error')
     } catch(e){showToast(`Error: ${e.message}`,'error')}
   }
 
@@ -3545,6 +3680,23 @@ export default function ResultsView({ active, showView, showToast }) {
       {/* Errors / fallback notices */}
       {!hasAgentData && <div style={{display:'flex',alignItems:'flex-start',gap:8,padding:'10px 14px',background:'#fff8ec',border:'1px solid #fad98a',borderRadius:8,marginBottom:14,fontSize:12,color:'#8a5200'}}><i className="ti ti-info-circle" style={{flexShrink:0,marginTop:1}}/><div><strong>Heuristic mode</strong> — agents used rule-based fallbacks.</div></div>}
       {(r.errors||[]).length>0&&<div style={{display:'flex',alignItems:'flex-start',gap:8,padding:'10px 14px',background:'#fff1f1',border:'1px solid #f8c0c0',borderRadius:8,marginBottom:14,fontSize:12,color:'#b81c1c'}}><i className="ti ti-alert-circle" style={{flexShrink:0,marginTop:1}}/><div><strong>Analysis errors:</strong> {(r.errors||[]).join(', ')}</div></div>}
+
+      {/* Served-from-cache notice — identical diff was analysed before; findings
+          are the same. One click forces a fresh run (e.g. after a model change). */}
+      {r.from_cache && (
+        <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:'#f3f7ff',border:'1px solid #cfe0ff',borderRadius:8,marginBottom:14,fontSize:12.5,color:'#1e3a8a'}}>
+          <i className="ti ti-bolt" style={{fontSize:16,color:'#1a6cf6',flexShrink:0}}/>
+          <div style={{flex:1}}>
+            <strong>Served from cache</strong> — this exact diff was already analysed
+            {r.completed_at ? <> on <strong>{new Date(r.completed_at).toLocaleString()}</strong></> : ' earlier'}; the findings are identical, no agents were re-run.
+          </div>
+          <button className="btn btn-sm" style={{flexShrink:0}}
+            title="Bypass the cache and run all agents again (use after changing the model or settings)"
+            onClick={()=>update({ forceFresh:true, report:null, analysisRequested:true, runNonce:Date.now() })}>
+            <i className="ti ti-refresh"/> Re-analyse fresh
+          </button>
+        </div>
+      )}
 
       {/* Human review panel */}
       <HumanReviewPanel r={r} state={state} showToast={showToast}/>

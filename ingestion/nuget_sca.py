@@ -61,9 +61,11 @@ def parse_nuget_dependencies(text: str) -> list[dict]:
     return [{"package": names[k], "version": v, "resolved": _concrete(v)} for k, v in found.items()]
 
 
-def scan_nuget(text: str, timeout_s: int = 15) -> dict:
-    """Parse a NuGet manifest, query OSV for the resolved deps, and return a
-    structured SCA result identical in shape to pom_sca.scan_pom."""
+def scan_nuget(text: str, timeout_s: int = 15,
+               vuln_source: str = "", xray_url: str = "", xray_auth: str = "") -> dict:
+    """Parse a NuGet manifest, query the selected vulnerability source (OSV or
+    Xray) for the resolved deps, and return a structured SCA result identical in
+    shape to pom_sca.scan_pom."""
     deps = parse_nuget_dependencies(text)
     if not deps:
         raise ValueError("No NuGet dependencies found — expected <PackageReference>, "
@@ -72,12 +74,21 @@ def scan_nuget(text: str, timeout_s: int = 15) -> dict:
     resolved = [d for d in deps if d["resolved"]]
     unresolved = [d for d in deps if not d["resolved"]]
 
-    from ingestion.osv_client import query_versioned, OsvUnavailable
+    from ingestion.osv_client import OsvUnavailable
+    from ingestion.pom_sca import _vuln_lookup
+    from ingestion import sca_cache
     items = [(d["package"], "NuGet", d["version"]) for d in resolved]
-    osv_error = ""
+    _ck = sca_cache.cache_key(text, "NuGet", vuln_source)
+    osv_error, used_source, fb_note = "", "osv", ""
     try:
-        hits = query_versioned(items, timeout_s=timeout_s, raise_on_error=True) if items else {}
+        used_source, hits, fb_note = _vuln_lookup(items, timeout_s, vuln_source, xray_url, xray_auth) if items else ("osv", {}, "")
     except OsvUnavailable as exc:
+        cached, ts = sca_cache.load(_ck)
+        if cached:
+            return {**cached, "stale": True, "stale_from": ts, "osv_error": None,
+                    "stale_note": (f"Vulnerability database unreachable — showing the last successful "
+                                   f"scan from {sca_cache.age_label(ts)}. New CVEs since then are NOT "
+                                   f"reflected. ({exc})")}
         hits, osv_error = {}, str(exc)
 
     vulns: list[dict] = []
@@ -99,12 +110,17 @@ def scan_nuget(text: str, timeout_s: int = 15) -> dict:
         summary = (f"{len(vulns)} vulnerabilit{'y' if len(vulns) == 1 else 'ies'} in "
                    f"{len(resolved)} direct dependenc{'y' if len(resolved) == 1 else 'ies'}"
                    + (f"; {len(unresolved)} version(s) unresolved (central package management)" if unresolved else ""))
-    return {
+    result = {
         "ecosystem": "NuGet",
         "depth": "direct",
         "dependencies_scanned": len(resolved),
         "unresolved": [d["package"] for d in unresolved],
         "vulnerabilities": vulns,
         "osv_error": osv_error or None,
+        "vuln_source": used_source,
+        "fallback_note": fb_note or None,
         "summary": summary,
     }
+    if not osv_error:
+        sca_cache.save(_ck, result)   # last-known-good for Layer-3 fallback
+    return result

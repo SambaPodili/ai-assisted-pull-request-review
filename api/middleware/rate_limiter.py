@@ -24,6 +24,9 @@ from starlette.responses import JSONResponse
 log = logging.getLogger(__name__)
 
 _OPEN_PATHS = {"/health", "/live", "/ready", "/docs", "/openapi.json", "/redoc", "/metrics"}
+# Lightweight, high-frequency polling endpoints the UI hits every couple seconds
+# during a run — exempt from rate limiting so a normal analysis doesn't 429 itself.
+_OPEN_PREFIXES = ("/api/v1/progress/", "/api/v1/status/")
 _WINDOW_S   = 60.0    # sliding window length in seconds
 
 
@@ -97,7 +100,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._skip_auth = skip_auth
 
     async def dispatch(self, request: Request, call_next):
-        if request.method == "OPTIONS" or request.url.path in _OPEN_PATHS:
+        _path = request.url.path
+        if (request.method == "OPTIONS" or _path in _OPEN_PATHS
+                or _path.startswith(_OPEN_PREFIXES)):
             return await call_next(request)
 
         if self._skip_auth:

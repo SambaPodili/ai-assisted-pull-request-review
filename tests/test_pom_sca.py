@@ -40,9 +40,12 @@ def test_invalid_pom_raises():
 
 
 @pytest.fixture(autouse=True)
-def _offline(monkeypatch):
+def _offline(monkeypatch, tmp_path):
     # keep unit tests offline — disable the transitive-closure Maven fetches
     monkeypatch.setenv("MAVEN_SCAN_TRANSITIVE", "false")
+    # isolate the Layer-3 last-known-good cache per test
+    import ingestion.sca_cache as sc
+    monkeypatch.setattr(sc, "_db_path", lambda: str(tmp_path / "sca_cache.db"))
 
 
 def test_resolves_versions_from_parent_bom(monkeypatch):
@@ -99,3 +102,24 @@ def test_endpoint_scans_pom(client):
 
 def test_endpoint_rejects_empty(client):
     assert client.post("/api/v1/sca/pom", content=b"").status_code == 400
+
+
+def test_maven_test_connection_ok(monkeypatch):
+    import ingestion.pom_sca as m
+    class _R:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    monkeypatch.setattr(m.urllib.request, "urlopen", lambda *a, **k: _R())
+    res = m.test_connection("https://artifactory.local/maven", "Bearer x")
+    assert res["ok"] is True and res["status"] == 200
+
+
+def test_maven_test_connection_auth_fail(monkeypatch):
+    import ingestion.pom_sca as m
+    import urllib.error
+    def _raise(*a, **k):
+        raise urllib.error.HTTPError("u", 401, "Unauthorized", {}, None)
+    monkeypatch.setattr(m.urllib.request, "urlopen", _raise)
+    res = m.test_connection("https://artifactory.local/maven", "Bearer bad")
+    assert res["ok"] is False and res["status"] == 401 and "auth" in res["message"].lower()

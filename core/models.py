@@ -706,6 +706,10 @@ class AnalysisReport(BaseModel):
     phase_run:    int = 1
     completed_at: datetime = Field(default_factory=datetime.utcnow)
     duration_s:   float = 0.0
+    # True when this result was served from the diff cache (identical diff
+    # analysed before) rather than a fresh agent run. completed_at then refers
+    # to the ORIGINAL analysis time.
+    from_cache:   bool = False
 
     # Phase 1
     code_analysis: CodeAnalysisResult | None = None

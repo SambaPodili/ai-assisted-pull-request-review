@@ -27,6 +27,14 @@ router = APIRouter(prefix="/api/v1/gate", tags=["gate-override"])
 class OverrideRequest(BaseModel):
     override_to: str   # APPROVE | HOLD | BLOCK
     reason:      str   # mandatory justification (audit requirement)
+    # Optional git context — when present, the decision is ALSO reflected on the PR
+    # (review status + commit status check). Never merges or closes the PR.
+    provider:   str = ""
+    token:      str = ""
+    base_url:   str = ""
+    repo_slug:  str = ""
+    pr_id:      str = ""
+    workspace:  str = ""
 
 
 @router.post("/{request_id}/override")
@@ -107,11 +115,27 @@ def override_gate(request_id: str, body: OverrideRequest, request: Request):
         "override_team": subject.team,
     })
 
+    # Reflect the decision ON the PR (review status + commit status check) — never
+    # merges or closes it. Best-effort: a PR-action failure never fails the audit
+    # record (which is the source of truth).
+    pr_action = None
+    if body.provider and body.token and body.pr_id:
+        try:
+            from output.pr_commenter import post_pr_decision
+            pr_action = post_pr_decision(
+                new_gate.value, body.provider, body.token, body.base_url, body.repo_slug,
+                body.pr_id, body.workspace, reason=body.reason, report_id=request_id)
+            log.info("Gate override PR action (%s) on %s: %s", new_gate.value, request_id, pr_action)
+        except Exception as exc:
+            pr_action = {"ok": False, "errors": [str(exc)]}
+            log.warning("Gate override PR action failed for %s: %s", request_id, exc)
+
     return {
         "request_id":    request_id,
         "original_gate": original_gate,
         "override_to":   new_gate.value,
         "override_by":   subject.name or subject.key_id,
+        "pr_action":     pr_action,
         "status":        "recorded",
         "message":       (
             f"Gate override recorded. Original: {original_gate} → Override: {new_gate.value}. "

@@ -16,8 +16,12 @@ export function normalizeReport(r) {
 
   if (isFull) {
     const rr = r.risk || {};
-    gate_decision = rr.gate_decision || 'HOLD';
-    overall_risk  = rr.overall_risk  || 'medium';
+    // The POLICY-ENFORCED gate lives at the TOP LEVEL of the payload
+    // (model_dump_with_gate injects it). r.risk.gate_decision is only the LLM's
+    // pre-policy proposal — using it displayed "APPROVE" while the policy said
+    // HOLD (e.g. on a confirmed critical finding). Top level always wins.
+    gate_decision = r.gate_decision || rr.gate_decision || 'HOLD';
+    overall_risk  = r.final_risk    || rr.overall_risk  || 'medium';
     risk_score    = rr.risk_score    || 0;
     rationale     = rr.rationale     || (r.errors && r.errors[0]) || '';
     riskObj = {
@@ -284,6 +288,15 @@ export function normalizeReport(r) {
       : (Array.isArray(r.token_usage) ? r.token_usage.map(u=>({ agent:(u.agent&&u.agent.value)||u.agent||'', tokens:u.tokens_used||0, model:u.model||'', duration_s:u.duration_s||0 })) : []),
     errors: r.errors || [],
     request_id: r.request_id || '',
+    // PR + repo context so "Post to PR" / overrides work when a report is reopened
+    // from Insights/History (where selectedPR isn't restored).
+    repo_url:  r.repo_url || '',
+    pr_number: (r.pr && (r.pr.pr_number || r.pr.number)) || r.pr_number || 0,
+    provider:  r.provider || (r.pr && r.pr.provider) || '',
+    // Cache provenance: true when this result was served from the diff cache;
+    // completed_at is then the ORIGINAL analysis time.
+    from_cache:   !!r.from_cache,
+    completed_at: r.completed_at || '',
     // Deterministic gate policy + business-capability mapping
     gate_policy_reasons:       r.gate_policy_reasons || [],
     gate_overridden_by_policy: r.gate_overridden_by_policy || false,

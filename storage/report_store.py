@@ -282,10 +282,18 @@ def make_report_store(settings=None) -> ReportStore:
                 "Redis configured but unavailable (%s) — falling back to SQLite", e
             )
 
-    # SQLite — explicit path takes priority, then default dev path
-    sqlite_path = getattr(cfg, "sqlite_path", "") or _DEFAULT_SQLITE_PATH
+    # SQLite — explicit path takes priority, then DATA_DIR, then a safe default.
+    # getattr-guard data_path so a partial deploy (new report_store.py but old
+    # settings.py without data_path) still uses SQLite instead of crashing into
+    # the in-memory store (which silently loses reports → 404 on Post-to-PR).
+    import os
+    if getattr(cfg, "sqlite_path", ""):
+        sqlite_path = cfg.sqlite_path
+    elif hasattr(cfg, "data_path"):
+        sqlite_path = cfg.data_path("reports.db")
+    else:
+        sqlite_path = os.path.join(getattr(cfg, "data_dir", "data") or "data", "reports.db")
     try:
-        import os
         os.makedirs(os.path.dirname(sqlite_path) or ".", exist_ok=True)
         store = SQLiteReportStore(sqlite_path)
         log.info("Report store: SQLite (%s)", sqlite_path)

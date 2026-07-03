@@ -280,6 +280,196 @@ def _normalise_api_url(url: str, provider: str) -> str:
     return url.rstrip("/")
 
 
+def post_bb_server_decision(decision: str, token: str, base_url: str, repo_slug: str,
+                            pr_id: str | int, workspace: str = "", reason: str = "",
+                            report_id: str = "") -> dict:
+    """Reflect a reviewer's gate decision on a Bitbucket Server PR WITHOUT merging
+    or closing it — does TWO things:
+      1. Participant REVIEW status  (APPROVE→APPROVED, HOLD/BLOCK→NEEDS_WORK)
+      2. Commit BUILD-STATUS check  (APPROVE→SUCCESSFUL, HOLD→INPROGRESS, BLOCK→FAILED)
+         on the PR's head commit — what branch merge-checks can require.
+    Best-effort; returns {ok, review, status_check, errors}."""
+    decision = (decision or "").upper()
+    part  = {"APPROVE": "APPROVED", "HOLD": "NEEDS_WORK", "BLOCK": "NEEDS_WORK"}.get(decision)
+    state = {"APPROVE": "SUCCESSFUL", "HOLD": "INPROGRESS", "BLOCK": "FAILED"}.get(decision)
+    if not part:
+        return {"ok": False, "review": None, "status_check": None,
+                "errors": [f"unknown decision: {decision}"]}
+
+    api  = _normalise_api_url(base_url, "bitbucket_server")          # …/rest/api/1.0
+    root = api.split("/rest/api/1.0")[0].rstrip("/")                 # server root
+    proj, repo = (repo_slug.split("/", 1) + [""])[:2] if "/" in repo_slug else (workspace, repo_slug)
+    h = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    s = requests.Session()
+
+    def _req(method, url, **kw):
+        try:
+            return s.request(method, url, headers=h, timeout=20, **kw)
+        except requests.exceptions.SSLError:
+            return s.request(method, url, headers=h, timeout=20, verify=False, **kw)
+        except requests.exceptions.RequestException:
+            return None
+
+    out = {"ok": True, "review": None, "status_check": None, "errors": []}
+
+    # Resolve the reviewer's slug (needed for the participant status) via X-AUSERNAME
+    user = ""
+    for path in ("/inbox/pull-requests/count", "/application-properties"):
+        r = _req("GET", f"{api}{path}")
+        if r is not None and r.headers.get("X-AUSERNAME"):
+            from urllib.parse import unquote
+            cand = unquote(r.headers["X-AUSERNAME"]).strip()
+            if cand and cand.lower() != "anonymous":
+                user = cand
+                break
+
+    # PR head commit (for the build status)
+    commit = ""
+    pr = _req("GET", f"{api}/projects/{proj}/repos/{repo}/pull-requests/{pr_id}")
+    if pr is not None and pr.ok:
+        try:
+            commit = (pr.json().get("fromRef") or {}).get("latestCommit") or ""
+        except Exception:
+            commit = ""
+
+    # 1. Review (participant status) — Approve / Needs-work
+    if user:
+        r = _req("PUT", f"{api}/projects/{proj}/repos/{repo}/pull-requests/{pr_id}/participants/{user}",
+                 json={"user": {"name": user}, "status": part})
+        out["review"] = getattr(r, "status_code", None)
+        if not (r is not None and r.ok):
+            out["errors"].append(f"review {getattr(r, 'status_code', '?')}: {getattr(r, 'text', '')[:120]}")
+    else:
+        out["errors"].append("could not resolve reviewer slug (X-AUSERNAME) — review status skipped")
+
+    # 2. Status check (build status on the PR head commit)
+    if commit:
+        body = {"state": state, "key": "CAR-REVIEW", "name": "Code Analysis & Review",
+                "url": (_report_link(report_id) if report_id else (base_url or root)),
+                "description": (reason or decision)[:255]}
+        r = _req("POST", f"{root}/rest/build-status/1.0/commits/{commit}", json=body)
+        out["status_check"] = getattr(r, "status_code", None)
+        if not (r is not None and r.ok):
+            out["errors"].append(f"status_check {getattr(r, 'status_code', '?')}: {getattr(r, 'text', '')[:120]}")
+    else:
+        out["errors"].append("could not resolve PR head commit — status check skipped")
+
+    out["ok"] = not out["errors"]
+    return out
+
+
+def _decision_session(headers):
+    """A requests.Session + a _req that falls back to verify=False on a self-signed
+    cert and returns None on other network errors (best-effort PR actions)."""
+    s = requests.Session()
+    def _req(method, url, **kw):
+        try:
+            return s.request(method, url, headers=headers, timeout=20, **kw)
+        except requests.exceptions.SSLError:
+            return s.request(method, url, headers=headers, timeout=20, verify=False, **kw)
+        except requests.exceptions.RequestException:
+            return None
+    return _req
+
+
+def post_github_decision(decision: str, token: str, base_url: str, repo_slug: str,
+                         pr_id: str | int, reason: str = "", report_id: str = "") -> dict:
+    """Reflect a reviewer decision on a GitHub / GitHub Enterprise PR (no merge):
+      • PR REVIEW  (APPROVE→APPROVE, HOLD→COMMENT, BLOCK→REQUEST_CHANGES)
+      • commit STATUS (APPROVE→success, HOLD→pending, BLOCK→failure) on the head sha."""
+    decision = (decision or "").upper()
+    event = {"APPROVE": "APPROVE", "HOLD": "COMMENT", "BLOCK": "REQUEST_CHANGES"}.get(decision)
+    state = {"APPROVE": "success", "HOLD": "pending", "BLOCK": "failure"}.get(decision)
+    if not event:
+        return {"ok": False, "review": None, "status_check": None, "errors": [f"unknown decision: {decision}"]}
+    api = _normalise_api_url(base_url, "github")
+    _req = _decision_session({"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"})
+    out = {"ok": True, "review": None, "status_check": None, "errors": []}
+
+    sha = ""
+    pr = _req("GET", f"{api}/repos/{repo_slug}/pulls/{pr_id}")
+    if pr is not None and pr.ok:
+        try: sha = (pr.json().get("head") or {}).get("sha") or ""
+        except Exception: sha = ""
+
+    # Review — REQUEST_CHANGES/COMMENT require a body; APPROVE may include one.
+    rbody = {"event": event, "body": (f"[{decision}] {reason}".strip()[:600] or decision)}
+    r = _req("POST", f"{api}/repos/{repo_slug}/pulls/{pr_id}/reviews", json=rbody)
+    out["review"] = getattr(r, "status_code", None)
+    if not (r is not None and r.ok):
+        out["errors"].append(f"review {getattr(r, 'status_code', '?')}: {getattr(r, 'text', '')[:120]}")
+
+    if sha:
+        body = {"state": state, "context": "Code Analysis & Review",
+                "description": (reason or decision)[:140],
+                "target_url": (_report_link(report_id) if report_id else (base_url or api))}
+        r = _req("POST", f"{api}/repos/{repo_slug}/statuses/{sha}", json=body)
+        out["status_check"] = getattr(r, "status_code", None)
+        if not (r is not None and r.ok):
+            out["errors"].append(f"status_check {getattr(r, 'status_code', '?')}: {getattr(r, 'text', '')[:120]}")
+    else:
+        out["errors"].append("could not resolve PR head sha — status check skipped")
+
+    out["ok"] = not out["errors"]
+    return out
+
+
+def post_bb_cloud_decision(decision: str, token: str, repo_slug: str, pr_id: str | int,
+                           workspace: str = "", reason: str = "", report_id: str = "") -> dict:
+    """Reflect a reviewer decision on a Bitbucket Cloud PR (no merge/decline):
+      • PR review  (APPROVE→approve, HOLD/BLOCK→request-changes)
+      • commit build STATUS (APPROVE→SUCCESSFUL, HOLD→INPROGRESS, BLOCK→FAILED)."""
+    decision = (decision or "").upper()
+    review = {"APPROVE": "approve", "HOLD": "request-changes", "BLOCK": "request-changes"}.get(decision)
+    state  = {"APPROVE": "SUCCESSFUL", "HOLD": "INPROGRESS", "BLOCK": "FAILED"}.get(decision)
+    if not review:
+        return {"ok": False, "review": None, "status_check": None, "errors": [f"unknown decision: {decision}"]}
+    api = "https://api.bitbucket.org/2.0"
+    base = f"{api}/repositories/{workspace}/{repo_slug}"
+    _req = _decision_session({"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+    out = {"ok": True, "review": None, "status_check": None, "errors": []}
+
+    sha = ""
+    pr = _req("GET", f"{base}/pullrequests/{pr_id}")
+    if pr is not None and pr.ok:
+        try: sha = ((pr.json().get("source") or {}).get("commit") or {}).get("hash") or ""
+        except Exception: sha = ""
+
+    r = _req("POST", f"{base}/pullrequests/{pr_id}/{review}")
+    out["review"] = getattr(r, "status_code", None)
+    if not (r is not None and r.ok):
+        out["errors"].append(f"review {getattr(r, 'status_code', '?')}: {getattr(r, 'text', '')[:120]}")
+
+    if sha:
+        body = {"key": "CAR-REVIEW", "state": state, "name": "Code Analysis & Review",
+                "url": (_report_link(report_id) if report_id else api),
+                "description": (reason or decision)[:200]}
+        r = _req("POST", f"{base}/commit/{sha}/statuses/build", json=body)
+        out["status_check"] = getattr(r, "status_code", None)
+        if not (r is not None and r.ok):
+            out["errors"].append(f"status_check {getattr(r, 'status_code', '?')}: {getattr(r, 'text', '')[:120]}")
+    else:
+        out["errors"].append("could not resolve PR head commit — status check skipped")
+
+    out["ok"] = not out["errors"]
+    return out
+
+
+def post_pr_decision(decision: str, provider: str, token: str, base_url: str, repo_slug: str,
+                     pr_id: str | int, workspace: str = "", reason: str = "", report_id: str = "") -> dict:
+    """Dispatch a reviewer gate decision to the right provider's PR-action helper
+    (review + status check, never merge/close). Supports Bitbucket Server/Cloud and
+    GitHub Cloud/Enterprise."""
+    p = (provider or "").lower()
+    if p == "bitbucket_server":
+        return post_bb_server_decision(decision, token, base_url, repo_slug, pr_id, workspace, reason, report_id)
+    if p in ("github", "github_enterprise"):
+        return post_github_decision(decision, token, base_url, repo_slug, pr_id, reason, report_id)
+    if p in ("bitbucket", "bitbucket_cloud"):
+        return post_bb_cloud_decision(decision, token, repo_slug, pr_id, workspace, reason, report_id)
+    return {"ok": False, "review": None, "status_check": None, "errors": [f"unsupported provider: {provider}"]}
+
+
 def _extract_repo_slug(repo_url: str, provider: str, workspace: str) -> str:
     parts = repo_url.rstrip("/").split("/")
     if provider in ("github", "github_enterprise"):
@@ -386,7 +576,7 @@ def _render_file_comment(file_path: str, findings: list[dict]) -> str:
     """
     sev_icon = {"critical": "🚨", "high": "🔴", "medium": "🟡", "low": "🔵"}
     lines = [
-        f"<!-- impact-analyzer-file -->\n### 🔍 CIAA findings — `{file_path}`\n",
+        f"<!-- impact-analyzer-file -->\n### 🔍 CAR findings — `{file_path}`\n",
         "| Severity | Category | Line | Finding |",
         "|---|---|---|---|",
     ]
@@ -396,7 +586,7 @@ def _render_file_comment(file_path: str, findings: list[dict]) -> str:
         msg     = f["message"].replace("|", "\\|")
         lines.append(f"| {icon} **{f['severity']}** | {f['category']} | {line_s} | {msg} |")
 
-    lines.append(f"\n<sub>_CIAA auto-review · {len(findings)} finding(s)_</sub>")
+    lines.append(f"\n<sub>_CAR auto-review · {len(findings)} finding(s)_</sub>")
     return "\n".join(lines)
 
 
@@ -412,7 +602,7 @@ def _render_pr_summary_comment(report: AnalysisReport, file_groups: dict[str, li
 
     lines = [
         f"{_BOT_TAG}",
-        f"## {gate_icon} CIAA Impact Analysis — **{gate.value}**",
+        f"## {gate_icon} Code Analysis & Review — **{gate.value}**",
         f"",
         f"> **Risk Level:** `{risk.value.upper()}` &nbsp;·&nbsp; "
         f"**{total_findings}** finding(s) across **{len(file_groups)}** file(s)",
@@ -462,7 +652,7 @@ def _render_pr_summary_comment(report: AnalysisReport, file_groups: dict[str, li
 
     lines.append(
         f"<sub>Analysis ID: `{report.request_id}` &nbsp;·&nbsp; "
-        f"[View full report in CIAA dashboard]({_report_link(report.request_id)})</sub>"
+        f"[View full report in CAR dashboard]({_report_link(report.request_id)})</sub>"
     )
     return "\n".join(lines)
 

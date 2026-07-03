@@ -143,7 +143,7 @@ def _static_analysis(request: AnalysisRequest) -> ReferenceImpactResult:
 
     # Fold in cross-repo references the frontend fetched from declared dependent
     # repos via the git provider's code-search API (metadata.external_references).
-    # These are real call-sites in OTHER repos that CIAA can't clone/grep locally.
+    # These are real call-sites in OTHER repos that CAR can't clone/grep locally.
     ext_refs, ext_repos = _external_references(request, symbols)
     if ext_refs:
         refs = refs + ext_refs

@@ -203,7 +203,8 @@ def get_feedback_store():
     if _store is None:
         try:
             from config.settings import get_settings
-            path = getattr(get_settings(), "feedback_db_path", "") or DEFAULT_DB_PATH
+            _cfg = get_settings()
+            path = getattr(_cfg, "feedback_db_path", "") or _cfg.data_path("feedback.db")
             _store = SQLiteFeedbackStore(path)
             log.info("Feedback store: SQLite (%s)", path)
         except Exception as exc:

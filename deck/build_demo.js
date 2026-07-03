@@ -4,7 +4,7 @@ const ReactDOMServer = require("react-dom/server");
 const sharp = require("sharp");
 const fa = require("react-icons/fa");
 
-// Same palette / typography as the main CIAA deck
+// Same palette / typography as the main CAR deck
 const C = {
   navy: "0E1A33", panel: "16243F", ink: "1E293B", muted: "64748B",
   light: "FFFFFF", card: "F6F8FB", border: "E2E8F0",
@@ -32,8 +32,8 @@ async function icon(Comp, color = "#FFFFFF", size = 256) {
   const p = new pptxgen();
   p.defineLayout({ name: "W", width: W, height: H });
   p.layout = "W";
-  p.author = "CIAA";
-  p.title  = "CIAA — Demo & Portal Integration";
+  p.author = "CAR";
+  p.title  = "CAR — Demo & Portal Integration";
 
   const iconChip = (s, data, x, y, d = 0.6, fill = C.navy) => {
     s.addShape(p.shapes.OVAL, { x, y, w: d, h: d, fill: { color: fill } });
@@ -49,7 +49,7 @@ async function icon(Comp, color = "#FFFFFF", size = 256) {
     s.addShape(p.shapes.OVAL, { x: 10.7 + (i % 3) * 0.6, y: 0.65 + Math.floor(i / 3) * 0.6, w: 0.15, h: 0.15, fill: { color: C.teal, transparency: 30 + i * 8 } });
 
   s.addText("LIVE DEMO", { x: MX, y: 1.55, w: 8, h: 0.32, fontFace: BF, fontSize: 13, bold: true, color: C.teal, charSpacing: 4, margin: 0 });
-  s.addText("CIAA in action", { x: MX, y: 1.95, w: 11.5, h: 1.0, fontFace: HF, fontSize: 48, bold: true, color: C.light, margin: 0 });
+  s.addText("CAR in action", { x: MX, y: 1.95, w: 11.5, h: 1.0, fontFace: HF, fontSize: 48, bold: true, color: C.light, margin: 0 });
   s.addText("A real pull request from Bitbucket, analysed end-to-end — live.",
     { x: MX, y: 3.05, w: 11, h: 0.5, fontFace: BF, fontSize: 16, color: "AAB7D4", margin: 0 });
 
@@ -78,8 +78,8 @@ async function icon(Comp, color = "#FFFFFF", size = 256) {
   s.background = { color: C.light };
   s.slideNumber = { x: 12.5, y: 7.04, w: 0.7, h: 0.3, fontFace: BF, fontSize: 9, color: "94A3B8", align: "right" };
   s.addText("NEXT STEP · INTEGRATION", { x: MX, y: 0.4, w: 8, h: 0.3, fontFace: BF, fontSize: 12, bold: true, color: C.indigo, charSpacing: 3, margin: 0 });
-  s.addText("Integrating CIAA into our existing portal", { x: MX, y: 0.72, w: W - 2 * MX, h: 0.7, fontFace: HF, fontSize: 28, bold: true, color: C.ink, margin: 0 });
-  s.addText("The portal already authenticates users via LDAP — CIAA plugs in behind it. Two workstreams:",
+  s.addText("Integrating CAR into our existing portal", { x: MX, y: 0.72, w: W - 2 * MX, h: 0.7, fontFace: HF, fontSize: 28, bold: true, color: C.ink, margin: 0 });
+  s.addText("The portal already authenticates users via LDAP — CAR plugs in behind it. Two workstreams:",
     { x: MX, y: 1.42, w: W - 2 * MX, h: 0.36, fontFace: BF, fontSize: 13, color: C.muted, margin: 0 });
 
   const colW2 = (W - 2 * MX - 0.45) / 2;
@@ -99,12 +99,12 @@ async function icon(Comp, color = "#FFFFFF", size = 256) {
 
   column(MX, I.lock, "Portal integration (LDAP SSO)", C.indigo, [
     ["Trust the portal's LDAP session",
-     "Portal issues a signed token (JWT / header) after LDAP login; a CIAA auth adapter validates it — no second login, no separate user store"],
-    ["Map LDAP groups → CIAA roles",
-     "AD groups map onto CIAA's existing RBAC registry (developer / reviewer / admin) to control gate overrides and admin functions"],
-    ["Embed the CIAA UI in the portal",
+     "Portal issues a signed token (JWT / header) after LDAP login; a CAR auth adapter validates it — no second login, no separate user store"],
+    ["Map LDAP groups → CAR roles",
+     "AD groups map onto CAR's existing RBAC registry (developer / reviewer / admin) to control gate overrides and admin functions"],
+    ["Embed the CAR UI in the portal",
      "Serve the dashboard as a portal route or iframe with the SSO handoff; CORS is already configurable (CORS_ORIGINS)"],
-    ["Portal ↔ CIAA REST API",
+    ["Portal ↔ CAR REST API",
      "Portal triggers analyses and pulls report summaries via the documented REST API using a scoped service-account key"],
   ]);
 
@@ -114,7 +114,7 @@ async function icon(Comp, color = "#FFFFFF", size = 256) {
     ["Wire the environment",
      "Self-hosted LLM endpoint, Bitbucket Server credentials, repo mirror (REPOS_ROOT) and gate thresholds via .env / ConfigMap"],
     ["Secrets & hardening",
-     "Tokens in the platform secret store (no keys on disk), API-key auth between portal and CIAA, audit log shipped to SIEM"],
+     "Tokens in the platform secret store (no keys on disk), API-key auth between portal and CAR, audit log shipped to SIEM"],
     ["Pilot → rollout",
      "Start with one team's repos + webhook auto-run on PRs; expand org-wide once the gate earns trust"],
   ]);
@@ -124,6 +124,6 @@ async function icon(Comp, color = "#FFFFFF", size = 256) {
     { text: "RBAC registry · configurable CORS · nginx + OpenShift deployment configs · REST API with API-key auth · HMAC webhooks — the integration builds on shipped foundations.", options: { color: C.muted } },
   ], { x: MX, y: 6.85, w: W - 2 * MX, h: 0.45, fontFace: BF, fontSize: 10.5, align: "center", margin: 0 });
 
-  await p.writeFile({ fileName: "/Users/samba/Documents/CIAA/impact-analyzer-2/deck/CIAA_Demo_Integration.pptx" });
-  console.log("WROTE deck/CIAA_Demo_Integration.pptx");
+  await p.writeFile({ fileName: "/Users/samba/Documents/CAR/impact-analyzer-2/deck/CAR_Demo_Integration.pptx" });
+  console.log("WROTE deck/CAR_Demo_Integration.pptx");
 })();

@@ -47,6 +47,42 @@ export default function SettingsView({ showToast }) {
   const [mvnUrl, setMvnUrl]   = useState(state.mavenRepoUrl || '')
   const [mvnAuth, setMvnAuth] = useState(state.mavenRepoAuth || '')
   const [mvnMsg, setMvnMsg]   = useState('')
+  const [mvnTesting, setMvnTesting] = useState(false)
+  const [vulnSrc, setVulnSrc] = useState(state.vulnSource || 'osv')
+  const [xrayUrl, setXrayUrl] = useState(state.xrayUrl || '')
+  const [xrayAuth, setXrayAuth] = useState(state.xrayAuth || '')
+  const [xrayMsg, setXrayMsg] = useState('')
+  const [xrayTesting, setXrayTesting] = useState(false)
+
+  async function testXray() {
+    if (!state.backendUrl) { setXrayMsg('Set the Backend URL first'); return }
+    setXrayTesting(true); setXrayMsg('Testing…')
+    try {
+      const h = { 'Content-Type': 'application/json' }
+      if (state.backendKey) h['X-API-Key'] = state.backendKey
+      if (xrayUrl.trim())  h['X-Xray-Url']  = xrayUrl.trim().replace(/\/$/, '')
+      if (xrayAuth.trim()) h['X-Xray-Auth'] = xrayAuth.trim()
+      const r = await fetch(`${state.backendUrl}/api/v1/sca/xray/test`, { method: 'POST', headers: h })
+      const d = await r.json().catch(() => ({}))
+      setXrayMsg((d.ok ? '✓ ' : '✗ ') + (d.message || `HTTP ${r.status}`))
+    } catch (e) { setXrayMsg('✗ ' + e.message) } finally { setXrayTesting(false) }
+  }
+
+  async function testMaven() {
+    if (!state.backendUrl) { setMvnMsg('Set the Backend URL first'); return }
+    setMvnTesting(true); setMvnMsg('Testing…')
+    try {
+      const h = { 'Content-Type': 'application/json' }
+      if (state.backendKey) h['X-API-Key'] = state.backendKey
+      if (mvnUrl.trim())  h['X-Maven-Repo-Url']  = mvnUrl.trim().replace(/\/$/, '')
+      if (mvnAuth.trim()) h['X-Maven-Repo-Auth'] = mvnAuth.trim()
+      const r = await fetch(`${state.backendUrl}/api/v1/sca/maven/test`, { method: 'POST', headers: h })
+      const d = await r.json().catch(() => ({}))
+      setMvnMsg((d.ok ? '✓ ' : '✗ ') + (d.message || `HTTP ${r.status}`))
+    } catch (e) {
+      setMvnMsg('✗ ' + e.message)
+    } finally { setMvnTesting(false) }
+  }
   const [settingsMsg, setMsg] = useState('')
   const [digestMsg, setDMsg]  = useState('')
   const [purgeRepo, setPurgeRepo] = useState('')
@@ -198,7 +234,7 @@ export default function SettingsView({ showToast }) {
         </div>
         <div className="field">
           <label>API Key</label>
-          <PasswordInput value={key} onChange={e => setKey(e.target.value)} placeholder="Your CIAA API key (from keys.json)" />
+          <PasswordInput value={key} onChange={e => setKey(e.target.value)} placeholder="Your CAR API key (from keys.json)" />
           <div className="field-hint">Your personal key — it determines your role (developer / reviewer / super admin).</div>
         </div>
         <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
@@ -223,7 +259,42 @@ export default function SettingsView({ showToast }) {
         </div>
         <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
           <button className="btn btn-primary" onClick={() => { update({ mavenRepoUrl: mvnUrl.replace(/\/$/, ''), mavenRepoAuth: mvnAuth }); setMvnMsg('✓ Saved'); setTimeout(() => setMvnMsg(''), 2000) }}><i className="ti ti-device-floppy" />Save</button>
-          {mvnMsg && <span style={{ fontSize:12, color:'#3fb950' }}>{mvnMsg}</span>}
+          <button className="btn" onClick={testMaven} disabled={mvnTesting}><i className="ti ti-plug-connected" />{mvnTesting ? 'Testing…' : 'Test connection'}</button>
+          {mvnMsg && <span style={{ fontSize:12, color: mvnMsg.startsWith('✓') ? '#3fb950' : (mvnMsg.startsWith('✗') ? '#b81c1c' : '#7a8494') }}>{mvnMsg}</span>}
+        </div>
+      </div>
+
+      {/* ── Vulnerability database (SCA) — OSV (public) or JFrog Xray (in-house) ── */}
+      <div className="card">
+        <div className="card-title"><i className="ti ti-shield-search" />Vulnerability database (SCA)</div>
+        <div style={{ fontSize:13, color:'#7a8494', lineHeight:1.6, marginBottom:12 }}>
+          Where dependency scans look up known CVEs. <strong>OSV</strong> is the public database
+          (needs internet/proxy access); <strong>JFrog Xray</strong> uses your Artifactory's built-in
+          scanner — fully in-house, ideal for the bank network.
+        </div>
+        <div style={{ display:'flex', gap:16, marginBottom:12 }}>
+          {[['osv','OSV (public — api.osv.dev)'],['xray','JFrog Xray (Artifactory, in-house)']].map(([v,label])=>(
+            <label key={v} style={{ display:'flex', alignItems:'center', gap:6, fontSize:13, cursor:'pointer' }}>
+              <input type="radio" name="vulnsrc" checked={vulnSrc===v} onChange={()=>setVulnSrc(v)} /> {label}
+            </label>
+          ))}
+        </div>
+        {vulnSrc==='xray' && (<>
+          <div className="field">
+            <label>Xray base URL</label>
+            <input type="url" value={xrayUrl} onChange={e=>setXrayUrl(e.target.value)} placeholder="https://artifactory.company.com/xray" />
+            <div className="field-hint">The Xray API base (the scanner calls <code>/api/v1/summary/component</code> and <code>/api/v1/system/ping</code>).</div>
+          </div>
+          <div className="field">
+            <label>Xray access token</label>
+            <PasswordInput value={xrayAuth} onChange={e=>setXrayAuth(e.target.value)} placeholder="Bearer xxxxx (or raw token)" />
+            <div className="field-hint">Needs Xray read permission. Falls back to <code>XRAY_AUTH</code> in the backend .env when blank.</div>
+          </div>
+        </>)}
+        <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+          <button className="btn btn-primary" onClick={()=>{ update({ vulnSource: vulnSrc, xrayUrl: xrayUrl.replace(/\/$/, ''), xrayAuth }); setXrayMsg('✓ Saved'); setTimeout(()=>setXrayMsg(''), 2000) }}><i className="ti ti-device-floppy" />Save</button>
+          {vulnSrc==='xray' && <button className="btn" onClick={testXray} disabled={xrayTesting}><i className="ti ti-plug-connected" />{xrayTesting ? 'Testing…' : 'Test connection'}</button>}
+          {xrayMsg && <span style={{ fontSize:12, color: xrayMsg.startsWith('✓') ? '#3fb950' : (xrayMsg.startsWith('✗') ? '#b81c1c' : '#7a8494') }}>{xrayMsg}</span>}
         </div>
       </div>
 
