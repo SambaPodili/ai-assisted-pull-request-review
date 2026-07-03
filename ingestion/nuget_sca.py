@@ -62,7 +62,8 @@ def parse_nuget_dependencies(text: str) -> list[dict]:
 
 
 def scan_nuget(text: str, timeout_s: int = 15,
-               vuln_source: str = "", xray_url: str = "", xray_auth: str = "") -> dict:
+               vuln_source: str = "", xray_url: str = "", xray_auth: str = "",
+               vuln_fallback: str = "") -> dict:
     """Parse a NuGet manifest, query the selected vulnerability source (OSV or
     Xray) for the resolved deps, and return a structured SCA result identical in
     shape to pom_sca.scan_pom."""
@@ -81,7 +82,7 @@ def scan_nuget(text: str, timeout_s: int = 15,
     _ck = sca_cache.cache_key(text, "NuGet", vuln_source)
     osv_error, used_source, fb_note = "", "osv", ""
     try:
-        used_source, hits, fb_note = _vuln_lookup(items, timeout_s, vuln_source, xray_url, xray_auth) if items else ("osv", {}, "")
+        used_source, hits, fb_note = _vuln_lookup(items, timeout_s, vuln_source, xray_url, xray_auth, vuln_fallback) if items else ("osv", {}, "")
     except OsvUnavailable as exc:
         cached, ts = sca_cache.load(_ck)
         if cached:

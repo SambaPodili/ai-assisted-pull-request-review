@@ -49,6 +49,7 @@ export default function SettingsView({ showToast }) {
   const [mvnMsg, setMvnMsg]   = useState('')
   const [mvnTesting, setMvnTesting] = useState(false)
   const [vulnSrc, setVulnSrc] = useState(state.vulnSource || 'osv')
+  const [vulnFb, setVulnFb]   = useState(state.vulnFallback || 'none')
   const [xrayUrl, setXrayUrl] = useState(state.xrayUrl || '')
   const [xrayAuth, setXrayAuth] = useState(state.xrayAuth || '')
   const [xrayMsg, setXrayMsg] = useState('')
@@ -279,7 +280,7 @@ export default function SettingsView({ showToast }) {
             </label>
           ))}
         </div>
-        {vulnSrc==='xray' && (<>
+        {(vulnSrc==='xray'||vulnFb==='xray') && (<>
           <div className="field">
             <label>Xray base URL</label>
             <input type="url" value={xrayUrl} onChange={e=>setXrayUrl(e.target.value)} placeholder="https://artifactory.company.com/xray" />
@@ -291,9 +292,18 @@ export default function SettingsView({ showToast }) {
             <div className="field-hint">Needs Xray read permission. Falls back to <code>XRAY_AUTH</code> in the backend .env when blank.</div>
           </div>
         </>)}
+        <div className="field">
+          <label>If unreachable, fall back to</label>
+          <select value={vulnFb} onChange={e=>setVulnFb(e.target.value)} style={{ maxWidth:340 }}>
+            <option value="none">none — fail with a clear error (default)</option>
+            <option value="osv">OSV (public) — sends dependency names outside the network</option>
+            <option value="xray">JFrog Xray (in-house)</option>
+          </select>
+          <div className="field-hint">Tried when the primary source is down (after retries). The offline OSV snapshot (<code>OSV_OFFLINE_DIR</code>) and the last-known-good cache are always the final resorts.</div>
+        </div>
         <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
-          <button className="btn btn-primary" onClick={()=>{ update({ vulnSource: vulnSrc, xrayUrl: xrayUrl.replace(/\/$/, ''), xrayAuth }); setXrayMsg('✓ Saved'); setTimeout(()=>setXrayMsg(''), 2000) }}><i className="ti ti-device-floppy" />Save</button>
-          {vulnSrc==='xray' && <button className="btn" onClick={testXray} disabled={xrayTesting}><i className="ti ti-plug-connected" />{xrayTesting ? 'Testing…' : 'Test connection'}</button>}
+          <button className="btn btn-primary" onClick={()=>{ update({ vulnSource: vulnSrc, vulnFallback: vulnFb, xrayUrl: xrayUrl.replace(/\/$/, ''), xrayAuth }); setXrayMsg('✓ Saved'); setTimeout(()=>setXrayMsg(''), 2000) }}><i className="ti ti-device-floppy" />Save</button>
+          {(vulnSrc==='xray'||vulnFb==='xray') && <button className="btn" onClick={testXray} disabled={xrayTesting}><i className="ti ti-plug-connected" />{xrayTesting ? 'Testing…' : 'Test connection'}</button>}
           {xrayMsg && <span style={{ fontSize:12, color: xrayMsg.startsWith('✓') ? '#3fb950' : (xrayMsg.startsWith('✗') ? '#b81c1c' : '#7a8494') }}>{xrayMsg}</span>}
         </div>
       </div>

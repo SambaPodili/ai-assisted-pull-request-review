@@ -107,3 +107,15 @@ def test_no_cache_no_stale_still_honest_error(monkeypatch):
                         lambda *a, **k: (_ for _ in ()).throw(OsvUnavailable("network down")))
     res = scan_pom(POM, resolve_parents=False)
     assert res["osv_error"] and not res.get("stale")          # honest failure preserved
+
+
+def test_per_request_fallback_overrides_settings(monkeypatch):
+    """UI-selected fallback (X-Vuln-Fallback header) works even when
+    VULN_FALLBACK_SOURCE is unset in .env."""
+    from ingestion.pom_sca import _vuln_lookup
+    _cfg(monkeypatch, fallback="none")          # env says NO fallback
+    monkeypatch.setattr("ingestion.xray_client.query_versioned_xray",
+                        lambda *a, **k: (_ for _ in ()).throw(OsvUnavailable("xray down")))
+    monkeypatch.setattr("ingestion.osv_client.query_versioned", lambda *a, **k: {("g:a", "1.0"): []})
+    src, hits, note = _vuln_lookup([("g:a", "Maven", "1.0")], 5, source="xray", fallback="osv")
+    assert src == "osv" and "fallback" in note.lower()

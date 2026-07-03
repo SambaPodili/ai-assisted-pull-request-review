@@ -115,6 +115,7 @@ export function createInitialState() {
     mavenRepoAuth: localStorage.getItem('mavenRepoAuth') || '',
     // SCA vulnerability source: 'osv' (public DB) or 'xray' (JFrog Xray, in-house)
     vulnSource: localStorage.getItem('vulnSource') || 'osv',
+    vulnFallback: localStorage.getItem('vulnFallback') || 'none',
     xrayUrl: localStorage.getItem('xrayUrl') || '',
     xrayAuth: localStorage.getItem('xrayAuth') || '',
     modelProvider: localStorage.getItem('modelProvider') || 'anthropic',
@@ -144,7 +145,7 @@ export function createInitialState() {
 export function saveState(state) {
   const keys = ['provider','authMode','token','username','workspace','projectKey','baseUrl',
     'modelProvider','modelName','modelApiKey','modelBaseUrl','modelApiVer',
-    'backendUrl','backendKey','mavenRepoUrl','mavenRepoAuth','vulnSource','xrayUrl','xrayAuth'];
+    'backendUrl','backendKey','mavenRepoUrl','mavenRepoAuth','vulnSource','vulnFallback','xrayUrl','xrayAuth'];
   keys.forEach(k => {
     if (state[k] !== undefined && state[k] !== null) localStorage.setItem(k, state[k]);
   });

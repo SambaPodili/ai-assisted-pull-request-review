@@ -1388,10 +1388,13 @@ function ScaScanner({ report, cfg }) {
       const h={'Content-Type':'application/xml'}; if(state.backendKey)h['X-API-Key']=state.backendKey
       if(state.mavenRepoUrl)h['X-Maven-Repo-Url']=state.mavenRepoUrl
       if(state.mavenRepoAuth)h['X-Maven-Repo-Auth']=state.mavenRepoAuth
-      // Vulnerability source selection (Settings → Vulnerability database)
+      // Vulnerability source selection (Settings → Vulnerability database).
+      // Xray creds are sent whenever configured — NOT only when Xray is primary —
+      // so an osv→xray FALLBACK can find the Xray endpoint too.
       if(state.vulnSource)h['X-Vuln-Source']=state.vulnSource
-      if(state.vulnSource==='xray'&&state.xrayUrl)h['X-Xray-Url']=state.xrayUrl
-      if(state.vulnSource==='xray'&&state.xrayAuth)h['X-Xray-Auth']=state.xrayAuth
+      if(state.vulnFallback&&state.vulnFallback!=='none')h['X-Vuln-Fallback']=state.vulnFallback
+      if(state.xrayUrl)h['X-Xray-Url']=state.xrayUrl
+      if(state.xrayAuth)h['X-Xray-Auth']=state.xrayAuth
       if(reqId)h['X-Request-Id']=reqId   // persist the scan against this report
       const r=await fetch(`${state.backendUrl}${cfg.endpoint}`,{method:'POST',headers:h,body:text})
       const d=await r.json().catch(()=>({}))

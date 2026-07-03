@@ -279,12 +279,12 @@ def _query_one_source(src, items, timeout_s, xray_url="", xray_auth=""):
     return query_versioned(items, timeout_s=timeout_s, raise_on_error=True)
 
 
-def _vuln_lookup(items, timeout_s, source="", xray_url="", xray_auth=""):
+def _vuln_lookup(items, timeout_s, source="", xray_url="", xray_auth="", fallback=""):
     """Query the SELECTED vulnerability source ('osv' public / 'xray' in-house).
-    Layer-2 fallback: when the primary is down (after retries), try the
-    VULN_FALLBACK_SOURCE if configured (opt-in, default none). Returns
-    (source_used, hits, note) — note is set when a fallback served the result.
-    Raises OsvUnavailable when every configured source failed."""
+    Layer-2 fallback: when the primary is down (after retries), try the fallback
+    source — per-request `fallback` (UI selection) overrides VULN_FALLBACK_SOURCE
+    (opt-in, default none). Returns (source_used, hits, note) — note is set when
+    a fallback served the result. Raises OsvUnavailable when everything failed."""
     from config.settings import get_settings
     from ingestion.osv_client import OsvUnavailable
     cfg = get_settings()
@@ -310,7 +310,7 @@ def _vuln_lookup(items, timeout_s, source="", xray_url="", xray_auth=""):
     try:
         return src, _query_one_source(src, items, timeout_s, xray_url, xray_auth), ""
     except OsvUnavailable as primary_exc:
-        fb = (getattr(cfg, "vuln_fallback_source", "none") or "none").strip().lower()
+        fb = (fallback or getattr(cfg, "vuln_fallback_source", "none") or "none").strip().lower()
         if fb in ("none", "", src):
             off = _offline_last_resort(str(primary_exc))
             if off:
@@ -332,7 +332,8 @@ def _vuln_lookup(items, timeout_s, source="", xray_url="", xray_auth=""):
 
 def scan_pom(pom_text: str, timeout_s: int = 15, resolve_parents: bool = True,
              repo: str | None = None, auth: str | None = None,
-             vuln_source: str = "", xray_url: str = "", xray_auth: str = "") -> dict:
+             vuln_source: str = "", xray_url: str = "", xray_auth: str = "",
+             vuln_fallback: str = "") -> dict:
     """Parse pom.xml, resolve parent/BOM-managed versions (Spring Boot etc.), query
     the selected vulnerability source (OSV or Xray) for the resolved deps, and
     return a structured SCA result. `repo`/`auth` (e.g. from the UI) override the
@@ -379,7 +380,7 @@ def scan_pom(pom_text: str, timeout_s: int = 15, resolve_parents: bool = True,
     _ck = sca_cache.cache_key(pom_text, "Maven", vuln_source)
     osv_error, used_source, fb_note = "", "osv", ""
     try:
-        used_source, hits, fb_note = _vuln_lookup(items, timeout_s, vuln_source, xray_url, xray_auth) if items else ("osv", {}, "")
+        used_source, hits, fb_note = _vuln_lookup(items, timeout_s, vuln_source, xray_url, xray_auth, vuln_fallback) if items else ("osv", {}, "")
     except OsvUnavailable as exc:
         # Layer-3 fallback: serve the LAST SUCCESSFUL scan of this exact manifest,
         # clearly labelled stale, instead of an empty error.

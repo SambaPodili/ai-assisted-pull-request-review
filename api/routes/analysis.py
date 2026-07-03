@@ -356,7 +356,8 @@ async def scan_pom_xml(request: Request):
         result = scan_pom(data.decode("utf-8", "ignore"), repo=repo, auth=auth,
                           vuln_source=request.headers.get("X-Vuln-Source") or "",
                           xray_url=request.headers.get("X-Xray-Url") or "",
-                          xray_auth=request.headers.get("X-Xray-Auth") or "")
+                          xray_auth=request.headers.get("X-Xray-Auth") or "",
+                          vuln_fallback=request.headers.get("X-Vuln-Fallback") or "")
         _save_report_scan(request.headers.get("X-Request-Id"), "pom", result)
         return result
     except ValueError as exc:
@@ -415,7 +416,8 @@ async def scan_nuget_manifest(request: Request):
         result = scan_nuget(data.decode("utf-8", "ignore"),
                             vuln_source=request.headers.get("X-Vuln-Source") or "",
                             xray_url=request.headers.get("X-Xray-Url") or "",
-                            xray_auth=request.headers.get("X-Xray-Auth") or "")
+                            xray_auth=request.headers.get("X-Xray-Auth") or "",
+                            vuln_fallback=request.headers.get("X-Vuln-Fallback") or "")
         _save_report_scan(request.headers.get("X-Request-Id"), "nuget", result)
         return result
     except ValueError as exc:
