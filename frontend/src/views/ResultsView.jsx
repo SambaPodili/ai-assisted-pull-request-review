@@ -1423,7 +1423,10 @@ function ScaScanner({ report, cfg }) {
               <i className="ti ti-arrows-shuffle"/> {data.fallback_note}
             </div>)}
           {data.osv_error
-            ? <div className="info-msg" style={{marginBottom:8,background:'#fffbeb',borderColor:'#fcd34d',color:'#92400e'}}><i className="ti ti-alert-triangle"/> Could not reach the vulnerability database — <strong>this scan did not run</strong> (not “no vulnerabilities”). Check the source in Settings → Vulnerability database, network/proxy access, or <code>OSV_CA_BUNDLE</code> / <code>OSV_VERIFY_SSL</code> / <code>OSV_PROXY_URL</code> in the backend .env.</div>
+            ? <div className="info-msg" style={{marginBottom:8,background:'#fffbeb',borderColor:'#fcd34d',color:'#92400e'}}>
+                <i className="ti ti-alert-triangle"/> Could not reach the vulnerability database — <strong>this scan did not run</strong> (not “no vulnerabilities”). Check the source in Settings → Vulnerability database, network/proxy access, or <code>OSV_CA_BUNDLE</code> / <code>OSV_VERIFY_SSL</code> / <code>OSV_PROXY_URL</code> in the backend .env.
+                <div style={{marginTop:6,fontSize:11.5,fontFamily:'var(--mono)',opacity:.85,wordBreak:'break-word'}}>Detail: {data.osv_error}</div>
+              </div>
             : <div style={{fontSize:12.5,fontWeight:700,marginBottom:8,color:data.vulnerabilities.length?'#b91c1c':'#166534'}}>{data.summary}</div>}
           {data.vulnerabilities.map((v,i)=>(
             <div key={i} className="finding">

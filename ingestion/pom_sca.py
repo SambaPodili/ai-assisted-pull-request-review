@@ -294,6 +294,10 @@ def _vuln_lookup(items, timeout_s, source="", xray_url="", xray_auth="", fallbac
         from ingestion import osv_offline
         ecos = {e for (_n, e, _v) in items}
         if not osv_offline.available(ecos):
+            # Make the reason VISIBLE in the surfaced error, not just the log —
+            # 'why didn't it use my all.zip' must be answerable from the UI banner.
+            _vuln_lookup._offline_diag = osv_offline.diagnose(ecos)
+            log.warning("Offline OSV snapshot not usable: %s", _vuln_lookup._offline_diag)
             return None
         try:
             hits = osv_offline.query_versioned_offline(items)
@@ -311,10 +315,15 @@ def _vuln_lookup(items, timeout_s, source="", xray_url="", xray_auth="", fallbac
         return src, _query_one_source(src, items, timeout_s, xray_url, xray_auth), ""
     except OsvUnavailable as primary_exc:
         fb = (fallback or getattr(cfg, "vuln_fallback_source", "none") or "none").strip().lower()
-        if fb in ("none", "", src):
+        if fb == "offline":
+            # Explicitly selected "OSV local copy" — go straight to the snapshot.
             off = _offline_last_resort(str(primary_exc))
             if off:
                 return off
+            diag = getattr(_vuln_lookup, "_offline_diag", "")
+            raise OsvUnavailable(f"{primary_exc} [{diag}]" if diag else str(primary_exc)) from primary_exc
+        if fb in ("none", "", src):
+            # 'none' = fail honestly, exactly as labelled — no hidden lookups.
             raise
         log.warning("Primary vuln source '%s' unavailable (%s) — falling back to '%s'",
                     src, primary_exc, fb)
@@ -324,7 +333,9 @@ def _vuln_lookup(items, timeout_s, source="", xray_url="", xray_auth="", fallbac
             off = _offline_last_resort(f"{src}: {primary_exc}; {fb}: {fb_exc}")
             if off:
                 return off
-            raise OsvUnavailable(f"{src}: {primary_exc}; fallback {fb}: {fb_exc}") from fb_exc
+            diag = getattr(_vuln_lookup, "_offline_diag", "")
+            raise OsvUnavailable(f"{src}: {primary_exc}; fallback {fb}: {fb_exc}"
+                                 + (f" [{diag}]" if diag else "")) from fb_exc
         note = (f"Primary vulnerability source '{src}' was unreachable — results served "
                 f"from fallback '{fb}'. Coverage may differ between sources.")
         return fb, hits, note

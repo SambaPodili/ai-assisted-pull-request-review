@@ -119,3 +119,23 @@ def test_per_request_fallback_overrides_settings(monkeypatch):
     monkeypatch.setattr("ingestion.osv_client.query_versioned", lambda *a, **k: {("g:a", "1.0"): []})
     src, hits, note = _vuln_lookup([("g:a", "Maven", "1.0")], 5, source="xray", fallback="osv")
     assert src == "osv" and "fallback" in note.lower()
+
+
+def test_offline_selected_as_explicit_fallback(monkeypatch, tmp_path):
+    """fallback='offline' goes straight to the local snapshot when primary dies."""
+    import json, zipfile
+    from ingestion.pom_sca import _vuln_lookup
+    adv = {"id": "GHSA-loc", "summary": "s", "aliases": ["CVE-7"],
+           "database_specific": {"severity": "HIGH"},
+           "affected": [{"package": {"ecosystem": "Maven", "name": "g:a"}, "versions": ["1.0"]}]}
+    with zipfile.ZipFile(tmp_path / "Maven.zip", "w") as z:
+        z.writestr("a.json", json.dumps(adv))
+    import ingestion.osv_offline as off
+    off._INDEX.clear()
+    monkeypatch.setenv("OSV_OFFLINE_DIR", str(tmp_path))
+    _cfg(monkeypatch, fallback="none")             # env none — UI picks offline
+    monkeypatch.setattr("ingestion.osv_client.query_versioned",
+                        lambda *a, **k: (_ for _ in ()).throw(OsvUnavailable("osv down")))
+    src, hits, note = _vuln_lookup([("g:a", "Maven", "1.0")], 5, source="osv", fallback="offline")
+    assert src == "osv-offline" and "OFFLINE OSV snapshot" in note
+    assert hits[("g:a", "1.0")][0].vuln_id == "GHSA-loc"

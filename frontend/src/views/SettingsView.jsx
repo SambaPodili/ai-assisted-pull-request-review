@@ -276,7 +276,8 @@ export default function SettingsView({ showToast }) {
         <div style={{ display:'flex', gap:16, marginBottom:12 }}>
           {[['osv','OSV (public — api.osv.dev)'],['xray','JFrog Xray (Artifactory, in-house)']].map(([v,label])=>(
             <label key={v} style={{ display:'flex', alignItems:'center', gap:6, fontSize:13, cursor:'pointer' }}>
-              <input type="radio" name="vulnsrc" checked={vulnSrc===v} onChange={()=>setVulnSrc(v)} /> {label}
+              <input type="radio" name="vulnsrc" checked={vulnSrc===v}
+                onChange={()=>{ setVulnSrc(v); if (vulnFb===v) setVulnFb('none') }} /> {label}
             </label>
           ))}
         </div>
@@ -294,12 +295,13 @@ export default function SettingsView({ showToast }) {
         </>)}
         <div className="field">
           <label>If unreachable, fall back to</label>
-          <select value={vulnFb} onChange={e=>setVulnFb(e.target.value)} style={{ maxWidth:340 }}>
+          <select value={vulnFb} onChange={e=>setVulnFb(e.target.value)} style={{ maxWidth:380 }}>
             <option value="none">none — fail with a clear error (default)</option>
-            <option value="osv">OSV (public) — sends dependency names outside the network</option>
-            <option value="xray">JFrog Xray (in-house)</option>
+            {vulnSrc==='osv'  && <option value="xray">JFrog Xray (Artifactory, in-house)</option>}
+            {vulnSrc==='xray' && <option value="osv">OSV (public) — sends dependency names outside the network</option>}
+            <option value="offline">OSV local copy (offline snapshot — OSV_OFFLINE_DIR)</option>
           </select>
-          <div className="field-hint">Tried when the primary source is down (after retries). The offline OSV snapshot (<code>OSV_OFFLINE_DIR</code>) and the last-known-good cache are always the final resorts.</div>
+          <div className="field-hint">Tried when the primary source is down (after retries). If a live fallback also fails, the OSV local copy is still tried last; the last-known-good scan cache is the final resort.</div>
         </div>
         <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
           <button className="btn btn-primary" onClick={()=>{ update({ vulnSource: vulnSrc, vulnFallback: vulnFb, xrayUrl: xrayUrl.replace(/\/$/, ''), xrayAuth }); setXrayMsg('✓ Saved'); setTimeout(()=>setXrayMsg(''), 2000) }}><i className="ti ti-device-floppy" />Save</button>

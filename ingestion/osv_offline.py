@@ -44,15 +44,47 @@ def _offline_dir() -> str:
 
 
 def _zip_path(ecosystem: str) -> str:
+    """Find the snapshot zip for an ecosystem — tolerant of naming/casing:
+    Maven.zip, maven.zip, Maven-all.zip, Maven_all.zip, Maven/all.zip …"""
+    base = _offline_dir()
+    if not base or not os.path.isdir(base):
+        return ""
+    eco = ecosystem.lower()
+    accepted = {f"{eco}.zip", f"{eco}-all.zip", f"{eco}_all.zip", f"{eco}all.zip"}
+    try:
+        for entry in os.listdir(base):
+            p = os.path.join(base, entry)
+            if os.path.isfile(p) and entry.lower() in accepted:
+                return p
+            # ecosystem subfolder containing all.zip (any casing)
+            if os.path.isdir(p) and entry.lower() == eco:
+                for sub in os.listdir(p):
+                    if sub.lower().endswith(".zip"):
+                        return os.path.join(p, sub)
+    except OSError:
+        return ""
+    return ""
+
+
+def diagnose(ecosystems: set[str]) -> str:
+    """Human-readable reason the offline snapshot is (un)usable — surfaced in the
+    scan error so a misconfiguration is visible in the UI, not just in logs."""
     base = _offline_dir()
     if not base:
-        return ""
-    for cand in (os.path.join(base, f"{ecosystem}.zip"),
-                 os.path.join(base, ecosystem, "all.zip"),
-                 os.path.join(base, f"{ecosystem.lower()}.zip")):
-        if os.path.isfile(cand):
-            return cand
-    return ""
+        return "offline snapshot disabled (OSV_OFFLINE_DIR not set)"
+    if not os.path.isdir(base):
+        return f"offline snapshot dir does not exist: {base}"
+    found = {e: os.path.basename(_zip_path(e)) for e in ecosystems if _zip_path(e)}
+    if found:
+        return "offline snapshot available: " + ", ".join(f"{e}→{f}" for e, f in found.items())
+    try:
+        listing = ", ".join(sorted(os.listdir(base))[:8]) or "(empty)"
+    except OSError as exc:
+        listing = f"(unreadable: {exc})"
+    ecos = "/".join(sorted(ecosystems))
+    return (f"no snapshot for {ecos} in {base} — found [{listing}]. "
+            f"Name the file e.g. Maven.zip or NuGet.zip (or Maven/all.zip); "
+            f"a bare 'all.zip' is ambiguous and ignored.")
 
 
 def available(ecosystems: set[str] | None = None) -> bool:
