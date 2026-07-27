@@ -1,0 +1,69 @@
+{
+  "overall_recall": 1.0,
+  "overall_precision": 1.0,
+  "by_agent": {
+    "ast_analysis": {
+      "recall": 1.0,
+      "precision": 1.0,
+      "tp": 1,
+      "fp": 0,
+      "fn": 0
+    },
+    "iac_analysis": {
+      "recall": 1.0,
+      "precision": 1.0,
+      "tp": 1,
+      "fp": 0,
+      "fn": 0
+    },
+    "interface": {
+      "recall": 1.0,
+      "precision": 1.0,
+      "tp": 1,
+      "fp": 0,
+      "fn": 0
+    },
+    "maintainability": {
+      "recall": 1.0,
+      "precision": 1.0,
+      "tp": 1,
+      "fp": 0,
+      "fn": 0
+    },
+    "performance_impact": {
+      "recall": 1.0,
+      "precision": 1.0,
+      "tp": 1,
+      "fp": 0,
+      "fn": 0
+    },
+    "schema_change": {
+      "recall": 1.0,
+      "precision": 1.0,
+      "tp": 1,
+      "fp": 0,
+      "fn": 0
+    },
+    "secrets_entropy": {
+      "recall": 1.0,
+      "precision": 1.0,
+      "tp": 2,
+      "fp": 0,
+      "fn": 0
+    },
+    "security": {
+      "recall": 1.0,
+      "precision": 1.0,
+      "tp": 2,
+      "fp": 0,
+      "fn": 0
+    },
+    "taint_analysis": {
+      "recall": 1.0,
+      "precision": 1.0,
+      "tp": 2,
+      "fp": 0,
+      "fn": 0
+    }
+  }
+}

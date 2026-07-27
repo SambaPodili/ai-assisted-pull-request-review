@@ -86,6 +86,50 @@ def _make_retry(max_attempts: int, max_wait: int, is_retryable):
     )
 
 
+def _make_retry_conditional(max_attempts: int, max_wait: int, is_retryable, timeout_limit: int):
+    """Like _make_retry, but timeout/connection errors get a SEPARATE (small)
+    attempt limit. On a slow or overloaded self-hosted model a timeout won't
+    recover by re-issuing the SAME heavy request — retrying it 5× just piles more
+    load on the endpoint and makes every other agent time out too (a retry storm).
+    Fail those fast (default 1 attempt) and let the pipeline move on."""
+    if not _HAS_TENACITY:
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _noop():
+            yield
+
+        class _NoopRetrying:
+            def __iter__(self):
+                yield _noop()
+
+        return _NoopRetrying()
+
+    from tenacity import Retrying
+    from tenacity.stop import stop_base
+
+    def _is_timeout(exc) -> bool:
+        try:
+            from openai import APITimeoutError, APIConnectionError
+            return isinstance(exc, (APITimeoutError, APIConnectionError))
+        except ImportError:
+            return False
+
+    class _CondStop(stop_base):
+        def __call__(self, retry_state) -> bool:
+            exc = retry_state.outcome.exception() if retry_state.outcome else None
+            limit = timeout_limit if _is_timeout(exc) else max_attempts
+            return retry_state.attempt_number >= max(1, limit)
+
+    return Retrying(
+        retry=retry_if_exception(is_retryable),
+        wait=wait_exponential_jitter(initial=5, max=max_wait),
+        stop=_CondStop(),
+        before_sleep=before_sleep_log(log, logging.WARNING),
+        reraise=True,
+    )
+
+
 # ── Model config ──────────────────────────────────────────────────────────────
 
 def _normalize_base_url(url: str) -> str:
@@ -400,17 +444,73 @@ class UnifiedLLMClient:
 
         from config.settings import get_settings
         cfg = get_settings()
+        temperature = float(getattr(cfg, "llm_temperature", 0.0))
+        use_stream = bool(getattr(cfg, "llm_stream", True))
 
-        resp = None
+        def _one_call():
+            """One completion → (text, reasoning, in_tokens, out_tokens).
+
+            Streaming (default) makes the client-level timeout a PER-CHUNK read
+            timeout: a slow model succeeds as long as it keeps emitting tokens,
+            instead of the whole multi-minute generation having to fit inside a
+            single read window (the cause of the APITimeoutError on heavy agents)."""
+            if not use_stream:
+                r = client.chat.completions.create(
+                    model=self._cfg.model, max_tokens=max_tokens,
+                    temperature=temperature, messages=messages,
+                )
+                u, m = r.usage, r.choices[0].message
+                reasoning = (getattr(m, "reasoning_content", None)
+                             or (getattr(m, "model_extra", None) or {}).get("reasoning_content") or "")
+                return ((getattr(m, "content", None) or ""), reasoning,
+                        (u.prompt_tokens if u else 0), (u.completion_tokens if u else 0))
+
+            kwargs = dict(model=self._cfg.model, max_tokens=max_tokens,
+                          temperature=temperature, messages=messages, stream=True)
+            try:
+                stream = client.chat.completions.create(
+                    **kwargs, stream_options={"include_usage": True})
+            except TypeError:
+                stream = client.chat.completions.create(**kwargs)   # very old SDK
+            content, reasoning = [], []
+            in_tok = out_tok = 0
+            with stream as events:
+                for ev in events:
+                    u = getattr(ev, "usage", None)
+                    if u:
+                        in_tok  = getattr(u, "prompt_tokens", None) or in_tok
+                        out_tok = getattr(u, "completion_tokens", None) or out_tok
+                    for ch in (getattr(ev, "choices", None) or []):
+                        d = getattr(ch, "delta", None)
+                        if d is None:
+                            continue
+                        if getattr(d, "content", None):
+                            content.append(d.content)
+                        rc = (getattr(d, "reasoning_content", None)
+                              or (getattr(d, "model_extra", None) or {}).get("reasoning_content"))
+                        if rc:
+                            reasoning.append(rc)
+            text_out, reasoning_out = "".join(content), "".join(reasoning)
+            # Many self-hosted servers (vLLM/SGLang/older builds) DON'T emit the
+            # final usage chunk even with stream_options — so in_tok/out_tok stay 0
+            # and token counts vanish from the UI/ELK. Estimate from the text when
+            # the server didn't report usage, so accounting is never blank.
+            if not in_tok:
+                from core.token_manager import estimate_tokens
+                in_tok = estimate_tokens(system) + estimate_tokens(user)
+            if not out_tok:
+                from core.token_manager import estimate_tokens
+                out_tok = estimate_tokens(text_out) + estimate_tokens(reasoning_out)
+            return text_out, reasoning_out, in_tok, out_tok
+
+        text = reasoning = ""
+        in_tokens = out_tokens = 0
+        timeout_limit = int(getattr(cfg, "llm_timeout_retry_attempts", 1) or 1)
         try:
-            for attempt in _make_retry(cfg.llm_retry_attempts, cfg.llm_retry_max_wait_s, _is_retryable_openai):
+            for attempt in _make_retry_conditional(cfg.llm_retry_attempts, cfg.llm_retry_max_wait_s,
+                                                   _is_retryable_openai, timeout_limit):
                 with attempt:
-                    resp = client.chat.completions.create(
-                        model=self._cfg.model,
-                        max_tokens=max_tokens,
-                        temperature=float(getattr(cfg, "llm_temperature", 0.0)),
-                        messages=messages,
-                    )
+                    text, reasoning, in_tokens, out_tokens = _one_call()
         except Exception as exc:
             # Surface the actual endpoint so connection failures are diagnosable
             # (wrong/unreachable base_url, proxy/TLS, scheme) instead of a bare
@@ -424,30 +524,19 @@ class UnifiedLLMClient:
                 ) from exc
             raise
 
-        usage = resp.usage
-        msg   = resp.choices[0].message
-        text  = (getattr(msg, "content", None) or "")
         # Reasoning models (Qwen/QwQ/DeepSeek-R1 via vLLM/SGLang) split the output:
         # chain-of-thought goes to `reasoning_content`, the answer to `content`. If
         # the answer is EMPTY but reasoning is present, the model ran out of tokens
         # mid-think (raise LLM_MAX_OUTPUT_TOKENS) — OR some deployments put the whole
         # output (JSON included) in reasoning_content. Fall back to it so the JSON
         # can still be recovered, and log the situation so the cause is obvious.
-        if not text.strip():
-            reasoning = (getattr(msg, "reasoning_content", None)
-                         or (getattr(msg, "model_extra", None) or {}).get("reasoning_content")
-                         or "")
-            if reasoning.strip():
-                log.warning("[LLM] '%s' returned empty content but %d chars of reasoning_content "
-                            "— using it as fallback. If answers are still empty, raise "
-                            "LLM_MAX_OUTPUT_TOKENS (reasoning is consuming the output budget).",
-                            self._cfg.model, len(reasoning))
-                text = reasoning
-        return LLMResponse(
-            text=text,
-            input_tokens=usage.prompt_tokens     if usage else 0,
-            output_tokens=usage.completion_tokens if usage else 0,
-        )
+        if not text.strip() and reasoning.strip():
+            log.warning("[LLM] '%s' returned empty content but %d chars of reasoning_content "
+                        "— using it as fallback. If answers are still empty, raise "
+                        "LLM_MAX_OUTPUT_TOKENS (reasoning is consuming the output budget).",
+                        self._cfg.model, len(reasoning))
+            text = reasoning
+        return LLMResponse(text=text, input_tokens=in_tokens, output_tokens=out_tokens)
 
 
 # ── Factory ───────────────────────────────────────────────────────────────────

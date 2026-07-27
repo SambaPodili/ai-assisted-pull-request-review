@@ -250,7 +250,7 @@ class Settings(BaseSettings):
     rate_limit_rpm:   int  = Field(default=240, alias="RATE_LIMIT_RPM")   # requests per minute per key (UI polls a lot)
 
     # ── Analysis reliability ──────────────────────────────────────────────────
-    analysis_timeout_s: int = Field(default=600, alias="ANALYSIS_TIMEOUT_S")   # 10 min hard cap (20 agents, potential 529 retries)
+    analysis_timeout_s: int = Field(default=900, alias="ANALYSIS_TIMEOUT_S")   # 15 min hard cap (20 agents; higher for slow self-hosted models)
     # Pipeline engine. The threaded pipeline runs the ~20 agents in parallel
     # (ThreadPoolExecutor) and is the fast default. LangGraph runs fan-out nodes
     # sequentially, which is much slower — opt in only if you need its tracing.
@@ -280,11 +280,24 @@ class Settings(BaseSettings):
     # ── LLM retry (tenacity) ──────────────────────────────────────────────────
     llm_retry_attempts:    int = Field(default=5,  alias="LLM_RETRY_ATTEMPTS")
     llm_retry_max_wait_s:  int = Field(default=90, alias="LLM_RETRY_MAX_WAIT_S")
-    # Per-call request timeout (seconds). A stuck/unreachable model endpoint
-    # fails fast instead of hanging and blowing the overall analysis timeout.
-    # Kept well under analysis_timeout_s so the worst-case across the agent DAG
-    # (a few sequential layers) still fits inside the overall budget.
-    llm_request_timeout_s: int = Field(default=45, alias="LLM_REQUEST_TIMEOUT_S")
+    # SEPARATE, smaller retry cap for timeout/connection errors on the OpenAI-
+    # compatible path. A timeout won't recover by re-issuing the same heavy
+    # request — retrying it 5× just hammers an already-overloaded self-hosted
+    # endpoint and makes every other agent time out too. Fail fast (1 = no retry).
+    llm_timeout_retry_attempts: int = Field(default=1, alias="LLM_TIMEOUT_RETRY_ATTEMPTS")
+    # Per-call request timeout (seconds). With streaming ON (llm_stream, the
+    # default for OpenAI-compatible endpoints) this is a PER-CHUNK read timeout —
+    # a slow model succeeds as long as it keeps emitting tokens within this
+    # window, so it mainly needs to cover prefill / time-to-first-token, not the
+    # whole generation. With streaming OFF it must cover the ENTIRE generation,
+    # which for the heavy agents (QA scenarios, interface/reference impact) on a
+    # self-hosted GPU can be minutes — raise it well up (180–300) in that case.
+    llm_request_timeout_s: int = Field(default=120, alias="LLM_REQUEST_TIMEOUT_S")
+    # Stream OpenAI-compatible completions so the read timeout applies per chunk
+    # instead of to the whole (possibly multi-minute) generation. This is the
+    # main defence against APITimeoutError on slow on-prem models. Set false only
+    # if a server rejects streaming.
+    llm_stream: bool = Field(default=True, alias="LLM_STREAM")
     # Max LLM requests in flight at once across the whole process. The pipeline
     # fans out ~13 agents in parallel; cloud providers (Anthropic/OpenAI) handle
     # that easily, but a self-hosted / custom OpenAI-compatible server (vLLM,
