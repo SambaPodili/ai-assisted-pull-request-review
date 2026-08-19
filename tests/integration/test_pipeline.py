@@ -188,6 +188,72 @@ class TestPhase3Pipeline:
         assert report.total_tokens >= 0
 
 
+# ── Agent selection (selected_agents) ───────────────────────────────────────────
+
+def _zero_budgets() -> dict:
+    """All agents immediately use their deterministic static fallback — lets us
+    exercise selection/gating logic end-to-end without mocking ~20 LLM clients."""
+    from config.settings import get_settings
+    return {k: 0 for k in get_settings().agent_budgets}
+
+
+class TestAgentSelection:
+
+    def test_fast_preset_narrows_execution(self):
+        orch = ImpactAnalysisOrchestrator(api_key="sk-test", phase=3, token_budgets=_zero_budgets())
+        req  = _req()
+        req.selected_agents = ["code_analysis", "security"]
+
+        report = orch.analyse(req)
+        assert report.code_analysis is not None
+        assert report.security      is not None
+        assert report.dependency    is None
+        assert report.test_coverage is None
+        assert report.interface     is None
+        assert report.risk          is None
+        assert report.remediation   is None
+        assert report.ast_analysis  is None      # Phase 1b also narrowed
+        assert report.gate_decision is not None  # gate still computes with a sparse report
+
+    def test_remediation_selection_auto_includes_risk(self):
+        orch = ImpactAnalysisOrchestrator(api_key="sk-test", phase=3, token_budgets=_zero_budgets())
+        req  = _req()
+        req.selected_agents = ["remediation"]
+
+        report = orch.analyse(req)
+        assert report.risk        is not None, "risk must be auto-included — remediation reads its output"
+        assert report.remediation is not None
+
+    def test_unknown_agent_keys_are_ignored_not_fatal(self):
+        orch = ImpactAnalysisOrchestrator(api_key="sk-test", phase=3, token_budgets=_zero_budgets())
+        req  = _req()
+        req.selected_agents = ["bogus_agent_name", "security"]
+
+        report = orch.analyse(req)
+        assert report.security      is not None
+        assert report.code_analysis is None
+
+    def test_empty_selection_falls_back_to_full_run(self):
+        orch = ImpactAnalysisOrchestrator(api_key="sk-test", phase=3, token_budgets=_zero_budgets())
+        req  = _req()
+        req.selected_agents = []   # resolves to empty after normalization → treated as None
+
+        report = orch.analyse(req)
+        assert report.code_analysis is not None
+        assert report.security      is not None
+        assert report.dependency    is not None
+        assert report.risk          is not None
+        assert report.remediation   is not None
+
+    def test_none_selection_is_identical_to_pre_feature_behaviour(self):
+        orch = ImpactAnalysisOrchestrator(api_key="sk-test", phase=3, token_budgets=_zero_budgets())
+        req  = _req()
+        assert req.selected_agents is None
+
+        report = orch.analyse(req)
+        assert report.remediation is not None
+
+
 # ── Report formatter ───────────────────────────────────────────────────────────
 
 class TestReportFormatter:

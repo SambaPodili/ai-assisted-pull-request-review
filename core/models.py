@@ -68,6 +68,14 @@ class AgentName(str, Enum):
     CROSS_REPO_IMPACT     = "cross_repo_impact"
 
 
+# Every selectable agent's report field name — identical to AgentName.value in
+# every case (verified against AnalysisReport's field list below). Used by
+# AnalysisReport.compute_agent_run_summary(); kept module-level (not a class
+# attribute) so it's a plain constant, not something Pydantic tries to treat
+# as a field.
+_REPORT_AGENT_FIELDS: list[str] = [a.value for a in AgentName if a != AgentName.ORCHESTRATOR]
+
+
 class DeploymentStrategy(str, Enum):
     STANDARD     = "standard"
     CANARY       = "canary"
@@ -117,6 +125,13 @@ class AnalysisRequest(BaseModel):
     pr:           PRMetadata     = Field(default_factory=PRMetadata)
     model_config_: dict[str, Any] = {}   # per-request LLM provider override
     deep_scan:    bool = False            # analyse ALL changed files in batches (no sampling)
+    selected_agents: list[str] | None = None   # None = run everything (default, full backward compat)
+    # Free-text prioritization guidance from the submitter (e.g. "focus on security
+    # in the payment module"). Scanned by governance.prompt_guard before it ever
+    # reaches here. NEVER copy this onto AnalysisReport — gate_policy.evaluate_policy
+    # and governance.rationale.build_rationale both take only the report, by design,
+    # so anything on AnalysisRequest structurally cannot reach the deterministic gate.
+    user_instructions: str = ""
     created_at:   datetime = Field(default_factory=datetime.utcnow)
 
     @property
@@ -528,6 +543,7 @@ class QAScenario(BaseModel):
     preconditions:       list[str]              = []   # what must be true before the test
     acceptance_criteria: list[str]              = []   # the pass/fail conditions
     test_skeleton:       str                    = ""   # ready-to-run test stub for the file's language
+    test_skeleton_filename: str                 = ""   # e.g. "test_payment_service.py" — only the backend knows the resolved language/naming convention
 
 
 class QAScenariosResult(AgentResultBase):
@@ -745,6 +761,16 @@ class AnalysisReport(BaseModel):
     token_usage:   list[AgentTokenUsage] = []
     errors:        list[str] = []
 
+    # Distinct file count from the analysed diff — set at finalization.
+    files_changed: int = 0
+    # Sorted, deduped file paths from the analysed diff — set at finalization
+    # alongside files_changed.
+    files_changed_list: list[str] = []
+    # Per-agent execution outcome (successful / fallback / skipped) + rollup
+    # counts — set at finalization by compute_agent_run_summary(). See that
+    # method's docstring for the exact meaning of each bucket.
+    agent_run_summary: dict = {}
+
     # Deterministic gate policy — set at finalization. gate_policy_reasons lists
     # the hard rules that fired; gate_overridden_by_policy is True when policy
     # made the gate stricter than the AI proposal.
@@ -788,6 +814,33 @@ class AnalysisReport(BaseModel):
     @property
     def total_tokens(self) -> int:
         return sum(t.tokens_used for t in self.token_usage)
+
+    def compute_agent_run_summary(self) -> dict:
+        """
+        Execution outcome for every one of the _REPORT_AGENT_FIELDS agents:
+          - "successful": ran and returned a real LLM result (fallback_used=False)
+          - "fallback":   ran but used the deterministic fallback — budget
+                          exhausted, an LLM call error, or an open circuit
+                          breaker (fallback_used=True in all three cases)
+          - "skipped":    never ran at all — excluded by selected_agents or by
+                          the server's ANALYSIS_PHASE ceiling
+        BaseAgent.run() always catches its own exceptions and returns a
+        fallback result, so a None field can only mean "skipped", never "the
+        agent crashed with nothing to show".
+        """
+        by_agent: dict[str, str] = {}
+        counts = {"successful": 0, "fallback": 0, "skipped": 0}
+        for name in _REPORT_AGENT_FIELDS:
+            result = getattr(self, name, None)
+            if result is None:
+                status = "skipped"
+            elif getattr(result, "fallback_used", False):
+                status = "fallback"
+            else:
+                status = "successful"
+            by_agent[name] = status
+            counts[status] += 1
+        return {**counts, "total": len(_REPORT_AGENT_FIELDS), "by_agent": by_agent}
 
     @property
     def gate_decision(self) -> GateDecision:

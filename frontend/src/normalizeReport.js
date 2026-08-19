@@ -287,6 +287,9 @@ export function normalizeReport(r) {
       ? r.agent_timings
       : (Array.isArray(r.token_usage) ? r.token_usage.map(u=>({ agent:(u.agent&&u.agent.value)||u.agent||'', tokens:u.tokens_used||0, model:u.model||'', duration_s:u.duration_s||0 })) : []),
     errors: r.errors || [],
+    files_changed: r.files_changed || 0,
+    files_changed_list: r.files_changed_list || [],
+    agent_run_summary: r.agent_run_summary || null,
     request_id: r.request_id || '',
     // PR + repo context so "Post to PR" / overrides work when a report is reopened
     // from Insights/History (where selectedPR isn't restored).

@@ -245,6 +245,7 @@ class Settings(BaseSettings):
         alias="CORS_ORIGINS",
     )
     max_diff_bytes:   int  = Field(default=5_000_000, alias="MAX_DIFF_BYTES")   # 5 MB
+    user_instructions_max_chars: int = Field(default=1500, alias="USER_INSTRUCTIONS_MAX_CHARS")
 
     # ── Rate limiting ─────────────────────────────────────────────────────────
     rate_limit_rpm:   int  = Field(default=240, alias="RATE_LIMIT_RPM")   # requests per minute per key (UI polls a lot)

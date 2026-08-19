@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { AppProvider, useApp } from './AppContext'
+import { scanUserInstructions } from './promptGuard'
 import './index.css'
 
 import ErrorBoundary from './components/ErrorBoundary'
@@ -88,7 +89,12 @@ function AppShell() {
     const cur = STEP_VIEWS.indexOf(view)
     if (cur === 2) {
       if (!canProceedFromTarget(state)) {
-        showToast('Please select a pull request, branch pair, or commit SHA first.', 'warn')
+        showToast(
+          scanUserInstructions(state.userInstructions||'').blocked
+            ? 'Fix the flagged analysis priorities text before running.'
+            : 'Please select a pull request, branch pair, or commit SHA first.',
+          'warn'
+        )
         return
       }
       // runNonce forces RunningView to remount (fresh refs) so a 2nd run always
@@ -124,8 +130,6 @@ function AppShell() {
       }
       if ((e.key === 'p' || e.key === 'P') && view === 'results')
         document.dispatchEvent(new CustomEvent('ciaa:showPRDesc'))
-      if ((e.key === 'c' || e.key === 'C') && view === 'results')
-        document.dispatchEvent(new CustomEvent('ciaa:switchTab', { detail: 'checklist' }))
       if (e.key === 'n' || e.key === 'N') {
         update({ report: null, analysisRequested: false, selectedPR: null, sourceBranch: '', commitSha: '' })
         showView('configure')
@@ -184,6 +188,7 @@ function AppShell() {
 }
 
 function canProceedFromTarget(state) {
+  if (scanUserInstructions(state.userInstructions||'').blocked) return false
   if (state.targetType === 'pr')     return !!state.selectedPR
   if (state.targetType === 'branch') return !!(state.sourceBranch && state.targetBranch && state.sourceBranch !== state.targetBranch)
   if (state.targetType === 'commit') return state.commitSha.length >= 5

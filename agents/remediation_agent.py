@@ -15,7 +15,7 @@ from core.models import (
     AgentName, AnalysisRequest, AnalysisReport,
     RemediationResult, DeploymentStrategy, RiskLevel, GateDecision,
 )
-from agents.base_agent import BaseAgent
+from agents.base_agent import BaseAgent, format_user_priorities
 
 
 class RemediationAgent(BaseAgent[RemediationResult]):
@@ -72,7 +72,7 @@ class RemediationAgent(BaseAgent[RemediationResult]):
             f"Suggested deployment: {strategy}\n"
             f"Top findings:\n" + "\n".join(f"  - {x}" for x in top_findings)
         )
-        return context_str
+        return context_str + format_user_priorities(request.user_instructions)
 
     def fallback_result(self, request: AnalysisRequest) -> RemediationResult:
         return RemediationResult(

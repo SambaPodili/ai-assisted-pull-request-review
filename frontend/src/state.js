@@ -33,6 +33,20 @@ export const AGENT_ORDER = [
   'dependency','test_coverage','interface','risk','remediation',
 ];
 
+// Analysis-scope presets for the Target view's "Analysis scope" card. Thorough
+// reuses AGENT_ORDER directly so it can never drift from the canonical list —
+// it's also what an omitted/`null` selected_agents resolves to server-side.
+export const AGENT_PRESETS = {
+  fast:     ['code_analysis', 'security'],
+  standard: ['code_analysis', 'security', 'dependency', 'test_coverage', 'interface', 'risk'],
+  thorough: AGENT_ORDER,
+}
+export const AGENT_PRESET_META = {
+  fast:     { label: 'Fast',     desc: 'code_analysis + security only — fastest, catches the sharpest issues.' },
+  standard: { label: 'Standard', desc: 'Core review + risk gate. Lighter than today’s default full scan.' },
+  thorough: { label: 'Thorough', desc: `All ${AGENT_ORDER.length} agents — today's default full-depth review.` },
+}
+
 export const MODEL_PROVIDERS = {
   anthropic:    {
     label:'Anthropic Claude', icon:'✦',
@@ -125,6 +139,15 @@ export function createInitialState() {
     modelApiVer: localStorage.getItem('modelApiVer') || '2024-08-01-preview',
     judges: JSON.parse(localStorage.getItem('judges') || 'null') || defaultJudges(),
     deepScan: false,
+    // Analysis scope: 'fast' | 'standard' | 'thorough' (default preserves today's
+    // behaviour exactly — thorough resolves to selected_agents:null, no filtering).
+    agentPreset: 'thorough',
+    // null while a preset is used verbatim; a concrete agent-key array once the
+    // user edits the advanced checklist (seeded from the current preset).
+    customAgents: null,
+    // Free-text prioritization guidance for this analysis — not a saved
+    // preference, so not persisted to localStorage (matches deepScan).
+    userInstructions: '',
     functionalDocs: JSON.parse(localStorage.getItem('functionalDocs') || '[]'),
     repos: [],
     primaryRepo: null,

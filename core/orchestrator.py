@@ -67,6 +67,40 @@ except ImportError:
     log.info("langgraph not installed — using ThreadPoolExecutor pipeline")
 
 
+# All selectable agent keys, as used in AnalysisRequest.selected_agents — the
+# AgentName enum values (matches frontend AGENT_ORDER), minus ORCHESTRATOR
+# which isn't a runnable agent.
+_ALL_AGENT_KEYS: set[str] = {a.value for a in AgentName if a != AgentName.ORCHESTRATOR}
+
+# Phase-1b "advanced detection" agents are wired via short internal codes
+# (see _run_parallel_advanced's agents_map) that don't match the canonical
+# AgentName.value strings used in selected_agents. This is the single mapping
+# between the two — reused by both _run_parallel_advanced (selection filter)
+# and _record_advanced_usage (token accounting), so they can never drift apart.
+_P1B_SHORT_TO_AGENT: dict[str, AgentName] = {
+    "ast":        AgentName.AST_ANALYSIS,
+    "entropy":    AgentName.SECRETS_ENTROPY,
+    "taint":      AgentName.TAINT_ANALYSIS,
+    "iac":        AgentName.IAC_ANALYSIS,
+    "temporal":   AgentName.TEMPORAL_RISK,
+    "schema":     AgentName.SCHEMA_CHANGE,
+    "qa":         AgentName.QA_SCENARIOS,
+    "ref":        AgentName.REFERENCE_IMPACT,
+    "perf":       AgentName.PERFORMANCE_IMPACT,
+    "privacy":    AgentName.DATA_PRIVACY,
+    "maint":      AgentName.MAINTAINABILITY,
+    "license":    AgentName.LICENSE_COMPLIANCE,
+    "obs":        AgentName.OBSERVABILITY,
+    "functional": AgentName.FUNCTIONAL_VALIDATION,
+    "xrepo":      AgentName.CROSS_REPO_IMPACT,
+}
+
+
+def _want(selected: set[str] | None, key: str) -> bool:
+    """True if `key` should run — selected=None means no filtering (run everything)."""
+    return selected is None or key in selected
+
+
 class ImpactAnalysisOrchestrator:
     """
     Top-level coordinator for the AI impact analysis framework.
@@ -167,6 +201,12 @@ class ImpactAnalysisOrchestrator:
         except Exception:
             use_lg = False
         if use_lg:
+            if request.selected_agents is not None:
+                log.warning(
+                    "[%s] selected_agents set but USE_LANGGRAPH=true — per-agent "
+                    "selection is only honoured on the threaded pipeline; running "
+                    "the full LangGraph graph.", request.request_id,
+                )
             report = self._langgraph_pipeline(request)
         else:
             report = self._threaded_pipeline(request)
@@ -220,6 +260,24 @@ class ImpactAnalysisOrchestrator:
             phase_run=self.phase,
         )
 
+        # ── Resolve agent selection (narrows execution only; None = run everything,
+        #    identical to today's behaviour) ────────────────────────────────────
+        selected: set[str] | None = None
+        if request.selected_agents is not None:
+            selected = set(request.selected_agents) & _ALL_AGENT_KEYS
+            dropped = set(request.selected_agents) - _ALL_AGENT_KEYS
+            if dropped:
+                log.warning("[%s] Unknown agent key(s) in selected_agents ignored: %s",
+                            request.request_id, sorted(dropped))
+            if "remediation" in selected and "risk" not in selected:
+                log.info("[%s] remediation selected — auto-including risk (hard dependency: "
+                         "remediation reads risk.gate_decision/overall_risk)", request.request_id)
+                selected.add("risk")
+            if not selected:
+                log.warning("[%s] selected_agents resolved to an empty set — running full pipeline",
+                            request.request_id)
+                selected = None
+
         # ── Phase 1: code_analysis + security ─────────────────────────────────
         from config.settings import get_settings as _gs
         _cfg = _gs()
@@ -254,15 +312,19 @@ class ImpactAnalysisOrchestrator:
             mb = getattr(_cfg, "deep_scan_max_batches", 10)
             log.info("[%s] Deep-scan enabled (%s) — %d changed files reviewed in batches",
                      request.request_id, _ds_reason, len(request.hunks))
-            report.code_analysis = run_batched(self._code, request, ctx.get(AgentName.CODE_ANALYSIS, {}),
-                                               merge_code, self._budgets, mc, mb)
-            report.security = run_batched(self._sec, request, ctx.get(AgentName.SECURITY, {}),
-                                          merge_security, self._budgets, mc, mb)
+            if _want(selected, "code_analysis"):
+                report.code_analysis = run_batched(self._code, request, ctx.get(AgentName.CODE_ANALYSIS, {}),
+                                                   merge_code, self._budgets, mc, mb)
+            if _want(selected, "security"):
+                report.security = run_batched(self._sec, request, ctx.get(AgentName.SECURITY, {}),
+                                              merge_security, self._budgets, mc, mb)
         else:
-            p1 = self._run_parallel({
-                AgentName.CODE_ANALYSIS: (self._code, ctx.get(AgentName.CODE_ANALYSIS, {})),
-                AgentName.SECURITY:      (self._sec,  ctx.get(AgentName.SECURITY, {})),
-            }, request, budget)
+            p1_agents = {}
+            if _want(selected, "code_analysis"):
+                p1_agents[AgentName.CODE_ANALYSIS] = (self._code, ctx.get(AgentName.CODE_ANALYSIS, {}))
+            if _want(selected, "security"):
+                p1_agents[AgentName.SECURITY] = (self._sec, ctx.get(AgentName.SECURITY, {}))
+            p1 = self._run_parallel(p1_agents, request, budget)
             report.code_analysis = p1.get(AgentName.CODE_ANALYSIS)
             report.security      = p1.get(AgentName.SECURITY)
             self._record_usage(report, p1, AgentName.CODE_ANALYSIS, AgentName.SECURITY)
@@ -277,8 +339,8 @@ class ImpactAnalysisOrchestrator:
         except Exception as exc:
             log.debug("[%s] Evidence guard skipped: %s", request.request_id, exc)
 
-        # ── Phase 1b: Advanced detection (parallel, always runs) ──────────────
-        p1b = self._run_parallel_advanced(request, budget, ctx)
+        # ── Phase 1b: Advanced detection (parallel) ────────────────────────────
+        p1b = self._run_parallel_advanced(request, budget, ctx, selected)
         report.ast_analysis    = p1b.get("ast")
         report.secrets_entropy = p1b.get("entropy")
         report.taint_analysis  = p1b.get("taint")
@@ -296,15 +358,20 @@ class ImpactAnalysisOrchestrator:
         report.observability      = p1b.get("obs")
         self._record_advanced_usage(report, p1b)
 
-        if self.phase < 2:
+        # Selection can only NARROW the server-configured phase ceiling, never widen it.
+        want_phase2 = selected is None or bool(selected & {"dependency", "test_coverage", "interface", "risk"})
+        if self.phase < 2 or not want_phase2:
             return self._finalize(report, budget, {h.file_path for h in request.hunks}, self._changed_lines(request), self._source_lines(request))
 
         # ── Phase 2: dependency + test_coverage + interface (parallel) ────────
-        p2 = self._run_parallel({
-            AgentName.DEPENDENCY:    (self._dep,   ctx.get(AgentName.DEPENDENCY, {})),
-            AgentName.TEST_COVERAGE: (self._test,  ctx.get(AgentName.TEST_COVERAGE, {})),
-            AgentName.INTERFACE:     (self._iface, ctx.get(AgentName.INTERFACE, {})),
-        }, request, budget)
+        p2_agents = {}
+        if _want(selected, "dependency"):
+            p2_agents[AgentName.DEPENDENCY] = (self._dep, ctx.get(AgentName.DEPENDENCY, {}))
+        if _want(selected, "test_coverage"):
+            p2_agents[AgentName.TEST_COVERAGE] = (self._test, ctx.get(AgentName.TEST_COVERAGE, {}))
+        if _want(selected, "interface"):
+            p2_agents[AgentName.INTERFACE] = (self._iface, ctx.get(AgentName.INTERFACE, {}))
+        p2 = self._run_parallel(p2_agents, request, budget)
 
         report.dependency    = p2.get(AgentName.DEPENDENCY)
         report.test_coverage = p2.get(AgentName.TEST_COVERAGE)
@@ -314,17 +381,20 @@ class ImpactAnalysisOrchestrator:
         budget.donate_unused("dependency", "risk")
 
         # ── Risk (sequential — needs all previous results) ────────────────────
-        risk_ctx = build_partial_report_context(report)
-        report.risk = self._risk.run(request, budget, risk_ctx)
-        self._record_single(report, report.risk, AgentName.RISK)
+        if _want(selected, "risk"):
+            risk_ctx = build_partial_report_context(report)
+            report.risk = self._risk.run(request, budget, risk_ctx)
+            self._record_single(report, report.risk, AgentName.RISK)
 
-        if self.phase < 3:
+        want_phase3 = selected is None or "remediation" in selected
+        if self.phase < 3 or not want_phase3:
             return self._finalize(report, budget, {h.file_path for h in request.hunks}, self._changed_lines(request), self._source_lines(request))
 
         # ── Phase 3: remediation (always last) ───────────────────────────────
-        rem_ctx = build_full_report_context(report)
-        report.remediation = self._rem.run(request, budget, rem_ctx)
-        self._record_single(report, report.remediation, AgentName.REMEDIATION)
+        if _want(selected, "remediation"):
+            rem_ctx = build_full_report_context(report)
+            report.remediation = self._rem.run(request, budget, rem_ctx)
+            self._record_single(report, report.remediation, AgentName.REMEDIATION)
 
         return self._finalize(report, budget, {h.file_path for h in request.hunks}, self._changed_lines(request), self._source_lines(request))
 
@@ -659,6 +729,7 @@ class ImpactAnalysisOrchestrator:
         request: AnalysisRequest,
         budget:  TokenBudgetManager,
         ctx:     dict,
+        selected: set[str] | None = None,
     ) -> dict:
         results: dict[str, Any] = {}
         agents_map = {
@@ -678,6 +749,11 @@ class ImpactAnalysisOrchestrator:
             "functional": self._func,
             "xrepo":    self._xrepo,
         }
+        if selected is not None:
+            agents_map = {k: v for k, v in agents_map.items()
+                          if _P1B_SHORT_TO_AGENT[k].value in selected}
+        if not agents_map:
+            return results
         # `ctx` is the per-agent map {AgentName: {...}}. Each agent must receive
         # ITS OWN context slice — not the whole map — otherwise context.get(
         # "model_config") is None and the agent silently ignores the per-request
@@ -751,6 +827,8 @@ class ImpactAnalysisOrchestrator:
         budget:  TokenBudgetManager,
     ) -> dict[AgentName, Any]:
         results: dict[AgentName, Any] = {}
+        if not agents:
+            return results
         breakers = get_breaker_registry()
 
         with ThreadPoolExecutor(max_workers=len(agents)) as pool:
@@ -964,6 +1042,10 @@ class ImpactAnalysisOrchestrator:
         except Exception as exc:
             log.debug("[%s] Compliance mapping skipped: %s", report.request_id, exc)
 
+        report.files_changed = len(changed_files) if changed_files else 0
+        report.files_changed_list = sorted(changed_files) if changed_files else []
+        report.agent_run_summary = report.compute_agent_run_summary()
+
         report.freeze_gate()   # snapshot computed gate/risk so storage never re-derives
         self._audit.log_analysis_completed(
             report.request_id,
@@ -971,13 +1053,16 @@ class ImpactAnalysisOrchestrator:
             report.final_risk.value,
             report.total_tokens,
         )
+        s = report.agent_run_summary
         log.info(
-            "[%s] Complete. Gate=%s Risk=%s Tokens=%d/%d",
+            "[%s] Complete. Gate=%s Risk=%s Tokens=%d/%d Files=%d Agents=%d ok/%d fallback/%d skipped",
             report.request_id,
             report.gate_decision.value,
             report.final_risk.value,
             report.total_tokens,
             report.token_budget,
+            report.files_changed,
+            s.get("successful", 0), s.get("fallback", 0), s.get("skipped", 0),
         )
         return report
 
@@ -1001,24 +1086,7 @@ class ImpactAnalysisOrchestrator:
 
     @staticmethod
     def _record_advanced_usage(report: AnalysisReport, results: dict) -> None:
-        advanced_map = {
-            "ast":      AgentName.AST_ANALYSIS,
-            "entropy":  AgentName.SECRETS_ENTROPY,
-            "taint":    AgentName.TAINT_ANALYSIS,
-            "iac":      AgentName.IAC_ANALYSIS,
-            "temporal": AgentName.TEMPORAL_RISK,
-            "schema":   AgentName.SCHEMA_CHANGE,
-            "qa":      AgentName.QA_SCENARIOS,
-            "ref":     AgentName.REFERENCE_IMPACT,
-            "perf":    AgentName.PERFORMANCE_IMPACT,
-            "privacy": AgentName.DATA_PRIVACY,
-            "maint":   AgentName.MAINTAINABILITY,
-            "license": AgentName.LICENSE_COMPLIANCE,
-            "obs":     AgentName.OBSERVABILITY,
-            "functional": AgentName.FUNCTIONAL_VALIDATION,
-            "xrepo":   AgentName.CROSS_REPO_IMPACT,
-        }
-        for key, agent_name in advanced_map.items():
+        for key, agent_name in _P1B_SHORT_TO_AGENT.items():
             result = results.get(key)
             if result and getattr(result, "token_usage", 0):
                 report.token_usage.append(AgentTokenUsage(

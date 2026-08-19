@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import * as d3 from 'd3'
 import { useApp } from '../AppContext'
-import { AGENT_META, AGENT_ORDER, MODEL_PROVIDERS, repoName, shortName, prNum, prHead, prBase, prTitle, fmtDuration, canPostToGit, canOverrideGate, agentEngine } from '../state'
+import { AGENT_META, AGENT_ORDER, AGENT_PRESETS, MODEL_PROVIDERS, repoName, shortName, prNum, prHead, prBase, prTitle, fmtDuration, canPostToGit, canOverrideGate, agentEngine } from '../state'
 import { normalizeReport } from '../normalizeReport'
 import { backendBase, backendHeaders, gitCfg, backendPost, backendGet } from '../api'
 import LivePipeline from '../components/LivePipeline'
@@ -105,6 +105,14 @@ function parseDiffToSnippets(diffText) {
     if (raw.startsWith('--- ')||raw.startsWith('+++ ')) continue
     const hm=raw.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/)
     if (hm) { oldLine=parseInt(hm[1]); newLine=parseInt(hm[2]); continue }
+    // Diff metadata/header lines — never real file content, must not be counted
+    // as a context line (was rendering "\ No newline at end of file" as a fake
+    // line of code with a bogus duplicate line number).
+    if (raw.startsWith('\\')||raw.startsWith('diff --git ')||raw.startsWith('index ')||
+        raw.startsWith('new file mode')||raw.startsWith('deleted file mode')||
+        raw.startsWith('old mode')||raw.startsWith('new mode')||
+        raw.startsWith('similarity index')||raw.startsWith('rename from')||raw.startsWith('rename to')||
+        raw.startsWith('copy from')||raw.startsWith('copy to')||raw.startsWith('Binary files ')) continue
     if (!currentFile) continue
     if (raw.startsWith('+')) result[currentFile].push({newLine:newLine++,oldLine:null,content:raw.slice(1),type:'add'})
     else if (raw.startsWith('-')) result[currentFile].push({newLine:null,oldLine:oldLine++,content:raw.slice(1),type:'del'})
@@ -255,6 +263,9 @@ function RunningView({ state, update, showToast }) {
           diff_text: diffText,
           deep_scan: !!state.deepScan,
           force: !!state.forceFresh,   // "Re-analyse fresh" — bypass the diff cache
+          // null (Thorough, no custom edits) = run everything, identical to pre-selection behaviour.
+          selected_agents: state.customAgents ?? (state.agentPreset === 'thorough' ? null : AGENT_PRESETS[state.agentPreset]),
+          user_instructions: state.userInstructions || '',
           llm_config: { provider:state.modelProvider, model:state.modelName, api_key:state.modelApiKey, base_url:state.modelBaseUrl, api_version:state.modelApiVer },
           metadata: { provider:state.provider, connected_repos:state.connectedRepos.map(repoName), diff_lines:diffLines,
             // ELK telemetry user_id = the logged-in Bitbucket user (mapped slug,
@@ -269,7 +280,14 @@ function RunningView({ state, update, showToast }) {
         setAgentStatus('Submitting to backend…'); setProgress(10)
         const submitResp = await fetch(state.backendUrl+'/api/v1/analyse', { method:'POST', headers, body:JSON.stringify(payload) })
         if (submitResp.status===401) throw new Error('Backend 401 — set SKIP_AUTH=true in .env')
-        if (!submitResp.ok) throw new Error(`Backend error ${submitResp.status}`)
+        if (!submitResp.ok) {
+          const errBody = await submitResp.json().catch(()=>null)
+          const d = errBody?.detail
+          // HTTPException(detail=...) is a plain string; Pydantic validation errors
+          // (e.g. user_instructions rejected) come back as an array of {msg} objects.
+          const msg = typeof d === 'string' ? d : Array.isArray(d) ? d.map(x=>x.msg).filter(Boolean).join('; ') : ''
+          throw new Error(msg || `Backend error ${submitResp.status}`)
+        }
         const submitJson = await submitResp.json()
         // No changes between the selected refs → stop. Don't poll, don't fall back
         // to simulation — show a clear "No diff found" instead of an empty report.
@@ -761,11 +779,32 @@ function SummaryTab({r, snipCache, state, showToast}) {
         </div>
       )}
       <LlmCoverageBanner r={r}/>
+      <FilesChangedCard r={r}/>
       {/* Reviewer: domain rollup FIRST — the 5-second overview before the plan */}
       {effectivePersona==='reviewer' && <DomainStatusCard r={r}/>}
       <ReviewPlanCard r={r}/>
-      <TopIssues r={r} persona={effectivePersona} state={state} showToast={showToast}/>
+      <TopIssues r={r} persona={effectivePersona} state={state} showToast={showToast} snipCache={snipCache}/>
       {effectivePersona==='developer' ? <DeveloperView r={r} findings={findings} blockers={blockers} fixes={fixes} scenarios={scenarios}/> : <ReviewerView r={r} findings={findings}/>}
+    </div>
+  )
+}
+
+// Collapsed by default — the raw file list can be long and this tab is already dense.
+function FilesChangedCard({ r }) {
+  const files = r.files_changed_list || []
+  if (!files.length) return null
+  return (
+    <div className="card" style={{marginBottom:14}}>
+      <details>
+        <summary style={{fontSize:13,fontWeight:700,color:'#0d1117',cursor:'pointer',userSelect:'none'}}>
+          <i className="ti ti-files" style={{marginRight:6,color:'#7a8494'}}/>Files changed ({files.length})
+        </summary>
+        <div style={{marginTop:10,display:'flex',flexDirection:'column',gap:4}}>
+          {files.map((f,i)=>(
+            <code key={i} style={{fontSize:11.5,color:'#1a2332',wordBreak:'break-all'}}>{f}</code>
+          ))}
+        </div>
+      </details>
     </div>
   )
 }
@@ -853,7 +892,7 @@ function ReviewPlanCard({ r }) {
 // deduplicated issue list IS the triage list — each row carries its own
 // developer/reviewer verdict controls, plus the stage banner + submit/approve
 // actions. No more duplicate "Top issues" and "Review workflow" sections.
-function TopIssues({ r, persona, state, showToast }) {
+function TopIssues({ r, persona, state, showToast, snipCache }) {
   const issues = r.top_issues || []
   const reqId = r.request_id || state?.lastRequestId
   const workflowOn = !!(reqId && state?.backendUrl && issues.length)
@@ -861,6 +900,7 @@ function TopIssues({ r, persona, state, showToast }) {
   const [comments, setComments] = useState({})
   const [gate, setGate] = useState((r.gate_decision || 'APPROVE').toUpperCase())
   const [busy, setBusy] = useState(false)
+  const [codeOpen, setCodeOpen] = useState({})   // { [issueIndex]: true } — which rows have code expanded
   // Shared session: verdicts set on any agent tab show here too (and vice-versa).
   const session = useReviewSession(workflowOn ? reqId : null, state)
   const load = () => reloadReviewSession(reqId, state)
@@ -951,6 +991,12 @@ function TopIssues({ r, persona, state, showToast }) {
             </div>
             <div className="finding-file" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',marginTop:3}}>
               {it.file_path && <span style={{fontFamily:'var(--mono)'}}>{it.file_path}{it.line?`:${it.line}`:''}</span>}
+              {it.file_path && it.line && (
+                <button type="button" className="btn btn-sm" style={{padding:'2px 8px',fontSize:10.5}}
+                  onClick={()=>setCodeOpen(c=>({...c,[i]:!c[i]}))}>
+                  <i className={`ti ${codeOpen[i]?'ti-chevron-up':'ti-code'}`}/> {codeOpen[i]?'Hide code':'Show code'}
+                </button>
+              )}
               <span title={`Location confidence: ${it.confidence}`} style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:10,color:confC[it.confidence]||'#9ca3af',fontWeight:700}}>
                 <span style={{width:7,height:7,borderRadius:4,background:confC[it.confidence]||'#9ca3af',display:'inline-block'}}/>{it.confidence} confidence
               </span>
@@ -959,6 +1005,7 @@ function TopIssues({ r, persona, state, showToast }) {
               ))}
               {(it.agents||[]).length>1 && <span style={{fontSize:10,color:'#16a34a',fontWeight:700}}>✓ {(it.agents||[]).length} agents agree</span>}
             </div>
+            {codeOpen[i] && <div style={{marginTop:4}}>{getCodeSnippetJSX(it.file_path, it.line, snipCache)}</div>}
             {(it.descriptions||[]).length>1 && (
               <div style={{fontSize:11,color:'#7a8494',marginTop:4,lineHeight:1.45}}>
                 {(it.descriptions||[]).slice(1,3).map((d,j)=><div key={j}>· {d}</div>)}
@@ -1970,7 +2017,15 @@ function QAScenariosTab({r}) {
 
               {s.test_skeleton&&<details><summary style={{fontSize:11.5,fontWeight:600,color:'#1a6cf6',cursor:'pointer',userSelect:'none'}}>▸ Ready-to-run test skeleton</summary>
                 <pre style={{margin:'6px 0 0',background:'#0d1117',color:'#e6edf3',borderRadius:6,padding:'10px 12px',fontSize:12,fontFamily:'JetBrains Mono,monospace',overflowX:'auto',lineHeight:1.5}}>{s.test_skeleton}</pre>
-                <button className="btn btn-sm" style={{marginTop:6}} onClick={()=>{navigator.clipboard?.writeText(s.test_skeleton);setCopied(s.id+'-sk');setTimeout(()=>setCopied(''),1500)}}><i className="ti ti-copy"/> {copied===s.id+'-sk'?'Copied':'Copy skeleton'}</button>
+                <div style={{display:'flex',gap:6,marginTop:6}}>
+                  <button className="btn btn-sm" onClick={()=>{navigator.clipboard?.writeText(s.test_skeleton);setCopied(s.id+'-sk');setTimeout(()=>setCopied(''),1500)}}><i className="ti ti-copy"/> {copied===s.id+'-sk'?'Copied':'Copy skeleton'}</button>
+                  <button className="btn btn-sm" onClick={()=>{
+                    const blob=new Blob([s.test_skeleton],{type:'text/plain'})
+                    const a=document.createElement('a'); a.href=URL.createObjectURL(blob)
+                    a.download=s.test_skeleton_filename||'test_scenario.txt'
+                    a.click(); URL.revokeObjectURL(a.href)
+                  }}><i className="ti ti-download"/> Download{s.test_skeleton_filename?` (${s.test_skeleton_filename})`:''}</button>
+                </div>
               </details>}
 
               <div style={{display:'flex',flexWrap:'wrap',gap:14,fontSize:11.5,color:'#7a8494',alignItems:'center'}}>
@@ -2043,76 +2098,6 @@ function QualityTab({r, snipCache}) {
   return <div className="card">{agentSection('ti-tool','#6366f1','Maintainability',maintBody)}{agentSection('ti-license','#10b981','License Compliance',licenseBody)}{agentSection('ti-eye','#0ea5e9','Observability',obsBody)}</div>
 }
 
-function ChecklistTab({r, canOverride}) {
-  function buildChecklist(r) {
-    const item=(domain,label,status,detail='')=>({domain,label,status,detail})
-    const items=[]
-    if(r.security){const crit=(r.security.findings||[]).filter(f=>['critical','high'].includes((f.severity||'').toLowerCase()));const detail=crit.length?`${crit.length} finding(s): ${crit.slice(0,2).map(f=>[f.cwe,(f.description||'').slice(0,50)].filter(Boolean).join(' ')).join('; ')}`:'';items.push(item('security','No critical/high security vulnerabilities',crit.length?'fail':'pass',detail));items.push(item('security','No hardcoded secrets or credentials',r.security.secrets_detected?'fail':'pass',r.security.secrets_detected?'Secrets detected — rotate immediately':''))}else items.push(item('security','Security analysis','skip','Agent did not run'))
-    if(r.data_privacy){items.push(item('privacy','PII fields encrypted/hashed',(r.data_privacy.unencrypted_pii_count||0)>0?'fail':'pass',(r.data_privacy.unencrypted_pii_count||0)>0?`${r.data_privacy.unencrypted_pii_count} unencrypted`:''));items.push(item('privacy','No PII logged or printed',(r.data_privacy.logging_violations||[]).length>0?'fail':'pass',(r.data_privacy.logging_violations||[]).length>0?`${(r.data_privacy.logging_violations||[]).length} violation(s)`:''))}else items.push(item('privacy','Data privacy review','skip','Agent did not run'))
-    if(r.performance_impact){items.push(item('performance','No N+1 queries or unbounded DB calls',r.performance_impact.has_db_risk?'warn':'pass',r.performance_impact.has_db_risk?'DB query risk detected':''));items.push(item('performance','No algorithmic complexity regression',r.performance_impact.has_complexity_regression?'warn':'pass',r.performance_impact.has_complexity_regression?'Nested loop / O(n²) detected':''))}else items.push(item('performance','Performance review','skip','Agent did not run'))
-    if(r.test_coverage){const unt=r.test_coverage.untested_functions||[];const gaps=(r.test_coverage.uncovered_paths||[]).length;items.push(item('testing','All changed functions have tests',unt.length?'warn':'pass',unt.length?`Untested: ${unt.slice(0,3).join(', ')}`:''));items.push(item('testing','No new test gaps introduced',gaps>0?'warn':'pass',gaps>0?`${gaps} changed file(s) without matching tests`:''))}else items.push(item('testing','Test coverage review','skip','Agent did not run'))
-    if(r.interface){const br=r.interface.breaking_changes||[];items.push(item('interface','No breaking API changes',br.length?'fail':'pass',br.length?`${br.length} breaking change(s)`:''))}else items.push(item('interface','API contract review','skip','Agent did not run'))
-    if(r.schema_change){const risky=(r.schema_change.changes||[]).filter(f=>['high','critical'].includes((f.severity||'').toLowerCase()));items.push(item('schema','Database migration is safe',risky.length?'fail':'pass',risky.length?`${risky.length} risky change(s)`:''))}else items.push(item('schema','Schema migration review','skip','Agent did not run'))
-    if(r.license_compliance){items.push(item('license','No copyleft (GPL/AGPL) dependencies',r.license_compliance.has_copyleft?'fail':'pass',r.license_compliance.has_copyleft?'Copyleft licence detected':''))}else items.push(item('license','Licence compliance','skip','Agent did not run'))
-    if(r.risk){const score=r.risk.risk_score||0;items.push(item('deployment','Deployment risk acceptable',score>=7?'fail':score>=4?'warn':'pass',`Risk score ${score}/10 · ${r.remediation?.deployment_strategy||'standard'}`))}else items.push(item('deployment','Deployment risk review','skip','Agent did not run'))
-    return items
-  }
-  const items=buildChecklist(r)
-  const pass=items.filter(i=>i.status==='pass').length,fail=items.filter(i=>i.status==='fail').length,warn=items.filter(i=>i.status==='warn').length
-  const realGate=(r.gate_decision||r.gate||'HOLD').toUpperCase()
-  const gateColor=realGate==='BLOCK'?'#b91c1c':realGate==='HOLD'?'#92400e':'#166534'
-  const gateLabel=realGate==='BLOCK'?'🚫 BLOCK':realGate==='HOLD'?'⚠️ HOLD':'✅ APPROVE'
-  // The header shows the ACTUAL gate, not one derived from these binary checks —
-  // explain when they disagree (e.g. all checks pass but gate is HOLD on risk score).
-  const checksImply = fail>0?'BLOCK':warn>0?'HOLD':'APPROVE'
-  const gateMismatch = checksImply !== realGate
-  const byDomain={}; items.forEach(i=>{if(!byDomain[i.domain])byDomain[i.domain]=[];byDomain[i.domain].push(i)})
-  const statusIcon={pass:'✅',warn:'⚠️',fail:'❌',skip:'⬜'}
-  const statusColor={pass:'#166534',warn:'#92400e',fail:'#991b1b',skip:'#9fadbf'}
-  const statusBg={pass:'#f0fdf4',warn:'#fffbeb',fail:'#fff1f2',skip:'#f9fafb'}
-  const domainLabels={security:{icon:'🔒',label:'Security'},privacy:{icon:'🔐',label:'Data Privacy'},performance:{icon:'🚀',label:'Performance'},testing:{icon:'🧪',label:'Test Coverage'},interface:{icon:'🔌',label:'API Contract'},schema:{icon:'🗄',label:'Database Schema'},license:{icon:'⚖️',label:'Licence Compliance'},deployment:{icon:'🚀',label:'Deployment Risk'}}
-  return (
-    <div className="card">
-      <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:18,flexWrap:'wrap'}}>
-        <div style={{fontSize:22,fontWeight:800,color:gateColor}}>{gateLabel}</div>
-        <div style={{display:'flex',gap:8,marginLeft:'auto',flexWrap:'wrap'}}>
-          <span style={{background:'#f0fdf4',color:'#166534',border:'1px solid #86efac',borderRadius:6,padding:'4px 12px',fontSize:12,fontWeight:700}}>✅ {pass} passed</span>
-          {warn>0&&<span style={{background:'#fffbeb',color:'#92400e',border:'1px solid #fcd34d',borderRadius:6,padding:'4px 12px',fontSize:12,fontWeight:700}}>⚠️ {warn} warnings</span>}
-          {fail>0&&<span style={{background:'#fff1f2',color:'#991b1b',border:'1px solid #fca5a5',borderRadius:6,padding:'4px 12px',fontSize:12,fontWeight:700}}>❌ {fail} failed</span>}
-        </div>
-      </div>
-      {gateMismatch&&(
-        <div style={{padding:'10px 14px',background:'#fffbeb',border:'1px solid #fcd34d',borderRadius:8,marginBottom:16,fontSize:12,color:'#92400e',display:'flex',alignItems:'flex-start',gap:8}}>
-          <i className="ti ti-info-circle" style={{fontSize:14,marginTop:1}}/>
-          <span>Individual checks imply <strong>{checksImply}</strong>, but the overall gate is <strong>{realGate}</strong>. The gate reflects the AI risk assessment (risk score {r.risk_score||0}/100{r.rationale?` — ${r.rationale}`:''}), which weighs factors beyond these binary checks (e.g. change complexity, blast radius).</span>
-        </div>
-      )}
-      <div style={{padding:'10px 14px',background:'#f7f8fa',border:'1px solid #e8eaed',borderRadius:8,marginBottom:16,fontSize:12,color:'#7a8494',display:'flex',alignItems:'center',gap:8}}>
-        <i className="ti ti-arrow-up" style={{fontSize:14}}/>
-        <span>{canOverride?<>Use the <strong>Human Review</strong> panel at the top of this page to approve, request changes, or block this merge.</>:'View-only access — Reviewer actions require reviewer role.'}</span>
-      </div>
-      <div style={{display:'flex',flexDirection:'column',gap:14}}>
-        {Object.entries(byDomain).map(([domain, domItems])=>{
-          const info=domainLabels[domain]||{icon:'📋',label:domain}
-          const domFail=domItems.some(i=>i.status==='fail'),domWarn=domItems.some(i=>i.status==='warn')
-          const domColor=domFail?'#fff1f2':domWarn?'#fffbeb':'#f0fdf4',domBorder=domFail?'#fca5a5':domWarn?'#fcd34d':'#86efac'
-          return (
-            <div key={domain} style={{border:`1.5px solid ${domBorder}`,borderRadius:10,background:domColor,overflow:'hidden'}}>
-              <div style={{padding:'10px 14px',fontWeight:700,fontSize:13,borderBottom:`1px solid ${domBorder}`,display:'flex',alignItems:'center',gap:8}}>{info.icon} {info.label}</div>
-              {domItems.map((item,i)=>(
-                <div key={i} style={{padding:'10px 14px',borderBottom:`1px solid ${domBorder}26`,display:'flex',alignItems:'flex-start',gap:10,background:statusBg[item.status]}}>
-                  <span style={{fontSize:16,flexShrink:0,marginTop:1}}>{statusIcon[item.status]}</span>
-                  <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600,color:statusColor[item.status]}}>{item.label}</div>{item.detail&&<div style={{fontSize:11,color:'#7a8494',marginTop:2}}>{item.detail}</div>}</div>
-                </div>
-              ))}
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
 function ComplianceTab({r, snipCache}) {
   const c = r.compliance
   if (!c || !c.standards) return <div className="card"><div className="empty-state"><i className="ti ti-shield-off"/>No compliance data — run analysis with a connected backend.</div></div>
@@ -2179,46 +2164,56 @@ function ComplianceTab({r, snipCache}) {
   )
 }
 
+// Plain list — deliberately no bars/color-coded graphs, just agent + status + numbers.
 function TimingsTab({r}) {
-  const timings=r.agent_timings||[]; const totalTokens=r.token_usage||0; const totalTime=r.duration_s||0
-  if (!timings.length) return <div className="card"><div className="section-heading"><i className="ti ti-clock"/>Agent timings</div><div className="empty-state"><i className="ti ti-clock-off"/>No timing data — run analysis with a connected backend</div></div>
-  const maxTime=Math.max(1,...timings.map(t=>t.duration_s||0)); const maxTokens=Math.max(1,...timings.map(t=>t.tokens||0))
-  const AGENT_COLORS={code_analysis:'#1a6cf6',security:'#ef4444',test_coverage:'#10b981',dependency:'#f59e0b',interface:'#8b5cf6',risk:'#0ea5e9',remediation:'#f97316',schema_change:'#06b6d4'}
-  const agentColor=name=>AGENT_COLORS[name]||'#7a8494'
-  const sName=name=>name.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())
+  const timings = r.agent_timings || []
+  const summary = r.agent_run_summary
+  const totalTokens = r.token_usage || 0
+  const totalTime = r.duration_s || 0
+  const sName = name => name.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())
+  const statusLabel = {successful:'Successful', fallback:'Fallback', skipped:'Skipped'}
+
+  const timingByAgent = {}
+  timings.forEach(t => { timingByAgent[t.agent] = t })
+
+  // One row per agent (incl. skipped ones) when we have the full run summary;
+  // otherwise fall back to just the agents that reported a timing (reports
+  // predating agent_run_summary — that field defaults to {}, which is truthy
+  // in JS, so check for actual by_agent data rather than just object presence).
+  const hasSummary = !!(summary && summary.by_agent && Object.keys(summary.by_agent).length)
+  const rows = hasSummary
+    ? AGENT_ORDER.filter(a => a in summary.by_agent)
+        .map(agent => ({ agent, status: summary.by_agent[agent], ...timingByAgent[agent] }))
+    : timings.map(t => ({ agent: t.agent, status: 'successful', ...t }))
+
+  if (!rows.length) return <div className="card"><div className="section-heading"><i className="ti ti-clock"/>Agent timings</div><div className="empty-state"><i className="ti ti-clock-off"/>No timing data — run analysis with a connected backend</div></div>
+
   return (
     <div className="card">
-      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:18}}>
-        <div className="section-heading" style={{marginBottom:0}}><i className="ti ti-clock-bolt"/>Agent timings &amp; token usage</div>
-        <div style={{display:'flex',gap:16,fontSize:12,color:'#7a8494'}}>
-          <span>Total: <strong style={{color:'#0d1117',fontFamily:'JetBrains Mono,monospace'}}>{totalTime.toFixed(1)}s</strong></span>
-          <span>Tokens: <strong style={{color:'#0d1117',fontFamily:'JetBrains Mono,monospace'}}>{totalTokens.toLocaleString()}</strong></span>
-        </div>
+      <div className="section-heading"><i className="ti ti-clock"/>Agent timings &amp; token usage</div>
+      <div style={{fontSize:12,color:'#7a8494',margin:'2px 0 14px'}}>
+        {!!r.files_changed && <>{r.files_changed} file{r.files_changed!==1?'s':''} changed · </>}
+        {totalTime.toFixed(1)}s total · {totalTokens.toLocaleString()} tokens
+        {hasSummary && <> · {summary.successful} successful, {summary.fallback} fallback, {summary.skipped} skipped of {summary.total} agents</>}
       </div>
-      <div style={{marginBottom:20}}>
-        {timings.map((t,i)=>{
-          const timePct=Math.round(((t.duration_s||0)/maxTime)*100),tokenPct=Math.round(((t.tokens||0)/maxTokens)*100),col=agentColor(t.agent)
-          return (
-            <div key={i} style={{marginBottom:14}}>
-              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:5}}>
-                <div style={{display:'flex',alignItems:'center',gap:7}}>
-                  <div style={{width:10,height:10,borderRadius:2,background:col,flexShrink:0}}/>
-                  <span style={{fontSize:13,fontWeight:500,color:'#0d1117'}}>{sName(t.agent)}</span>
-                  {(() => { const eng=agentEngine(t.model,{completed:true}); return eng?<span title={eng.title} style={{fontSize:10,fontWeight:700,background:eng.bg,border:`1px solid ${eng.border}`,borderRadius:10,padding:'1px 8px',color:eng.color}}>{eng.label}</span>:null })()}
-                </div>
-                <div style={{display:'flex',gap:14,fontSize:12,fontFamily:'JetBrains Mono,monospace'}}>
-                  <span><strong>{(t.duration_s||0).toFixed(2)}s</strong></span>
-                  <span><strong>{(t.tokens||0).toLocaleString()}</strong> tok</span>
-                </div>
-              </div>
-              <div style={{display:'flex',flexDirection:'column',gap:3}}>
-                <div style={{display:'flex',alignItems:'center',gap:8}}><div style={{width:38,fontSize:10,color:'#9fadbf',textAlign:'right',flexShrink:0}}>time</div><div style={{flex:1,height:8,background:'#f0f2f5',borderRadius:4,overflow:'hidden'}}><div style={{height:'100%',width:`${timePct}%`,background:col,borderRadius:4}}/></div></div>
-                <div style={{display:'flex',alignItems:'center',gap:8}}><div style={{width:38,fontSize:10,color:'#9fadbf',textAlign:'right',flexShrink:0}}>tokens</div><div style={{flex:1,height:8,background:'#f0f2f5',borderRadius:4,overflow:'hidden'}}><div style={{height:'100%',width:`${tokenPct}%`,background:col,opacity:.45,borderRadius:4}}/></div></div>
-              </div>
-            </div>
-          )
-        })}
-      </div>
+      <table style={{width:'100%',borderCollapse:'collapse',fontSize:12.5}}>
+        <thead><tr style={{color:'#9fadbf',fontSize:10,textTransform:'uppercase',letterSpacing:.05}}>
+          <th style={{textAlign:'left',padding:'6px 8px'}}>Agent</th>
+          <th style={{textAlign:'left',padding:'6px 8px'}}>Status</th>
+          <th style={{textAlign:'right',padding:'6px 8px'}}>Time</th>
+          <th style={{textAlign:'right',padding:'6px 8px'}}>Tokens</th>
+        </tr></thead>
+        <tbody>
+          {rows.map((row,i)=>(
+            <tr key={i} style={{borderTop:'1px solid #f5f6f8'}}>
+              <td style={{padding:'6px 8px',fontWeight:500,color:'#0d1117'}}>{sName(row.agent)}</td>
+              <td style={{padding:'6px 8px',color:'#7a8494'}}>{statusLabel[row.status]||row.status}</td>
+              <td style={{padding:'6px 8px',textAlign:'right',fontFamily:'JetBrains Mono,monospace'}}>{row.duration_s?`${row.duration_s.toFixed(2)}s`:'—'}</td>
+              <td style={{padding:'6px 8px',textAlign:'right',fontFamily:'JetBrains Mono,monospace'}}>{row.tokens?row.tokens.toLocaleString():'—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }
@@ -3477,7 +3472,7 @@ function ReviewModal({decision, reqId, state, onClose, onSubmit, showToast}) {
 // flat tabs. Sub-tabs reuse the existing per-agent panels.
 const SECTIONS = [
   { id:'summary',  label:'Summary',               icon:'ti-layout-dashboard',
-    tabs:[{id:'summary',label:'Summary'}] },
+    tabs:[{id:'summary',label:'Summary'},{id:'timings',label:'Timings'}] },
   { id:'security', label:'Security & Compliance', icon:'ti-shield-lock',
     tabs:[{id:'security',label:'Findings'},{id:'secrets',label:'Secrets'},{id:'taint',label:'Taint'},
           {id:'iac',label:'IaC'},{id:'privacy',label:'Privacy'},{id:'compliance',label:'Compliance'}] },
@@ -3488,9 +3483,7 @@ const SECTIONS = [
     tabs:[{id:'quality',label:'Code Quality'},{id:'ast',label:'Complexity'},{id:'performance',label:'Performance'},
           {id:'temporal',label:'History'}] },
   { id:'testing',  label:'Testing & Spec',        icon:'ti-test-pipe',
-    tabs:[{id:'qa',label:'QA Scenarios'},{id:'functional',label:'FSD / Spec'}] },
-  { id:'actions',  label:'Actions',               icon:'ti-checklist',
-    tabs:[{id:'checklist',label:'Checklist'},{id:'remediation',label:'Remediation'},{id:'timings',label:'Timings'}] },
+    tabs:[{id:'qa',label:'QA Scenarios'},{id:'functional',label:'FSD / Spec'},{id:'remediation',label:'Remediation'}] },
 ]
 const ALL_TABS = SECTIONS.flatMap(s=>s.tabs.map(t=>t.id))
 const SECTION_FOR_TAB = Object.fromEntries(SECTIONS.flatMap(s=>s.tabs.map(t=>[t.id, s.id])))
@@ -3634,7 +3627,6 @@ export default function ResultsView({ active, showView, showToast }) {
       case 'performance': return <PerformanceTab r={r} snipCache={snipCache}/>
       case 'privacy': return <PrivacyTab r={r} snipCache={snipCache}/>
       case 'quality': return <QualityTab r={r} snipCache={snipCache}/>
-      case 'checklist': return <ChecklistTab r={r} canOverride={canOverrideGate(state)}/>
       case 'compliance': return <ComplianceTab r={r} snipCache={snipCache}/>
       case 'timings': return <TimingsTab r={r}/>
       case 'references': return <ReferencesTab r={r}/>

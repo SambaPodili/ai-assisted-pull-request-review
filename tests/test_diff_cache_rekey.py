@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from core.models import (AnalysisReport, AnalysisRequest, ChangeType,
                          GateDecision, RiskLevel, RiskResult)
-from governance.diff_cache import DiffCache
+from governance.diff_cache import DiffCache, _diff_fingerprint
 
 
 def _req(rid: str) -> AnalysisRequest:
@@ -54,3 +54,32 @@ def test_orchestrator_cache_hit_rekeys_to_new_request_id(monkeypatch):
 
     assert result.request_id == "run-2"                     # re-keyed — store/polling id match
     assert result.gate_decision == GateDecision.HOLD        # enforced gate survives
+
+
+# ── selected_agents must be part of the cache key ───────────────────────────────
+# Otherwise a "Fast" (2-agent) run and a "Thorough" (full) run on the identical
+# diff collide on the same cache entry and silently return each other's
+# wrong-scope report.
+
+def test_fingerprint_differs_by_selected_agents():
+    base = _req("run-1")
+    fast = base.model_copy(update={"selected_agents": ["code_analysis", "security"]})
+    thorough_explicit = base.model_copy(update={"selected_agents": ["code_analysis", "security", "risk"]})
+    no_filter = base.model_copy(update={"selected_agents": None})
+
+    assert _diff_fingerprint(fast) != _diff_fingerprint(thorough_explicit)
+    assert _diff_fingerprint(fast) != _diff_fingerprint(no_filter)
+    # order-independent — same set, different list order, same key
+    reordered = base.model_copy(update={"selected_agents": ["security", "code_analysis"]})
+    assert _diff_fingerprint(fast) == _diff_fingerprint(reordered)
+
+
+def test_fast_run_cache_entry_not_served_to_thorough_request():
+    cache = DiffCache(redis_url="")
+    fast_req = _req("run-1").model_copy(update={"selected_agents": ["code_analysis", "security"]})
+    cache.set(fast_req, _report("run-1"))
+
+    thorough_req = _req("run-2").model_copy(update={"selected_agents": None})
+    assert cache.get(thorough_req) is None, (
+        "a Fast-run cache entry must not be returned for a Thorough request on the same diff"
+    )

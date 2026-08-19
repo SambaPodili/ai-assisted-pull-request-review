@@ -153,6 +153,16 @@ class AnalyseRequest(BaseModel):
     model_config_override: dict[str, Any] = {}
     deep_scan:    bool = False     # analyse ALL changed files in batches (no sampling)
     force:        bool = False     # bypass the diff cache ("Re-analyse fresh")
+    # Concrete agent-key list (e.g. ["code_analysis","security"]) to narrow which
+    # agents run — None (default) runs everything, identical to today's behaviour.
+    # Selection can only narrow the server-configured ANALYSIS_PHASE, never widen
+    # it. Only honoured on the default threaded pipeline — ignored (full run) when
+    # USE_LANGGRAPH=true.
+    selected_agents: list[str] | None = None
+    # Free-text prioritization guidance (e.g. "focus on security in the payment
+    # module"). Length-capped and scanned by governance.prompt_guard below.
+    # See core.models.AnalysisRequest.user_instructions for the safety invariant.
+    user_instructions: str = ""
 
     @field_validator("diff_text")
     @classmethod
@@ -163,6 +173,24 @@ class AnalyseRequest(BaseModel):
             raise ValueError(
                 f"diff_text exceeds maximum allowed size ({max_bytes // 1024} KB). "
                 "Split large diffs or submit per-file."
+            )
+        return v
+
+    @field_validator("user_instructions")
+    @classmethod
+    def _check_user_instructions(cls, v: str) -> str:
+        from config.settings import get_settings
+        from governance.prompt_guard import scan
+        max_chars = get_settings().user_instructions_max_chars
+        if len(v) > max_chars:
+            raise ValueError(
+                f"user_instructions exceeds maximum length ({max_chars} chars)."
+            )
+        violations = scan(v)
+        if violations:
+            v0 = violations[0]
+            raise ValueError(
+                f'user_instructions rejected — blocked phrase: "{v0.phrase}" ({v0.category}).'
             )
         return v
 
@@ -249,6 +277,8 @@ async def submit_analysis(
         metadata={**(payload.metadata or {}), **({"force_reanalyse": True} if payload.force else {})},
         model_config_=llm_cfg,
         deep_scan=bool(payload.deep_scan),
+        selected_agents=payload.selected_agents,
+        user_instructions=payload.user_instructions,
     )
 
     # GenAI usage telemetry (ELK): capture the logged user's domain NOW, while the

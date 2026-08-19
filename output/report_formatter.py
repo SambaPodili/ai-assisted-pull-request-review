@@ -217,6 +217,8 @@ def to_summary_json(report: AnalysisReport) -> dict:
         "duration_s":    report.duration_s,
         "completed_at":  report.completed_at.isoformat(),
         "errors":        report.errors,
+        "files_changed": report.files_changed,
+        "agent_run_summary": report.agent_run_summary or report.compute_agent_run_summary(),
         "metrics": {
             "security_findings":  len(report.security.findings)           if report.security   else 0,
             "secrets_detected":   report.security.secrets_detected        if report.security   else False,

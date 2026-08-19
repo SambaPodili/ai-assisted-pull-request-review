@@ -15,7 +15,7 @@ from core.models import (
     AgentName, AnalysisRequest, AnalysisReport,
     RiskResult, RiskLevel, GateDecision,
 )
-from agents.base_agent import BaseAgent
+from agents.base_agent import BaseAgent, format_user_priorities
 
 
 class RiskAssessmentAgent(BaseAgent[RiskResult]):
@@ -65,7 +65,7 @@ class RiskAssessmentAgent(BaseAgent[RiskResult]):
             "regression_risk":   _safe_get(report, "test_coverage", "regression_risk"),
             "complexity_delta":  _safe_get(report, "code_analysis", "complexity_delta"),
         }
-        return f"Analysis summary:\n{json.dumps(summary, indent=2)}"
+        return f"Analysis summary:\n{json.dumps(summary, indent=2)}" + format_user_priorities(request.user_instructions)
 
     def fallback_result(self, request: AnalysisRequest) -> RiskResult:
         """Heuristic scoring without LLM."""

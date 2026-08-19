@@ -25,15 +25,23 @@ CACHE_TTL_SECONDS = 60 * 60 * 24   # 24 hours
 
 def _diff_fingerprint(request: "AnalysisRequest") -> str:
     """
-    Stable cache key from the diff content + analysis phase.
+    Stable cache key from the diff content + selected agents.
     Ignores request_id and timestamp so identical diffs hit the same key.
+
+    selected_agents MUST be part of the key: a "Fast" (2-agent) run and a
+    "Thorough" (full) run on the identical diff would otherwise collide on the
+    same cache entry and silently return each other's (wrong-scope) report.
+    None (no filtering / run everything) is normalised to a distinct sentinel
+    so it never collides with an explicit list that happens to name every agent.
     """
+    agents = sorted(request.selected_agents) if request.selected_agents is not None else "__all__"
     content = json.dumps(
         {
             "repo":    request.repo_url,
             "src":     request.source_ref,
             "dst":     request.target_ref,
             "hunks":   [(h.file_path, h.additions, h.deletions, hash(h.content)) for h in request.hunks],
+            "agents":  agents,
         },
         sort_keys=True,
     )

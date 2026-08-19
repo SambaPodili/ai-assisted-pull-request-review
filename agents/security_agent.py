@@ -17,7 +17,7 @@ from core.models import (
     SecurityResult, SecurityFinding, RiskLevel,
 )
 from core.token_manager import trim_diff_for_budget
-from agents.base_agent import BaseAgent, format_hunks_for_prompt
+from agents.base_agent import BaseAgent, format_hunks_for_prompt, format_user_priorities
 from ingestion.language_registry import security_concerns, lang_meta
 
 
@@ -144,6 +144,7 @@ class SecurityReviewAgent(BaseAgent[SecurityResult]):
             f"{lang_block}"
             f"DIFF:\n{diff_block}"
             + (f"\n\n{fn_ctx}" if fn_ctx else "")
+            + format_user_priorities(request.user_instructions)
         )
 
     def fallback_result(self, request: AnalysisRequest) -> SecurityResult:

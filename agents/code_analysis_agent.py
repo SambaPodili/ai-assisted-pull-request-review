@@ -13,7 +13,7 @@ from core.models import (
     AgentName, AnalysisRequest,
     CodeAnalysisResult, CodeFinding, RiskLevel,
 )
-from agents.base_agent import BaseAgent, format_hunks_for_prompt
+from agents.base_agent import BaseAgent, format_hunks_for_prompt, format_user_priorities
 from ingestion.language_registry import lang_meta
 
 
@@ -44,6 +44,7 @@ class CodeAnalysisAgent(BaseAgent[CodeAnalysisResult]):
             f"Languages: {', '.join(languages)}\n\n"
             f"DIFF:\n{diff_block}"
             + (f"\n\n{fn_ctx}" if fn_ctx else "")
+            + format_user_priorities(request.user_instructions)
         )
 
     def fallback_result(self, request: AnalysisRequest) -> CodeAnalysisResult:

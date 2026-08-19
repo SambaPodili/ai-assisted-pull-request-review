@@ -27,7 +27,7 @@ from core.models import (
     AgentName, AnalysisRequest,
     QAScenariosResult, QAScenario, QAScenarioType, RiskLevel,
 )
-from agents.base_agent import BaseAgent, format_hunks_for_prompt
+from agents.base_agent import BaseAgent, format_hunks_for_prompt, format_user_priorities
 from ingestion.language_registry import lang_meta, test_framework_hint, linter_hint
 
 
@@ -102,12 +102,53 @@ def _categorise_hunk(file_path: str, content: str) -> set[QAScenarioType]:
 # ── Production-grade scenario detail (preconditions / acceptance / skeleton) ────
 
 def _lang_for(files: list[str]) -> str:
+    """Crude extension-based fallback — only used when no DiffHunk is available
+    (e.g. the requirement-verification scenario, which has no source file)."""
     f = (files[0] if files else "").lower()
-    if f.endswith((".java", ".kt")): return "java"
-    if f.endswith(".py"):            return "python"
-    if f.endswith((".ts", ".tsx", ".js", ".jsx")): return "js"
-    if f.endswith(".go"):            return "go"
+    if f.endswith(".java"): return "java"
+    if f.endswith(".kt"):   return "kotlin"
+    if f.endswith(".py"):   return "python"
+    if f.endswith((".ts", ".tsx")): return "typescript"
+    if f.endswith((".js", ".jsx")): return "javascript"
+    if f.endswith(".go"):   return "go"
+    if f.endswith(".cs"):   return "csharp"
     return ""
+
+
+def _best_symbol(hunk):
+    """Best-match changed function/method/class name for this hunk, or None.
+    Prefers an added (not removed) function/method over a class, since that's
+    almost always what the scenario actually needs to exercise."""
+    if hunk is None:
+        return None
+    try:
+        from ingestion.symbol_extractor import extract_changed_symbols
+        syms = extract_changed_symbols(hunk)
+    except Exception:
+        return None
+    pool = [s for s in syms if s.is_added] or syms
+    for kind in ("method", "function", "class"):
+        for s in pool:
+            if s.kind == kind:
+                return s
+    return pool[0] if pool else None
+
+
+def _file_stem(files: list[str]) -> str:
+    f = (files[0] if files else "").rsplit("/", 1)[-1]
+    return f.rsplit(".", 1)[0] if "." in f else (f or "scenario")
+
+
+def _pascal(name: str) -> str:
+    """PascalCase a symbol/title for a class name. Preserves existing internal
+    casing for already-camelCase symbols (processPayment -> ProcessPayment)
+    instead of lowercasing them — only snake_case/space/dash-separated input
+    gets each word capitalized."""
+    cleaned = re.sub(r'[^a-zA-Z0-9_]+', '_', name)
+    parts = [w for w in cleaned.split('_') if w]
+    if not parts:
+        return "Scenario"
+    return "".join(w[:1].upper() + w[1:] for w in parts)[:60] or "Scenario"
 
 
 _PRECONDITIONS = {
@@ -142,43 +183,137 @@ def _acceptance(stype: QAScenarioType, expected: str) -> list[str]:
     return base + extra
 
 
-def _skeleton(title: str, stype: QAScenarioType, files: list[str]) -> str:
-    lang = _lang_for(files)
-    safe = re.sub(r'[^a-zA-Z0-9]+', '_', title).strip('_').lower()[:60] or "scenario"
+def _skeleton(title: str, stype: QAScenarioType, files: list[str], hunk=None) -> tuple[str, str]:
+    """
+    Return (code, filename) for a ready-to-run test stub. Real templates
+    (imports, class/package wrapper, naming convention) for the highest-value
+    tier of languages for an enterprise shop: Java, Python, JavaScript,
+    TypeScript, Go, C#, Kotlin. Everything else falls back to a generic,
+    honestly-labelled comment-only skeleton — same as before this upgrade.
+
+    Uses the real changed symbol name (via ingestion.symbol_extractor) when
+    one can be found in the hunk, instead of a name derived from the scenario
+    title. Package/namespace/import paths are inherently best-effort from a
+    diff hunk alone, so they're always flagged with an explicit TODO comment
+    rather than silently guessed.
+    """
+    lang   = hunk.language if hunk is not None else _lang_for(files)
+    symbol = _best_symbol(hunk)
+    safe   = re.sub(r'[^a-zA-Z0-9]+', '_', title).strip('_').lower()[:60] or "scenario"
+    name   = symbol.name if symbol else safe
+    stem   = _file_stem(files)
+    pascal = _pascal(name)
+
     if lang == "java":
-        return ("@Test\n"
-                f"void {safe}() {{\n"
-                "    // Arrange — set up inputs, mocks, and preconditions\n"
-                "    // Act — invoke the changed method\n"
-                "    // Assert — verify the acceptance criteria\n"
-                "    // assertThrows(...) for the error/security path\n"
-                "}")
+        cls = f"{pascal}Test"
+        return (
+            "// TODO: adjust package to match the class under test\n"
+            "import org.junit.jupiter.api.Test;\n"
+            "import static org.junit.jupiter.api.Assertions.*;\n\n"
+            f"class {cls} {{\n"
+            "    @Test\n"
+            f"    void {safe}() {{\n"
+            "        // Arrange — set up inputs, mocks, and preconditions\n"
+            f"        // Act — invoke {name}(...)\n"
+            "        // Assert — verify the acceptance criteria\n"
+            "        // assertThrows(...) for the error/security path\n"
+            "    }\n"
+            "}",
+            f"{cls}.java",
+        )
+
+    if lang == "kotlin":
+        cls = f"{pascal}Test"
+        return (
+            "// TODO: adjust package to match the class under test\n"
+            "import org.junit.jupiter.api.Test\n\n"
+            f"class {cls} {{\n"
+            "    @Test\n"
+            f"    fun `{title[:60]}`() {{\n"
+            "        // Arrange\n"
+            f"        // Act — invoke {name}(...)\n"
+            "        // Assert\n"
+            "    }\n"
+            "}",
+            f"{cls}.kt",
+        )
+
     if lang == "python":
-        return (f"def test_{safe}():\n"
-                "    # Arrange\n    ...\n"
-                "    # Act\n    ...\n"
-                "    # Assert — acceptance criteria\n    assert ...\n"
-                "    # with pytest.raises(...):  # error/security path\n")
-    if lang == "js":
-        return (f"it('{title[:60]}', () => {{\n"
-                "  // Arrange\n  // Act\n  // Assert\n"
-                "  expect(result).toEqual(expected);\n"
-                "  // expect(() => fn()).toThrow();  // error path\n"
-                "});")
+        import_line = f"from {stem} import {name}  # TODO: adjust import path\n\n" if symbol else ""
+        return (
+            "import pytest\n"
+            f"{import_line}"
+            f"def test_{safe}():\n"
+            "    # Arrange\n    ...\n"
+            f"    # Act — invoke {name}(...)\n    ...\n"
+            "    # Assert — acceptance criteria\n    assert ...\n"
+            "    # with pytest.raises(...):  # error/security path\n",
+            f"test_{stem}.py",
+        )
+
+    if lang == "javascript":
+        import_line = f"// const {{ {name} }} = require('./{stem}')  // TODO: adjust import path\n" if symbol else ""
+        return (
+            f"{import_line}"
+            f"it('{title[:60]}', () => {{\n"
+            "  // Arrange\n  // Act\n  // Assert\n"
+            "  expect(result).toEqual(expected);\n"
+            "  // expect(() => fn()).toThrow();  // error path\n"
+            "});",
+            f"{stem}.test.js",
+        )
+
+    if lang == "typescript":
+        import_line = f"import {{ {name} }} from './{stem}'  // TODO: adjust import path\n" if symbol else ""
+        return (
+            f"{import_line}"
+            f"it('{title[:60]}', () => {{\n"
+            "  // Arrange\n  // Act\n  // Assert\n"
+            "  expect(result).toEqual(expected)\n"
+            "  // expect(() => fn()).toThrow()  // error path\n"
+            "})",
+            f"{stem}.test.ts",
+        )
+
     if lang == "go":
-        cap = "".join(w.capitalize() for w in safe.split("_"))[:60] or "Scenario"
-        return (f"func Test{cap}(t *testing.T) {{\n"
-                "    // Arrange / Act\n"
-                "    // Assert\n"
-                "    if got != want {\n        t.Fatalf(\"got %v want %v\", got, want)\n    }\n}")
-    return ("// Arrange the unit under test and inputs\n"
-            "// Act: invoke the change\n"
-            "// Assert: verify each acceptance criterion (incl. the error path)")
+        return (
+            "package your_package // TODO: match the package of the file under test\n\n"
+            "import \"testing\"\n\n"
+            f"func Test{pascal}(t *testing.T) {{\n"
+            f"    // Arrange / Act — invoke {name}(...)\n"
+            "    // Assert\n"
+            "    if got != want {\n        t.Fatalf(\"got %v want %v\", got, want)\n    }\n}",
+            f"{stem}_test.go",
+        )
+
+    if lang == "csharp":
+        cls = f"{pascal}Tests"
+        return (
+            "// TODO: adjust namespace to match the class under test\n"
+            "using Xunit;\n\n"
+            f"public class {cls} {{\n"
+            "    [Fact]\n"
+            f"    public void {pascal}() {{\n"
+            "        // Arrange\n"
+            f"        // Act — invoke {name}(...)\n"
+            "        // Assert\n"
+            "    }\n"
+            "}",
+            f"{cls}.cs",
+        )
+
+    return (
+        "// Arrange the unit under test and inputs\n"
+        "// Act: invoke the change\n"
+        "// Assert: verify each acceptance criterion (incl. the error path)",
+        "test_scenario.txt",
+    )
 
 
 def _make_scenario(idx: int, title: str, stype: QAScenarioType, priority: RiskLevel,
                    description: str, steps: list[str], expected: str,
-                   files: list[str], hint: str = "") -> QAScenario:
+                   files: list[str], hint: str = "", hunk=None) -> QAScenario:
+    skeleton, skeleton_filename = _skeleton(title, stype, files, hunk)
     return QAScenario(
         id=f"QA-{idx:03d}",
         title=title,
@@ -191,7 +326,8 @@ def _make_scenario(idx: int, title: str, stype: QAScenarioType, priority: RiskLe
         automation_hint=hint,
         preconditions=_PRECONDITIONS.get(stype, _DEFAULT_PRE),
         acceptance_criteria=_acceptance(stype, expected),
-        test_skeleton=_skeleton(title, stype, files),
+        test_skeleton=skeleton,
+        test_skeleton_filename=skeleton_filename,
     )
 
 
@@ -223,6 +359,9 @@ def _build_fallback_scenarios(request: AnalysisRequest) -> list[QAScenario]:
         meta    = lang_meta(hunk.language)
         fw_hint = test_framework_hint(hunk.language)
         lint_hint = linter_hint(hunk.language)
+        # Bind `hunk` for every _make_scenario() call in this iteration, so each
+        # scenario's test_skeleton is generated from the real changed symbol.
+        _make = lambda *a, **kw: _make_scenario(*a, hunk=hunk, **kw)
 
         # Build language-aware security hint
         sec_tools = []
@@ -251,7 +390,7 @@ def _build_fallback_scenarios(request: AnalysisRequest) -> list[QAScenario]:
                 "No credentials exposed; inputs are validated/sanitised; attack vectors rejected "
                 "and sensitive data is never logged or leaked in errors."
             )
-            scenarios.append(_make_scenario(
+            scenarios.append(_make(
                 idx, f"Security validation — {fp}",
                 QAScenarioType.SECURITY, RiskLevel.CRITICAL,
                 f"Verify that security controls in {fp} ({meta.display}) are correctly implemented. "
@@ -264,7 +403,7 @@ def _build_fallback_scenarios(request: AnalysisRequest) -> list[QAScenario]:
             idx += 1
 
         if QAScenarioType.API in cats:
-            scenarios.append(_make_scenario(
+            scenarios.append(_make(
                 idx, f"API contract test — {fp}",
                 QAScenarioType.API, RiskLevel.HIGH,
                 f"Verify that the API contract exposed by {fp} is correct, backwards-compatible, "
@@ -287,7 +426,7 @@ def _build_fallback_scenarios(request: AnalysisRequest) -> list[QAScenario]:
 
         if QAScenarioType.DATA in cats:
             db_hint = fw_hint or "Use a staging DB clone; run migration on a data snapshot"
-            scenarios.append(_make_scenario(
+            scenarios.append(_make(
                 idx, f"Data integrity & migration test — {fp}",
                 QAScenarioType.DATA, RiskLevel.CRITICAL,
                 f"Verify that the database migration in {fp} ({meta.display}) runs cleanly "
@@ -309,7 +448,7 @@ def _build_fallback_scenarios(request: AnalysisRequest) -> list[QAScenario]:
 
         if QAScenarioType.PERFORMANCE in cats:
             perf_hint = fw_hint or "Locust / k6 for load testing; language-appropriate profiler"
-            scenarios.append(_make_scenario(
+            scenarios.append(_make(
                 idx, f"Performance & load test — {fp}",
                 QAScenarioType.PERFORMANCE, RiskLevel.MEDIUM,
                 f"Ensure the change in {fp} ({meta.display}) does not introduce latency regressions "
@@ -330,7 +469,7 @@ def _build_fallback_scenarios(request: AnalysisRequest) -> list[QAScenario]:
 
         if QAScenarioType.FUNCTIONAL in cats:
             ui_hint = fw_hint or "Playwright or Cypress for E2E; axe-core for accessibility"
-            scenarios.append(_make_scenario(
+            scenarios.append(_make(
                 idx, f"Functional UI test — {fp}",
                 QAScenarioType.FUNCTIONAL, RiskLevel.MEDIUM,
                 f"Verify that the UI change in {fp} ({meta.display}) renders correctly and all "
@@ -352,7 +491,7 @@ def _build_fallback_scenarios(request: AnalysisRequest) -> list[QAScenario]:
 
         if QAScenarioType.INTEGRATION in cats:
             int_hint = fw_hint or "Docker Compose test environment; integration test suite"
-            scenarios.append(_make_scenario(
+            scenarios.append(_make(
                 idx, f"Integration & configuration test — {fp}",
                 QAScenarioType.INTEGRATION, RiskLevel.HIGH,
                 f"Verify that the configuration or dependency change in {fp} ({meta.display}) "
@@ -373,7 +512,7 @@ def _build_fallback_scenarios(request: AnalysisRequest) -> list[QAScenario]:
 
         if QAScenarioType.EDGE_CASE in cats:
             edge_hint = fw_hint or "Property-based testing (e.g. Hypothesis, QuickCheck, PropEr)"
-            scenarios.append(_make_scenario(
+            scenarios.append(_make(
                 idx, f"Edge-case & boundary test — {fp}",
                 QAScenarioType.EDGE_CASE, RiskLevel.MEDIUM,
                 f"The change in {fp} ({meta.display}) modifies substantial logic "
@@ -395,7 +534,7 @@ def _build_fallback_scenarios(request: AnalysisRequest) -> list[QAScenario]:
 
         # Regression scenario for every changed file
         reg_hint = fw_hint or "Run existing test suite for this module"
-        scenarios.append(_make_scenario(
+        scenarios.append(_make(
             idx, f"Regression test — {fp}",
             QAScenarioType.REGRESSION, RiskLevel.MEDIUM,
             f"Confirm that the change in {fp} ({meta.display}) has not broken any existing "
@@ -465,7 +604,25 @@ Respond ONLY with valid JSON matching the QAScenariosResult schema."""
                     parts.append(f"\n# {doc.get('name','spec')}\n{(doc.get('text') or '')[:6000]}")
             parts.append("\nGenerate scenarios that verify each affected requirement and flag any "
                          "requirement left unimplemented or contradicted.")
+        parts.append(format_user_priorities(request.user_instructions))
         return "\n".join(parts)
+
+    def run(self, request: AnalysisRequest, budget, context: dict[str, Any] | None = None) -> QAScenariosResult:
+        result = super().run(request, budget, context)
+        # The LLM path never asks for test_skeleton (see system_prompt above) — it
+        # comes back empty on every LLM-produced scenario. Backfill it here with
+        # the same per-language template used by the fallback path, so a real
+        # (non-fallback) analysis still gets ready-to-run stubs.
+        try:
+            hunks_by_file = {h.file_path: h for h in request.hunks}
+            for s in result.scenarios:
+                if s.test_skeleton:
+                    continue
+                hunk = next((hunks_by_file[f] for f in s.affected_files if f in hunks_by_file), None)
+                s.test_skeleton, s.test_skeleton_filename = _skeleton(s.title, s.type, s.affected_files, hunk)
+        except Exception:
+            pass
+        return result
 
     def fallback_result(self, request: AnalysisRequest) -> QAScenariosResult:
         scenarios = _build_fallback_scenarios(request)

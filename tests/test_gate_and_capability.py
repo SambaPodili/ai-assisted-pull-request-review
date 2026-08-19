@@ -158,6 +158,36 @@ def test_clean_change_approves():
     assert res.reasons == []
 
 
+# ── Sparse reports (agent-selection Fast/custom presets leave most fields None) ──
+
+def test_fast_preset_report_does_not_crash_gate():
+    # Simulates a Fast-preset run: only code_analysis + security ran, everything
+    # else (dependency, test_coverage, interface, risk, remediation, ...) is None.
+    r = _report(
+        code_analysis=CodeAnalysisResult(summary="x", change_type="refactor"),
+        security=SecurityResult(overall_severity=RiskLevel.LOW, secrets_detected=False, findings=[]),
+    )
+    res = evaluate_policy(r)
+    assert res.gate in (GateDecision.APPROVE, GateDecision.HOLD, GateDecision.BLOCK)
+
+
+def test_risk_deselected_still_evaluates_deterministic_rules():
+    # risk itself deselected (advanced mode) — gate_policy must still enforce
+    # hard rules independent of the (missing) AI risk synthesis.
+    r = _report(
+        risk=None,
+        security=SecurityResult(overall_severity=RiskLevel.LOW, secrets_detected=True, findings=[]),
+    )
+    res = evaluate_policy(r)
+    assert res.gate == GateDecision.BLOCK   # secrets still force-block with no risk agent at all
+
+
+def test_everything_none_produces_a_safe_default_not_a_crash():
+    r = _report()   # no agents ran at all
+    res = evaluate_policy(r)
+    assert res.gate in (GateDecision.APPROVE, GateDecision.HOLD, GateDecision.BLOCK)
+
+
 # ── Capability mapping ──────────────────────────────────────────────────────────
 
 def test_map_paths_tags_payments_and_auth():

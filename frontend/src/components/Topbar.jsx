@@ -111,7 +111,6 @@ export default function Topbar({ view, state, showView, dark, setDark }) {
           ['1–8', 'Jump to view'],
           ['← →', 'Previous / next results tab'],
           ['P',   'Generate PR description'],
-          ['C',   'Open reviewer checklist'],
           ['N',   'New analysis'],
           ['D',   'Toggle dark mode'],
           ['?',   'This help'],
