@@ -14,7 +14,7 @@ def _cfg(**kw):
     base = dict(
         elk_usage_enabled=True,
         elk_usage_url="https://example/genai_usage/_doc/",
-        elk_tool_id="G040", elk_tool_name="Code Analysis and Review",
+        elk_tool_id="G040", elk_tool_name="GTO Pull Request Review Framework",
         elk_tool_version="1.0.0", elk_app_code_default="CLR",
         elk_integration_id="ownpccoelkint", elk_environment="SIT",
         elk_default_domain="", elk_auth_header="ApiKey LW123", elk_verify_ssl=True, elk_timeout_s=5.0,

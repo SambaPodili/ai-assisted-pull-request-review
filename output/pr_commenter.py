@@ -344,7 +344,7 @@ def post_bb_server_decision(decision: str, token: str, base_url: str, repo_slug:
 
     # 2. Status check (build status on the PR head commit)
     if commit:
-        body = {"state": state, "key": "CAR-REVIEW", "name": "Code Analysis & Review",
+        body = {"state": state, "key": "GTO-REVIEW", "name": "GTO Pull Request Review Framework",
                 "url": (_report_link(report_id) if report_id else (base_url or root)),
                 "description": (reason or decision)[:255]}
         r = _req("POST", f"{root}/rest/build-status/1.0/commits/{commit}", json=body)
@@ -400,7 +400,7 @@ def post_github_decision(decision: str, token: str, base_url: str, repo_slug: st
         out["errors"].append(f"review {getattr(r, 'status_code', '?')}: {getattr(r, 'text', '')[:120]}")
 
     if sha:
-        body = {"state": state, "context": "Code Analysis & Review",
+        body = {"state": state, "context": "GTO Pull Request Review Framework",
                 "description": (reason or decision)[:140],
                 "target_url": (_report_link(report_id) if report_id else (base_url or api))}
         r = _req("POST", f"{api}/repos/{repo_slug}/statuses/{sha}", json=body)
@@ -441,7 +441,7 @@ def post_bb_cloud_decision(decision: str, token: str, repo_slug: str, pr_id: str
         out["errors"].append(f"review {getattr(r, 'status_code', '?')}: {getattr(r, 'text', '')[:120]}")
 
     if sha:
-        body = {"key": "CAR-REVIEW", "state": state, "name": "Code Analysis & Review",
+        body = {"key": "GTO-REVIEW", "state": state, "name": "GTO Pull Request Review Framework",
                 "url": (_report_link(report_id) if report_id else api),
                 "description": (reason or decision)[:200]}
         r = _req("POST", f"{base}/commit/{sha}/statuses/build", json=body)
@@ -602,7 +602,7 @@ def _render_pr_summary_comment(report: AnalysisReport, file_groups: dict[str, li
 
     lines = [
         f"{_BOT_TAG}",
-        f"## {gate_icon} Code Analysis & Review — **{gate.value}**",
+        f"## {gate_icon} GTO Pull Request Review Framework — **{gate.value}**",
         f"",
         f"> **Risk Level:** `{risk.value.upper()}` &nbsp;·&nbsp; "
         f"**{total_findings}** finding(s) across **{len(file_groups)}** file(s)",

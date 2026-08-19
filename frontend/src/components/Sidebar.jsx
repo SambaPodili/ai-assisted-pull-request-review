@@ -42,7 +42,7 @@ export default function Sidebar({ view, showView, state, dark, setDark, goHome }
           <text x="58" y="59" textLength="82" lengthAdjust="spacingAndGlyphs"
                 fontFamily="Arial, Helvetica, sans-serif" fontWeight="700" fontSize="34" fill="#ffffff">UOB</text>
         </svg>
-        <span className="brand-text">Code Analysis &amp; Review</span>
+        <span className="brand-text">GTO Pull Request Review Framework</span>
         {goHome && <i className="ti ti-layout-grid" style={{ marginLeft: 'auto', fontSize: 14, opacity: 0.55 }} title="All frameworks" />}
       </div>
 

@@ -23,15 +23,15 @@ s.background = { color: NAVY };
 uob(s, 0.9, 0.7, 0.05);
 s.addText("UOB  ·  Group Technology & Operations", { x: 1.5, y: 0.72, w: 9, h: 0.4, fontFace: BF, fontSize: 13, color: ICE, charSpacing: 2 });
 s.addText("Tooling Update", { x: 0.9, y: 2.4, w: 11.5, h: 1.1, fontFace: HF, fontSize: 44, bold: true, color: WHITE });
-s.addText("Code Analysis & Review   ·   Code Assistant   ·   Jira Workflow (OSM)", { x: 0.92, y: 3.5, w: 12, h: 0.6, fontFace: BF, fontSize: 20, italic: true, color: ICE });
+s.addText("GTO Pull Request Review Framework   ·   Code Assistant   ·   Jira Workflow (OSM)", { x: 0.92, y: 3.5, w: 12, h: 0.6, fontFace: BF, fontSize: 20, italic: true, color: ICE });
 s.addShape(p.shapes.RECTANGLE, { x: 0.95, y: 4.4, w: 0.55, h: 0.07, fill: { color: RED }, line: { type: "none" } });
 
 /* ---------- Slide 2 — Problem statement (simple) ---------- */
 s = p.addSlide();
 s.background = { color: WHITE };
-s.addText("CODE ANALYSIS & REVIEW", { x: 0.72, y: 0.5, w: 12, h: 0.35, fontFace: BF, fontSize: 13, bold: true, color: RED, charSpacing: 2 });
+s.addText("GTO PULL REQUEST REVIEW FRAMEWORK", { x: 0.72, y: 0.5, w: 12, h: 0.35, fontFace: BF, fontSize: 13, bold: true, color: RED, charSpacing: 2 });
 s.addText("The problem we're solving", { x: 0.7, y: 0.85, w: 12, h: 0.8, fontFace: HF, fontSize: 34, bold: true, color: NAVY });
-s.addText("In plain terms — why Code Analysis & Review matters for every team.",
+s.addText("In plain terms — why GTO Pull Request Review Framework matters for every team.",
   { x: 0.72, y: 1.65, w: 12, h: 0.45, fontFace: BF, fontSize: 16, italic: true, color: MUT });
 
 // Left card — Today (the pain)
@@ -45,9 +45,9 @@ s.addText([
   { text: "New developers wait on busy reviewers for feedback.", options: { bullet: true } },
 ], { x: 1.0, y: 3.25, w: 5.3, h: 3.45, fontFace: BF, fontSize: 16, color: INK, lineSpacingMultiple: 1.25, paraSpaceAfter: 6 });
 
-// Right card — With Code Analysis & Review (the fix)
+// Right card — With GTO Pull Request Review Framework (the fix)
 s.addShape(p.shapes.ROUNDED_RECTANGLE, { x: 6.8, y: 2.35, w: 5.8, h: 4.55, fill: { color: NAVY }, line: { type: "none" }, rectRadius: 0.12 });
-s.addText("With Code Analysis & Review", { x: 7.1, y: 2.6, w: 5.3, h: 0.5, fontFace: BF, fontSize: 18, bold: true, color: ICE });
+s.addText("With GTO Pull Request Review Framework", { x: 7.1, y: 2.6, w: 5.3, h: 0.5, fontFace: BF, fontSize: 18, bold: true, color: ICE });
 s.addText([
   { text: "Every change is reviewed automatically, in minutes.", options: { bullet: true, breakLine: true } },
   { text: "Flags security, breaking changes, schema/data risk & test gaps.", options: { bullet: true, breakLine: true } },

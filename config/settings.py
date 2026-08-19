@@ -106,7 +106,7 @@ class Settings(BaseSettings):
     elk_usage_enabled:    bool  = Field(default=False, alias="ELK_USAGE_ENABLED")
     elk_usage_url:        str   = Field(default="https://developerportal.com/elasticp/genai_usage/_doc/", alias="ELK_USAGE_URL")
     elk_tool_id:          str   = Field(default="G040", alias="ELK_TOOL_ID")
-    elk_tool_name:        str   = Field(default="Code Analysis and Review", alias="ELK_TOOL_NAME")
+    elk_tool_name:        str   = Field(default="GTO Pull Request Review Framework", alias="ELK_TOOL_NAME")
     elk_tool_version:     str   = Field(default="1.0.0", alias="ELK_TOOL_VERSION")
     elk_app_code_default: str   = Field(default="CLR", alias="ELK_APP_CODE_DEFAULT")
     elk_integration_id:   str   = Field(default="ownpccoelkint", alias="ELK_INTEGRATION_ID")

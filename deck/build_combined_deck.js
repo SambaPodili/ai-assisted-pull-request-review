@@ -38,7 +38,7 @@ function grid(s, cards) { cards.forEach((c, i) => card(s, COLX[i % 3], ROWY[Math
 
 // ════════ Slide 1 — Security & Vulnerability ════════
 let s = p.addSlide(); s.background = { color: "FFFFFF" };
-header(s, "Security & Vulnerability Coverage", "Standards and checks enforced on every pull request — Code Analysis & Review");
+header(s, "Security & Vulnerability Coverage", "Standards and checks enforced on every pull request — GTO Pull Request Review Framework");
 grid(s, [
   { tag: "OWASP", tagColor: RED, title: "OWASP Top 10 (2021)", foot: "Security · Taint · IaC · SCA   ·   BLOCK",
     body: "Each finding tagged to an OWASP category. 6/10 rule-based (injection, crypto, misconfig, components, auth, SSRF); rest LLM-assisted." },

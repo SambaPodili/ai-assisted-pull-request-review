@@ -445,7 +445,7 @@ function RunningView({ state, update, showToast }) {
           <span className="spinner" style={{width:22,height:22,borderColor:'rgba(255,255,255,.2)',borderTopColor:'#fff'}}/>
         </div>
         <div style={{flex:1,minWidth:0}}>
-          <div style={{fontSize:18,fontWeight:600,color:'#0d1117',fontFamily:'Instrument Serif,serif',letterSpacing:'-.01em'}}>Running Code Analysis &amp; Review</div>
+          <div style={{fontSize:18,fontWeight:600,color:'#0d1117',fontFamily:'Instrument Serif,serif',letterSpacing:'-.01em'}}>Running GTO Pull Request Review Framework</div>
           <div style={{fontSize:13,color:'#7a8494',marginTop:2}}>{agentStatus}</div>
         </div>
         <div style={{textAlign:'right',flexShrink:0}}>

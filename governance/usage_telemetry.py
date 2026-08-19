@@ -17,7 +17,7 @@ Per the agreed mapping:
   • task_id   = the analysis request_id
   • domain    = the logged user's domain (SSO/gateway header, fallback config)
   • metadata  = repo_slug + per-event subfields (result_length, findings, gate…)
-  • tool_*/app_code defaults come from settings (G040 / Code Analysis and Review).
+  • tool_*/app_code defaults come from settings (G040 / GTO Pull Request Review Framework).
 
 A run emits 2 docs: started → code_analysis_success (which consolidates duration,
 gate, risk, security findings, top issues); a failed run emits started → failure.

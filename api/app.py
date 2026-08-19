@@ -83,7 +83,7 @@ def create_app(settings=None) -> FastAPI:
     get_registry().load_from_settings(cfg)
 
     app = FastAPI(
-        title="Code Analysis & Review",
+        title="GTO Pull Request Review Framework",
         description=(
             "Enterprise AI multi-agent code impact and security review framework.\n\n"
             "Supports GitHub, Bitbucket, GitLab webhooks, direct diff submission, "

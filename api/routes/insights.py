@@ -732,7 +732,7 @@ def create_dep_update_pr(body: DepUpdateRequest):
                 f"**Package:** `{pkg}`  \n"
                 f"**Vulnerability:** `{cve}`  \n"
                 f"**Safe version:** `{safe}`  \n\n"
-                f"This PR was created automatically by Code Analysis & Review "
+                f"This PR was created automatically by GTO Pull Request Review Framework "
                 f"after detecting a CVE in analysis [`{body.request_id[:8]}…`].\n\n"
                 f"### What to do\n"
                 f"1. Review the version bump in the manifest file\n"

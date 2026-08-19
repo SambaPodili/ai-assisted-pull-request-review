@@ -24,7 +24,7 @@ html.dark .sidebar { background: #161b22; border-right-color: #30363d; }
 html.dark .main { background: #0d1117; }
 html.dark .topbar { background: #161b22; border-bottom-color: #30363d; }
 html.dark .brand { border-bottom-color: #30363d; color: #e6edf3; }
-html.dark .brand-text { color: #e6edf3; }
+html.dark .brand-text { color: var(--accent-bright); }
 html.dark .nav-item { color: #8b949e; }
 html.dark .nav-item:hover { color: #e6edf3; background: #1c2128; }
 html.dark .nav-item.active { color: #58a6ff; background: #1c2128; border-left-color: #58a6ff; }
@@ -114,7 +114,7 @@ body { display: flex; flex-direction: column; min-height: 100vh; }
 
 /* Layout */
 .shell { display: flex; height: 100vh; overflow: hidden; }
-.sidebar { width: 220px; flex-shrink: 0; background: #ffffff; border-right: 1px solid #e8eaed; display: flex; flex-direction: column; padding: 20px 0; height: 100vh; max-height: 100vh; }
+.sidebar { width: 236px; flex-shrink: 0; background: #ffffff; border-right: 1px solid #e8eaed; display: flex; flex-direction: column; padding: 20px 0; height: 100vh; max-height: 100vh; }
 /* Nav list takes the available height and scrolls; the footer (theme + user) stays pinned and visible at any zoom. min-height:0 lets the flex child shrink so overflow-y works. */
 .sidebar-nav { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; }
 .sidebar-nav::-webkit-scrollbar { width: 6px; }
@@ -320,7 +320,7 @@ a:hover { text-decoration: underline; }
 
 /* Typography */
 h1, h2, h3 { font-family: 'Instrument Serif', serif; }
-.brand-text { font-family: 'Instrument Serif', serif; font-size: 16px; color: #0d1117; letter-spacing: -.01em; }
+.brand-text { font-family: 'Instrument Serif', serif; font-size: 15px; line-height: 1.28; color: #1B3A8B; letter-spacing: -.005em; min-width: 0; }
 
 /* Chip colors */
 .chip-blue { background: #eff5ff; color: #1a6cf6; border-color: #c2d6fe; }

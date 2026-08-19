@@ -1,4 +1,4 @@
-// Two-slide deck: every compliance & security standard Code Analysis & Review enforces.
+// Two-slide deck: every compliance & security standard GTO Pull Request Review Framework enforces.
 // Run: NODE_PATH="$(npm root -g)" node deck/build_compliance_slides.js
 const pptxgen = require("pptxgenjs");
 const p = new pptxgen();
@@ -52,7 +52,7 @@ function footer(s, text) {
 // ── Slide 1: Application security & vulnerabilities ──
 const s1 = p.addSlide(); s1.background = { color: "FFFFFF" };
 header(s1, "Security & Vulnerability Coverage",
-  "Standards and checks enforced on every pull request — Code Analysis & Review");
+  "Standards and checks enforced on every pull request — GTO Pull Request Review Framework");
 [
   { tag: "OWASP", tagColor: RED,  title: "OWASP Top 10 (2021)",
     body: "Each finding tagged to an OWASP category. 6/10 rule-based (injection, crypto, misconfig, components, auth, SSRF); rest LLM-assisted.",

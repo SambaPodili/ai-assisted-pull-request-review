@@ -1,4 +1,4 @@
-// Single-slide deck: OWASP Top 10 (2021) mapped to Code Analysis & Review agents.
+// Single-slide deck: OWASP Top 10 (2021) mapped to GTO Pull Request Review Framework agents.
 // Run: node deck/build_owasp_slide.js  → deck/OWASP_Review_Coverage.pptx
 const pptxgen = require("pptxgenjs");
 const p = new pptxgen();
@@ -16,7 +16,7 @@ s.background = { color: "FFFFFF" };
 // ── Header ──
 s.addText("Security & Code Review Coverage", {
   x: 0.6, y: 0.42, w: 12.1, h: 0.6, fontFace: "Calibri", fontSize: 32, bold: true, color: NAVY });
-s.addText("OWASP Top 10 (2021) — mapped to the agents in Code Analysis & Review", {
+s.addText("OWASP Top 10 (2021) — mapped to the agents in GTO Pull Request Review Framework", {
   x: 0.62, y: 1.04, w: 7.5, h: 0.34, fontFace: "Calibri", fontSize: 14, italic: true, color: MUTE });
 
 // ── Legend: detection type (top-right, aligned with the subtitle) ──

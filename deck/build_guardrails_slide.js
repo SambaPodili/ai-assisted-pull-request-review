@@ -1,4 +1,4 @@
-// Single slide: the guardrails / safety controls in Code Analysis & Review.
+// Single slide: the guardrails / safety controls in GTO Pull Request Review Framework.
 // Run: NODE_PATH="$(npm root -g)" node deck/build_guardrails_slide.js
 const pptxgen = require("pptxgenjs");
 const p = new pptxgen();

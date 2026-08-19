@@ -71,7 +71,7 @@ function AppShell() {
   const showView = useCallback((name) => {
     prevView.current = name
     setViewRaw(name)
-    document.title = `${PAGE_TITLES[name] || name} — Code Analysis & Review`
+    document.title = `${PAGE_TITLES[name] || name} — GTO Pull Request Review Framework`
     // Scroll the active content pane to top
     requestAnimationFrame(() => {
       const el = document.getElementById(`view-content-${name}`)
@@ -81,7 +81,7 @@ function AppShell() {
 
   // Initialise page title
   useEffect(() => {
-    document.title = `${PAGE_TITLES[view] || view} — Code Analysis & Review`
+    document.title = `${PAGE_TITLES[view] || view} — GTO Pull Request Review Framework`
   }, [])
 
   const goNext = useCallback(() => {
