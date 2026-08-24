@@ -2,9 +2,10 @@
 governance/prompt_guard.py
 ----------------------------
 This is the AUTHORITATIVE, enforced copy of the rule set — the server always
-runs this before accepting user_instructions. frontend/src/promptGuard.js is
-a hand-maintained PARALLEL copy for real-time UX only (advisory, not
-enforced) — keep both in sync if you edit rules here.
+runs this before accepting user_instructions. frontend/src/promptGuard.js and
+vscode-extension/src/promptGuard.ts are hand-maintained PARALLEL copies for
+real-time UX only (advisory, not enforced) — keep all three in sync if you
+edit rules here.
 
 Deterministic (non-LLM, zero-token) scanner for the free-text
 `user_instructions` field a submitter can attach to an analysis to steer

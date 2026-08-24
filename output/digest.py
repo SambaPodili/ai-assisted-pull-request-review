@@ -180,7 +180,7 @@ def send_digest(settings=None, days: int = 1) -> dict:
     msg = MIMEMultipart("alternative")
     msg["Subject"] = (f"GTO Pull Request Review Framework Digest — {len(data['blocks'])} blocked, "
                       f"{len(data['holds'])} need review")
-    msg["From"]    = cfg.smtp_from or cfg.smtp_user or "ciaa@localhost"
+    msg["From"]    = cfg.smtp_from or cfg.smtp_user or "gto@localhost"
     msg["To"]      = ", ".join(recipients)
     msg.attach(MIMEText(text, "plain"))
     msg.attach(MIMEText(html, "html"))

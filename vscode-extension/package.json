@@ -1,0 +1,84 @@
+{
+  "name": "gto-pr-review",
+  "displayName": "GTO Pull Request Review Framework",
+  "description": "Multi-agent PR review, risk gating & business-impact mapping — run it on your uncommitted changes without leaving the editor.",
+  "version": "0.3.1",
+  "publisher": "gto",
+  "icon": "media/icon.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Linters",
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "gto.analyzeChanges",
+        "title": "GTO: Analyze Changes",
+        "icon": "$(play)"
+      },
+      {
+        "command": "gto.analyzeBranch",
+        "title": "GTO: Analyze Branch..."
+      },
+      {
+        "command": "gto.setApiKey",
+        "title": "GTO: Set API Key"
+      },
+      {
+        "command": "gto.showLastResult",
+        "title": "GTO: Show Last Result"
+      }
+    ],
+    "configuration": {
+      "title": "GTO Pull Request Review Framework",
+      "properties": {
+        "gto.backendUrl": {
+          "type": "string",
+          "default": "http://localhost:8080",
+          "description": "Base URL of the GTO Pull Request Review Framework backend (no trailing slash)."
+        },
+        "gto.agentPreset": {
+          "type": "string",
+          "enum": [
+            "fast",
+            "standard",
+            "thorough"
+          ],
+          "enumDescriptions": [
+            "code_analysis + security only — fastest, catches the sharpest issues. Recommended for the editor loop.",
+            "Core review + risk gate (code_analysis, security, dependency, test_coverage, interface, risk).",
+            "All ~22 agents — the same full-depth review as a PR submission. Slow for an editor loop; use sparingly."
+          ],
+          "default": "fast",
+          "description": "Which agents to run when analyzing from the editor."
+        },
+        "gto.autoAnalyzeOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically run 'GTO: Analyze Changes' (uncommitted diff, no priorities prompt) shortly after you save a file. Off by default — this makes an LLM-backed backend call on every save."
+        }
+      }
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SambaPodili/code-impact-analysis-review.git"
+  },
+  "scripts": {
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "package": "node esbuild.js --production",
+    "vscode:prepublish": "npm run package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.3.3"
+  }
+}

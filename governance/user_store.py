@@ -26,7 +26,7 @@ from governance.rbac import Subject, Role
 
 log = logging.getLogger(__name__)
 DEFAULT_DB_PATH = "data/users.db"
-_KEY_PREFIX = "ciaa_"
+_KEY_PREFIX = "gto_"
 
 
 def _now() -> str:

@@ -80,7 +80,7 @@ export async function downloadCsv(state, path) {
   const a = document.createElement('a');
   const fn = (r.headers.get('content-disposition') || '').match(/filename="([^"]+)"/);
   a.href = url;
-  a.download = fn ? fn[1] : 'ciaa_export.csv';
+  a.download = fn ? fn[1] : 'gto_export.csv';
   document.body.appendChild(a);
   a.click();
   a.remove();

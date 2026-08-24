@@ -188,7 +188,7 @@ export default function SettingsView({ showToast }) {
     const blob = new Blob([JSON.stringify(cfg, null, 2)], { type: 'application/json' })
     const a    = document.createElement('a')
     a.href     = URL.createObjectURL(blob)
-    a.download = 'ciaa-config.json'
+    a.download = 'gto-config.json'
     a.click()
     URL.revokeObjectURL(a.href)
     showToast('Config exported', 'success')

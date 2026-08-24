@@ -725,7 +725,7 @@ def create_dep_update_pr(body: DepUpdateRequest):
                 "Accept":        "application/vnd.github.v3+json",
             }
             slug     = body.repo_slug
-            branch   = f"fix/ciaa-{pkg.lower().replace('/','-').replace('_','-')}-{safe}"
+            branch   = f"fix/gto-{pkg.lower().replace('/','-').replace('_','-')}-{safe}"
             pr_title = f"fix(deps): update {pkg} to {safe} [{cve}]"
             pr_body  = (
                 f"## Automated dependency update\n\n"
@@ -832,7 +832,7 @@ def export_queue_csv(days: int = 0, repo: str = ""):
         rows,
         ["repo","pr_number","pr_title","author","gate","risk_score",
          "change_type","total_tokens","elapsed","request_id"],
-        f"ciaa_review_queue_{datetime.utcnow():%Y%m%d}.csv",
+        f"gto_review_queue_{datetime.utcnow():%Y%m%d}.csv",
     )
 
 
@@ -844,7 +844,7 @@ def export_cost_csv(weeks: int = 12, repo: str = ""):
     return _csv_response(
         rows,
         ["agent","calls","tokens","cost_usd"],
-        f"ciaa_api_cost_{datetime.utcnow():%Y%m%d}.csv",
+        f"gto_api_cost_{datetime.utcnow():%Y%m%d}.csv",
     )
 
 
@@ -859,5 +859,5 @@ def export_trend_csv(weeks: int = 12, repo: str = ""):
     return _csv_response(
         rows,
         ["repo","week","avg_risk_score","trend"],
-        f"ciaa_risk_trend_{datetime.utcnow():%Y%m%d}.csv",
+        f"gto_risk_trend_{datetime.utcnow():%Y%m%d}.csv",
     )

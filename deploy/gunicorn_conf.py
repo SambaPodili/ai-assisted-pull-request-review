@@ -1,5 +1,5 @@
 """
-gunicorn_conf.py — production server config for the CIAA backend.
+gunicorn_conf.py — production server config for the GTO Pull Request Review Framework backend.
 
 Run:  gunicorn 'api.app:create_app' --factory -c gunicorn_conf.py
 
@@ -24,4 +24,4 @@ keepalive = 5
 accesslog = os.environ.get("ACCESS_LOG", "-")      # stdout → journald
 errorlog = os.environ.get("ERROR_LOG", "-")
 loglevel = os.environ.get("LOG_LEVEL", "info")
-proc_name = "ciaa-api"
+proc_name = "gto-api"

@@ -48,7 +48,7 @@ def test_can_manage_rejects_mixed_out_of_tier():
 
 def test_create_returns_key_once_and_resolves(store):
     key, rec = store.create_user("Alice", "Payments", [Role.REVIEWER], "admin@x")
-    assert key.startswith("ciaa_")
+    assert key.startswith("gto_")
     assert rec["roles"] == ["reviewer"] and rec["created_by"] == "admin@x"
     subj = store.resolve(key)
     assert subj is not None and subj.name == "Alice" and Role.REVIEWER in subj.roles
@@ -63,7 +63,7 @@ def test_key_is_hashed_not_stored_plaintext(store):
 
 def test_wrong_key_does_not_resolve(store):
     store.create_user("Alice", "", [Role.DEVELOPER], "admin@x")
-    assert store.resolve("ciaa_wrong") is None and store.resolve("") is None
+    assert store.resolve("gto_wrong") is None and store.resolve("") is None
 
 
 def test_revoke_disables_resolution(store):
@@ -123,7 +123,7 @@ def test_api_admin_can_create_developer(client):
     c, app, adm = client
     _as(app, adm, Role.ADMIN)
     r = c.post("/admin/users", json={"name": "Dev", "roles": ["developer"]})
-    assert r.status_code == 200 and r.json()["api_key"].startswith("ciaa_")
+    assert r.status_code == 200 and r.json()["api_key"].startswith("gto_")
 
 
 def test_api_admin_cannot_create_admin(client):

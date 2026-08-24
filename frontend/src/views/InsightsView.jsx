@@ -74,7 +74,7 @@ export default function InsightsView({ active, showView, showToast }) {
       const blob=await r.blob(); const url=URL.createObjectURL(blob)
       const a=document.createElement('a')
       const fn=(r.headers.get('content-disposition')||'').match(/filename="([^"]+)"/)
-      a.href=url; a.download=fn?fn[1]:'ciaa_export.csv'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url)
+      a.href=url; a.download=fn?fn[1]:'gto_export.csv'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url)
       showToast('CSV downloaded','success')
     } catch(e){showToast('Export failed: '+e.message,'error')}
   }
