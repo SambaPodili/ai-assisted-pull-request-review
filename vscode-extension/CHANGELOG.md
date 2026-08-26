@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.10.1
+
+- **Backend**: `path_review_summary` on the report — a safe, display-only
+  record of what `.gto.yaml` actually did for a run (agents skipped,
+  whether steering text was applied). Previously this only ever showed up
+  as a server log line; now it's visible.
+- Results panel shows a small `.gto.yaml` banner (e.g. "skipped 2 agent(s)
+  (security, code_analysis)") whenever path-scoped rules affected the run —
+  previously invisible locally, the only symptom was fewer findings than
+  expected with no explanation. Included in Copy as Markdown too.
+
 ## 0.10.0
 
 - **Path-scoped review config** — a `.gto.yaml` at the repo root lets a repo

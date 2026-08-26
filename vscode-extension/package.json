@@ -2,7 +2,7 @@
   "name": "gto-pr-review",
   "displayName": "GTO Pull Request Review Framework",
   "description": "Multi-agent PR review, risk gating & business-impact mapping — run it on your uncommitted changes without leaving the editor.",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "publisher": "gto",
   "icon": "media/icon.png",
   "engines": {

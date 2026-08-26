@@ -203,6 +203,20 @@ function renderShell(bodyHtml: string): string {
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>${BASE_STYLE}</style></head><body>${bodyHtml}</body></html>`;
 }
 
+/** Makes .gto.yaml's effect visible — without this, path-scoped rules only
+ * ever show up as "fewer findings than expected," with nothing telling the
+ * user a config file was even read. */
+function pathReviewBannerHtml(r: AnalysisReport): string {
+  const s = r.path_review_summary;
+  if (!s || (!s.agents_excluded?.length && !s.steering_applied)) return '';
+  const parts: string[] = [];
+  if (s.agents_excluded?.length) {
+    parts.push(`skipped ${s.agents_excluded.length} agent(s) (${s.agents_excluded.map(escapeHtml).join(', ')})`);
+  }
+  if (s.steering_applied) parts.push('applied path-scoped priorities');
+  return `<p class="path-review-banner">📄 <code>.gto.yaml</code> — ${parts.join('; ')}</p>`;
+}
+
 function findFixForIssue(issue: CorrelatedIssue, fixes: CodeFix[]): CodeFix | undefined {
   if (!issue.file_path) return undefined;
   const sameFile = fixes.filter((f) => f.file_path === issue.file_path);
@@ -280,6 +294,10 @@ function renderReport(r: AnalysisReport, opts: ReportViewOpts): string {
     .suppressed-row { border-top: 1px solid var(--vscode-panel-border); padding: 6px 0; font-size: 12px;
       display: flex; justify-content: space-between; align-items: center; gap: 8px; }
     .suppressed-row .info { color: var(--vscode-descriptionForeground); }
+    .path-review-banner { font-size: 12px; color: var(--vscode-descriptionForeground);
+      background: var(--vscode-textCodeBlock-background); padding: 5px 10px; border-radius: 4px;
+      margin: 8px 0 0; }
+    .path-review-banner code { font-family: var(--vscode-editor-font-family, monospace); }
   </style></head>
   <body>
     <div class="top-row">
@@ -292,6 +310,7 @@ function renderReport(r: AnalysisReport, opts: ReportViewOpts): string {
       <span>${r.duration_s?.toFixed?.(1) ?? '—'}s</span>
     </div>
     ${r.risk?.rationale ? `<p class="dim">${escapeHtml(r.risk.rationale)}</p>` : ''}
+    ${pathReviewBannerHtml(r)}
     <h2 style="margin-top:16px;font-size:14px;">Top issues (${issues.length})</h2>
     ${issuesHtml}
     ${fixSuggestionsHtml(r.remediation?.fix_suggestions ?? [])}
@@ -513,6 +532,14 @@ function reportToMarkdown(r: AnalysisReport): string {
   if (r.risk?.rationale) {
     lines.push('');
     lines.push(r.risk.rationale);
+  }
+  const prs = r.path_review_summary;
+  if (prs && (prs.agents_excluded?.length || prs.steering_applied)) {
+    lines.push('');
+    const bits: string[] = [];
+    if (prs.agents_excluded?.length) bits.push(`skipped agent(s): ${prs.agents_excluded.join(', ')}`);
+    if (prs.steering_applied) bits.push('applied path-scoped priorities');
+    lines.push(`\`.gto.yaml\` — ${bits.join('; ')}`);
   }
   lines.push('');
   lines.push(`## Top issues (${issues.length})`);

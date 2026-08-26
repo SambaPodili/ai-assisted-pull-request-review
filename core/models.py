@@ -146,6 +146,18 @@ class PathReviewConfig(BaseModel):
     paths:   list[PathReviewRule] = []
 
 
+class PathReviewSummary(BaseModel):
+    """What .gto.yaml actually did for this run, safe to surface on the
+    report — unlike PathReviewConfig itself, this carries no free text (no
+    per-rule user_instructions, just canonical agent-key strings and a
+    boolean), so putting it on AnalysisReport doesn't violate the "no
+    untrusted text on the report" isolation. Purely informational — display
+    only, e.g. the VS Code panel showing "Path rules applied — N agent(s)
+    skipped" so .gto.yaml's effect isn't silently invisible."""
+    agents_excluded:  list[str] = []
+    steering_applied: bool = False
+
+
 class AnalysisRequest(BaseModel):
     """Canonical input to the orchestrator."""
     model_config = ConfigDict(protected_namespaces=())
@@ -824,6 +836,12 @@ class AnalysisReport(BaseModel):
     # counts — set at finalization by compute_agent_run_summary(). See that
     # method's docstring for the exact meaning of each bucket.
     agent_run_summary: dict = {}
+    # Display-only summary of what .gto.yaml did for this run (which agents
+    # it excluded, whether it added steering text) — see
+    # core.models.PathReviewSummary for why this is safe to put on the
+    # report unlike the raw PathReviewConfig. None if no .gto.yaml was in
+    # play (the common case).
+    path_review_summary: PathReviewSummary | None = None
 
     # Deterministic gate policy — set at finalization. gate_policy_reasons lists
     # the hard rules that fired; gate_overridden_by_policy is True when policy

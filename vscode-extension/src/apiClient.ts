@@ -98,6 +98,14 @@ export interface QAScenariosResult {
   summary: string;
 }
 
+/** Display-only summary of what .gto.yaml did for this run — see
+ * core.models.PathReviewSummary. Absent/undefined when no .gto.yaml (or an
+ * empty one) was in play, the common case. */
+export interface PathReviewSummary {
+  agents_excluded: string[];
+  steering_applied: boolean;
+}
+
 export interface AnalysisReport {
   request_id: string;
   gate_decision: string;
@@ -105,6 +113,7 @@ export interface AnalysisReport {
   risk?: { risk_score?: number; rationale?: string };
   remediation?: { code_fixes?: CodeFix[]; fix_suggestions?: string[] };
   qa_scenarios?: QAScenariosResult;
+  path_review_summary?: PathReviewSummary | null;
   files_changed: number;
   files_changed_list: string[];
   top_issues: CorrelatedIssue[];

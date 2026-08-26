@@ -23,7 +23,7 @@ from typing import Any, Optional
 
 from core.models import (
     AnalysisRequest, AnalysisReport, ChangeType,
-    AgentName, AgentTokenUsage,
+    AgentName, AgentTokenUsage, PathReviewSummary,
 )
 from core.token_manager import TokenBudgetManager
 from agents.code_analysis_agent import CodeAnalysisAgent
@@ -295,6 +295,11 @@ class ImpactAnalysisOrchestrator:
                 request.user_instructions = (
                     f"{request.user_instructions}\n{extra_instructions}".strip()
                     if request.user_instructions else extra_instructions
+                )
+            if path_excluded or extra_instructions:
+                report.path_review_summary = PathReviewSummary(
+                    agents_excluded=sorted(path_excluded),
+                    steering_applied=bool(extra_instructions),
                 )
 
         # ── Phase 1: code_analysis + security ─────────────────────────────────
