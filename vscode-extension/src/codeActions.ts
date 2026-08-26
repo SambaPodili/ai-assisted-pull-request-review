@@ -25,15 +25,45 @@ export function updateCodeFixes(report: AnalysisReport, repoRoot: string): void 
   cachedFixes = [];
   for (const fix of report.remediation?.code_fixes ?? []) {
     if (!fix.file_path) continue;
-    const m = LINE_RE.exec(fix.diff);
-    if (!m) continue;
+    const line = parseFixLine(fix);
+    if (line === null) continue;
     const uri = vscode.Uri.joinPath(vscode.Uri.file(repoRoot), fix.file_path);
-    cachedFixes.push({ uri, line: parseInt(m[1], 10) - 1, fix });
+    cachedFixes.push({ uri, line, fix });
   }
 }
 
 export function clearCodeFixes(): void {
   cachedFixes = [];
+}
+
+/** Line number a CodeFix targets (0-based), or null if its `diff` doesn't
+ * carry the `@@ line N @@` marker fix_generator.py always emits. */
+export function parseFixLine(fix: CodeFix): number | null {
+  const m = LINE_RE.exec(fix.diff);
+  return m ? parseInt(m[1], 10) - 1 : null;
+}
+
+/** Applies one CodeFix directly (used by the results panel's "Apply" button —
+ * the same staleness-checked logic as the Quick Fix lightbulb, just invoked
+ * without going through the CodeActionProvider). Refuses (returns 'stale')
+ * rather than editing the wrong line if the file changed since analysis. */
+export async function applyCodeFix(repoRoot: string, fix: CodeFix): Promise<'applied' | 'stale' | 'error'> {
+  const line = parseFixLine(fix);
+  if (line === null || !fix.file_path) return 'error';
+  try {
+    const uri = vscode.Uri.joinPath(vscode.Uri.file(repoRoot), fix.file_path);
+    const doc = await vscode.workspace.openTextDocument(uri);
+    if (line >= doc.lineCount) return 'stale';
+    const lineRange = doc.lineAt(line).range;
+    if (doc.getText(lineRange) !== fix.before) return 'stale';
+
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(uri, lineRange, fix.after);
+    const ok = await vscode.workspace.applyEdit(edit);
+    return ok ? 'applied' : 'error';
+  } catch {
+    return 'error';
+  }
 }
 
 class GtoCodeActionProvider implements vscode.CodeActionProvider {

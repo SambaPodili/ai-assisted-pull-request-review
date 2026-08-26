@@ -21,7 +21,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from core.models import (
-    AnalysisRequest, AnalysisReport, ChangeType,
+    AnalysisRequest, AnalysisReport, ChangeType, PathReviewConfig,
 )
 from governance.rbac import (
     Permission, Subject, Role, ROLE_META,
@@ -163,6 +163,14 @@ class AnalyseRequest(BaseModel):
     # module"). Length-capped and scanned by governance.prompt_guard below.
     # See core.models.AnalysisRequest.user_instructions for the safety invariant.
     user_instructions: str = ""
+    # Inline .gto.yaml content (raw-API entry point has no repo filesystem
+    # access, unlike the webhook flow or VS Code extension, so it's submitted
+    # here instead of loaded server-side). Not validated at submission time —
+    # governance.prompt_guard runs uniformly on every path rule's
+    # user_instructions inside the orchestrator (core/orchestrator.py), the
+    # same single enforcement point used regardless of entry point, rather
+    # than duplicating (and risking diverging) that check here.
+    path_review_config: PathReviewConfig | None = None
 
     @field_validator("diff_text")
     @classmethod
@@ -279,6 +287,7 @@ async def submit_analysis(
         deep_scan=bool(payload.deep_scan),
         selected_agents=payload.selected_agents,
         user_instructions=payload.user_instructions,
+        path_review_config=payload.path_review_config,
     )
 
     # GenAI usage telemetry (ELK): capture the logged user's domain NOW, while the

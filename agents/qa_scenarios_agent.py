@@ -28,7 +28,7 @@ from core.models import (
     QAScenariosResult, QAScenario, QAScenarioType, RiskLevel,
 )
 from agents.base_agent import BaseAgent, format_hunks_for_prompt, format_user_priorities
-from ingestion.language_registry import lang_meta, test_framework_hint, linter_hint
+from ingestion.language_registry import lang_meta, test_framework_hint, linter_hint, detect_language
 
 
 # ── Heuristic classifiers ─────────────────────────────────────────────────────
@@ -355,6 +355,12 @@ def _build_fallback_scenarios(request: AnalysisRequest) -> list[QAScenario]:
     for hunk in request.hunks:
         fp      = hunk.file_path
         content = hunk.content
+        if hunk.language == "unknown":
+            # Not recognized as any source/config/data language (logs, .csv,
+            # .md, .txt, ...) — there's no code or schema here to write a test
+            # against, and keyword regexes below would otherwise false-positive
+            # on log/prose content that merely mentions "auth" or "migration".
+            continue
         cats    = _categorise_hunk(fp, content)
         meta    = lang_meta(hunk.language)
         fw_hint = test_framework_hint(hunk.language)
@@ -609,6 +615,23 @@ Respond ONLY with valid JSON matching the QAScenariosResult schema."""
 
     def run(self, request: AnalysisRequest, budget, context: dict[str, Any] | None = None) -> QAScenariosResult:
         result = super().run(request, budget, context)
+        # The LLM sees raw diff content in the prompt and sometimes proposes a
+        # scenario for a file that isn't source/config code at all (a log or
+        # data file whose CONTENT merely contains words like "auth" or
+        # "migration") — there's no code there to write a real test against.
+        # Drop any scenario whose every affected_file is unrecognized by the
+        # language registry, the same signal the fallback path gates on.
+        try:
+            result.scenarios = [
+                s for s in result.scenarios
+                if not s.affected_files or any(detect_language(f) != "unknown" for f in s.affected_files)
+            ]
+            result.total_scenarios = len(result.scenarios)
+            priorities = [getattr(s.priority, "value", s.priority) for s in result.scenarios]
+            result.critical_count  = sum(1 for p in priorities if p == "critical")
+            result.high_count      = sum(1 for p in priorities if p == "high")
+        except Exception:
+            pass
         # The LLM path never asks for test_skeleton (see system_prompt above) — it
         # comes back empty on every LLM-produced scenario. Backfill it here with
         # the same per-language template used by the fallback path, so a real

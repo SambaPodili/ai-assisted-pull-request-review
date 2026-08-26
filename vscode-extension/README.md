@@ -5,7 +5,8 @@ Run the multi-agent PR review without leaving the editor.
 ## Commands
 
 - **`GTO: Analyze Changes`** (Command Palette, or the status bar button) — diffs
-  your working tree against `HEAD` (staged + unstaged combined), quick-picks
+  your working tree against `HEAD` (staged + unstaged combined, plus any
+  untracked files that were never `git add`ed), quick-picks
   the agent depth (defaults to your configured preset — press Enter to keep
   it), prompts for optional analysis priorities, submits to the backend, and
   shows results in a panel beside your editor, as inline diagnostics, and
@@ -21,9 +22,36 @@ If you have more than one git repo open in the workspace, both analyze
 commands ask which one to use (skipped entirely when there's only one — no
 added friction for the common case).
 
-If nothing changed since your last run (identical diff, depth, and
-priorities), re-running shows the cached result instantly instead of
+If nothing changed since your last run (identical diff, depth, priorities, and
+`.gto.yaml` content), re-running shows the cached result instantly instead of
 re-hitting the backend.
+
+## Path-scoped review config (`.gto.yaml`)
+
+Add a `.gto.yaml` at your repo root to define per-path rules — read
+automatically, no setting needed:
+
+```yaml
+version: 1
+paths:
+  - match: "payments/**"
+    user_instructions: "Treat any missing input validation as high severity"
+  - match: "scripts/**"
+    skip: true              # no agent runs on hunks matching this path
+  - match: "**/*.generated.*"
+    agents: []               # same as skip: true
+```
+
+`match` is a glob (a pattern with no `/` matches at any depth). `skip`/
+`agents: []` skip every agent for matching hunks; a non-empty `agents: [...]`
+is an allow-list (only those agents run there). `user_instructions` adds
+path-scoped steering text — scanned by the same guardrail as the priorities
+prompt before it reaches an LLM, and it's request-wide once triggered (v1
+doesn't hide specific files from an agent that also has in-scope work
+elsewhere in the same diff — a rule only ever narrows the agent selection,
+never widens it, and can fully skip an agent only when *every* hunk it would
+see is excluded). The backend applies the same file/schema for
+webhook-triggered and raw-API submissions.
 
 ## Analysis priorities
 
@@ -39,7 +67,24 @@ decision (see `core/models.py`'s `AnalysisRequest.user_instructions` for why).
 ## Where results show up
 
 - **A webview panel** beside your editor — gate decision, risk score, ranked
-  findings. Click a finding to jump to that file and line.
+  findings, and a "Files changed" list. Click a finding (or a file) to jump to
+  it. When a suggested fix matches a finding, it shows inline as an
+  expandable diff with an "Apply fix" button. Findings without a mechanical
+  fix still get the remediation agent's text-level "Suggested fixes" list.
+  On the **Thorough** preset, "Unit test coverage gaps" shows each missing
+  scenario with a real, language-aware test skeleton, a "Copy code" button,
+  and a "Create test file…" button (opens a save dialog pre-filled with a
+  sensible location — co-located with the affected source file, or mirrored
+  into `src/test/...` for a Maven/Gradle-style `src/main/...` layout). A
+  "Copy as Markdown" button copies the whole report for pasting into a PR
+  description or chat.
+- **Code fixes**: findings matched by the 7 deterministic patterns
+  (`agents/fix_generator.py` — hardcoded secrets, weak hashes, etc.) get a
+  high-confidence Apply-fix. Beyond that, the `remediation` agent also
+  proposes real before/after patches for other issues, verified against the
+  actual diff before being kept — these show the same way but labeled
+  **"AI-suggested — review before applying"**, since an LLM-written patch
+  isn't guaranteed correct the way a regex match is.
 - **Inline diagnostics** — critical/high findings show as errors, medium as
   warnings, low as informational hints, both as squiggly underlines in the
   editor and as entries in the native Problems panel (`Cmd+Shift+M` /
@@ -54,6 +99,23 @@ decision (see `core/models.py`'s `AnalysisRequest.user_instructions` for why).
   line — it only applies when the target line still matches exactly.
 - **Status bar** — after a run, shows the gate result (✓/⚠/⛔) instead of the
   idle "Analyze" label, colored for HOLD/BLOCK. Click it to re-analyze.
+
+## Suppressing a finding
+
+Click **🚫 Ignore** on any issue card to stop it reappearing on future runs
+of the same code. You'll be prompted for an optional reason, then it's saved
+to **`.gto-ignore.json`** at the repo root — git-trackable, so the team can
+see why something was suppressed (same idea as a `.eslintignore` or `# noqa`
+comment). Matching is by exact file + line, so if the code moves, the
+suppression won't silently apply to the wrong line — it'll just show up
+again, which is the safer failure mode. Manage existing suppressions from
+the "Suppressed findings" section at the bottom of the panel.
+
+## New-since-last-run
+
+Issues not seen in your previous run on the same branch are badged **New**.
+This is tracked locally per (repo, branch) — nothing is written to git for
+it, unlike suppressions.
 
 ## Setup
 
@@ -70,6 +132,7 @@ decision (see `core/models.py`'s `AnalysisRequest.user_instructions` for why).
 | `gto.backendUrl` | `http://localhost:8080` | Base URL of the backend, no trailing slash. |
 | `gto.agentPreset` | `fast` | `fast` (2 agents) / `standard` (6 agents) / `thorough` (~22 agents, full-depth — slow for an editor loop, matches a full PR submission). |
 | `gto.autoAnalyzeOnSave` | `false` | Automatically re-run "Analyze Changes" ~1.5s after you save a file — uncommitted diff only, no priorities prompt. **Off by default**: this makes a real LLM-backed backend call on every save, which costs time and tokens. Turn on only if that tradeoff is worth it for your workflow. |
+| `gto.excludePatterns` | IDE/tooling noise + build output for JS/TS, Java/Kotlin, Python, .NET, Go/PHP/Ruby, Swift (full list in `package.json`) | `.gitignore`-flavored glob patterns dropped from every analysis, on top of what `.gitignore` already hides — a pattern with no `/` matches at any depth (e.g. `*.lock` catches nested lockfiles too). Applies to both `Analyze Changes` and `Analyze Branch...`. Note: `.NET`'s `obj/` is excluded by default but `bin/` deliberately isn't, since some projects ship real code there (npm bin scripts, CLI wrappers) — add it yourself if your repo's `bin/` is pure build output. |
 
 ## Not yet built
 
@@ -92,8 +155,10 @@ To produce an installable `.vsix` (the simpler way to try it — no debug
 session needed):
 
 ```bash
-npx @vscode/vsce package --no-dependencies -o gto-pr-review.vsix
+npm run vsix
 ```
+
+which packages to `gto-pr-review-<version>.vsix` (version from `package.json`), so successive builds don't overwrite each other and it's obvious which one you're installing.
 
 Then in VS Code: **Extensions panel → `...` → Install from VSIX...** and
 pick the file. Re-run this command and reinstall after any source change —

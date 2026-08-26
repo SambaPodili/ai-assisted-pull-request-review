@@ -5,7 +5,14 @@
 // theme the user has, light or dark, with zero extra theming code.
 
 import * as vscode from 'vscode';
-import { AnalysisReport, CorrelatedIssue } from './apiClient';
+import { AnalysisReport, CorrelatedIssue, CodeFix, QAScenario } from './apiClient';
+import { parseFixLine, applyCodeFix } from './codeActions';
+import { fingerprint, SuppressedEntry, addSuppression, removeSuppression } from './reportState';
+
+export interface ReportViewOpts {
+  suppressed: SuppressedEntry[];
+  newFingerprints: Set<string>;
+}
 
 const GATE_META: Record<string, { label: string; color: string }> = {
   APPROVE: { label: '✓ APPROVE', color: 'var(--vscode-testing-iconPassed, #3fb950)' },
@@ -24,6 +31,7 @@ export class ResultsPanel {
   private static current: ResultsPanel | undefined;
   private readonly panel: vscode.WebviewPanel;
   private readonly repoRoot: string;
+  private report: AnalysisReport | undefined;
 
   private constructor(panel: vscode.WebviewPanel, repoRoot: string) {
     this.panel = panel;
@@ -34,12 +42,75 @@ export class ResultsPanel {
     this.panel.webview.onDidReceiveMessage(async (msg) => {
       if (msg?.command === 'openFinding' && typeof msg.file === 'string') {
         await openFinding(this.repoRoot, msg.file, Number(msg.line) || 1);
+      } else if (msg?.command === 'applyFix' && typeof msg.file === 'string' && typeof msg.line0 === 'number') {
+        await this.handleApplyFix(msg.file, msg.line0);
+      } else if (msg?.command === 'copyMarkdown') {
+        await this.handleCopyMarkdown();
+      } else if (msg?.command === 'copyText' && typeof msg.text === 'string') {
+        await vscode.env.clipboard.writeText(msg.text);
+        this.panel.webview.postMessage({ command: 'copyTextDone', id: msg.id });
+      } else if (msg?.command === 'suppressFinding' && typeof msg.fingerprint === 'string') {
+        await this.handleSuppress(msg.fingerprint, msg.file ?? '', Number(msg.line) || 0, msg.title ?? '');
+      } else if (msg?.command === 'unsuppressFinding' && typeof msg.fingerprint === 'string') {
+        await removeSuppression(this.repoRoot, msg.fingerprint);
+        this.panel.webview.postMessage({ command: 'unsuppressDone', fingerprint: msg.fingerprint });
+      } else if (msg?.command === 'createTestFile') {
+        await this.handleCreateTestFile(msg.affectedFile ?? '', msg.filename ?? '', msg.code ?? '');
       }
     });
   }
 
+  private async handleSuppress(fp: string, filePath: string, line: number, title: string): Promise<void> {
+    const reason = await vscode.window.showInputBox({
+      title: 'Suppress this finding',
+      prompt: `Optional reason — saved to .gto-ignore.json so the team can see why this was suppressed.`,
+      placeHolder: 'e.g. "false positive — this is test fixture data"',
+      ignoreFocusOut: true,
+    });
+    if (reason === undefined) return; // Escape = cancelled, not "suppress with no reason"
+    await addSuppression(this.repoRoot, {
+      fingerprint: fp,
+      file_path: filePath,
+      line,
+      title,
+      reason: reason.trim(),
+      suppressed_at: new Date().toISOString(),
+    });
+    this.panel.webview.postMessage({ command: 'suppressDone', fingerprint: fp });
+  }
+
+  private async handleCreateTestFile(affectedFile: string, filename: string, code: string): Promise<void> {
+    if (!filename) return;
+    const suggested = suggestTestFilePath(this.repoRoot, affectedFile, filename);
+    const target = await vscode.window.showSaveDialog({ defaultUri: suggested, saveLabel: 'Create Test File' });
+    if (!target) return;
+    await vscode.workspace.fs.writeFile(target, Buffer.from(code, 'utf8'));
+    const doc = await vscode.workspace.openTextDocument(target);
+    await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One });
+  }
+
+  private async handleApplyFix(file: string, line0: number): Promise<void> {
+    const fixes = this.report?.remediation?.code_fixes ?? [];
+    const fix = fixes.find((f) => f.file_path === file && parseFixLine(f) === line0);
+    const status = fix ? await applyCodeFix(this.repoRoot, fix) : 'error';
+    this.panel.webview.postMessage({ command: 'fixResult', file, line0, status });
+    if (status === 'stale') {
+      vscode.window.showWarningMessage('GTO: file changed since analysis — fix not applied to avoid editing the wrong line.');
+    } else if (status === 'error') {
+      vscode.window.showErrorMessage("GTO: couldn't apply that fix.");
+    }
+  }
+
+  private async handleCopyMarkdown(): Promise<void> {
+    if (!this.report) return;
+    await vscode.env.clipboard.writeText(reportToMarkdown(this.report));
+    this.panel.webview.postMessage({ command: 'copyMarkdownDone' });
+    vscode.window.setStatusBarMessage('GTO: report copied as Markdown', 2500);
+  }
+
   static showLoading(repoRoot: string): ResultsPanel {
     const p = ResultsPanel.getOrCreate(repoRoot);
+    p.report = undefined;
     p.panel.webview.html = renderShell('<p class="dim">Submitting to GTO backend…</p>');
     return p;
   }
@@ -51,12 +122,14 @@ export class ResultsPanel {
 
   static showError(message: string, repoRoot: string): void {
     const p = ResultsPanel.getOrCreate(repoRoot);
+    p.report = undefined;
     p.panel.webview.html = renderShell(`<p class="err">${escapeHtml(message)}</p>`);
   }
 
-  static showReport(report: AnalysisReport, repoRoot: string): void {
+  static showReport(report: AnalysisReport, repoRoot: string, opts?: ReportViewOpts): void {
     const p = ResultsPanel.getOrCreate(repoRoot);
-    p.panel.webview.html = renderReport(report);
+    p.report = report;
+    p.panel.webview.html = renderReport(report, opts ?? { suppressed: [], newFingerprints: new Set() });
   }
 
   private static getOrCreate(repoRoot: string): ResultsPanel {
@@ -73,6 +146,21 @@ export class ResultsPanel {
     ResultsPanel.current = new ResultsPanel(panel, repoRoot);
     return ResultsPanel.current;
   }
+}
+
+/** Where to offer creating a new test file: co-located with the affected
+ * source file by default (works for pytest, JS/TS co-location, etc.), but
+ * mirrored into src/test/... when the source lives under src/main/... — the
+ * standard Maven/Gradle layout, the one common convention that co-location
+ * would get wrong. The user can still redirect via the save dialog either way. */
+function suggestTestFilePath(repoRoot: string, affectedFile: string, filename: string): vscode.Uri {
+  const idx = affectedFile.lastIndexOf('/');
+  let dir = idx === -1 ? '' : affectedFile.slice(0, idx);
+  if (dir.includes('/src/main/') || dir.startsWith('src/main/')) {
+    dir = dir.replace('src/main/', 'src/test/');
+  }
+  const relPath = dir ? `${dir}/${filename}` : filename;
+  return vscode.Uri.joinPath(vscode.Uri.file(repoRoot), relPath);
 }
 
 async function openFinding(repoRoot: string, file: string, line: number): Promise<void> {
@@ -92,6 +180,18 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 }
 
+/** Cuts long text at the last word boundary before `max` chars, rather than
+ * mid-word — some upstream findings (esp. LLM output cut off by a max-tokens
+ * budget) can otherwise arrive already truncated mid-sentence; this at least
+ * keeps what's displayed from *looking* broken. */
+function truncateAtWord(s: string, max: number): string {
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max);
+  const lastSpace = cut.lastIndexOf(' ');
+  const trimmed = lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut;
+  return trimmed.trimEnd() + '…';
+}
+
 const BASE_STYLE = `
   body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); padding: 12px 16px; }
   .dim { color: var(--vscode-descriptionForeground); }
@@ -103,23 +203,40 @@ function renderShell(bodyHtml: string): string {
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>${BASE_STYLE}</style></head><body>${bodyHtml}</body></html>`;
 }
 
-function renderReport(r: AnalysisReport): string {
+function findFixForIssue(issue: CorrelatedIssue, fixes: CodeFix[]): CodeFix | undefined {
+  if (!issue.file_path) return undefined;
+  const sameFile = fixes.filter((f) => f.file_path === issue.file_path);
+  if (!sameFile.length) return undefined;
+  const exact = sameFile.find((f) => {
+    const line = parseFixLine(f);
+    return line !== null && line + 1 === issue.line;
+  });
+  return exact ?? sameFile[0];
+}
+
+function renderReport(r: AnalysisReport, opts: ReportViewOpts): string {
   const gate = GATE_META[r.gate_decision] ?? { label: r.gate_decision, color: 'var(--vscode-foreground)' };
   const score = r.risk?.risk_score ?? 0;
   const issues = r.top_issues ?? [];
+  const fixes = r.remediation?.code_fixes ?? [];
 
   const issuesHtml = issues.length
-    ? issues.map(issueHtml).join('')
+    ? issues.map((it) => issueHtml(it, findFixForIssue(it, fixes), opts.newFingerprints.has(fingerprint(it.file_path, it.line)))).join('')
     : `<p class="dim">No issues found — looks clean.</p>`;
+
+  const suppressedHtml = suppressedListHtml(opts.suppressed);
 
   const filesHtml = r.files_changed_list?.length
     ? `<details><summary>Files changed (${r.files_changed_list.length})</summary>
-         <ul class="files">${r.files_changed_list.map((f) => `<li>${escapeHtml(f)}</li>`).join('')}</ul>
+         <ul class="files">${r.files_changed_list
+           .map((f) => `<li class="file-item" data-file="${escapeHtml(f)}">${escapeHtml(f)}</li>`)
+           .join('')}</ul>
        </details>`
     : '';
 
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
     ${BASE_STYLE}
+    .top-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
     .gate { font-size: 20px; font-weight: 700; color: ${gate.color}; }
     .meta { display: flex; gap: 16px; font-size: 12px; color: var(--vscode-descriptionForeground); margin: 6px 0 16px; }
     .issue { border-top: 1px solid var(--vscode-panel-border); padding: 10px 0; cursor: pointer; }
@@ -132,10 +249,43 @@ function renderReport(r: AnalysisReport): string {
     details { margin-top: 16px; }
     summary { cursor: pointer; font-weight: 500; }
     .files { font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; margin: 6px 0 0 0; padding-left: 18px; }
+    .file-item { cursor: pointer; padding: 1px 0; }
+    .file-item:hover { text-decoration: underline; color: var(--vscode-textLink-foreground); }
     .errs { color: var(--vscode-errorForeground); font-size: 12px; margin-top: 10px; }
+    button.gto-btn { font-family: var(--vscode-font-family); font-size: 12px; padding: 3px 10px; border-radius: 3px;
+      border: 1px solid var(--vscode-button-border, transparent); background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground); cursor: pointer; }
+    button.gto-btn:hover { background: var(--vscode-button-secondaryHoverBackground); }
+    .fix { margin: 8px 0 0; padding: 8px 10px; background: var(--vscode-textCodeBlock-background); border-radius: 4px; cursor: default; }
+    .fix summary { font-size: 12px; }
+    .ai-tag { font-size: 10px; font-weight: 700; text-transform: uppercase; padding: 1px 6px; border-radius: 8px;
+      border: 1px solid var(--vscode-editorWarning-foreground, #d29922); color: var(--vscode-editorWarning-foreground, #d29922); margin-left: 4px; }
+    .diff { font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px; white-space: pre-wrap;
+      word-break: break-word; margin: 6px 0; padding: 6px 8px; background: var(--vscode-editor-background);
+      border-radius: 3px; line-height: 1.5; }
+    .diff-add { color: var(--vscode-gitDecoration-addedResourceForeground, #3fb950); }
+    .diff-del { color: var(--vscode-gitDecoration-deletedResourceForeground, #f85149); }
+    .diff-ctx { color: var(--vscode-descriptionForeground); }
+    .apply-btn[data-status="applied"] { color: var(--vscode-testing-iconPassed, #3fb950); }
+    .apply-btn[data-status="stale"], .apply-btn[data-status="error"] { color: var(--vscode-errorForeground); }
+    .suggestions { font-size: 12.5px; margin: 4px 0 0; padding-left: 18px; line-height: 1.6; }
+    .scenario { border-top: 1px solid var(--vscode-panel-border); padding: 10px 0; }
+    .scenario-type { font-size: 11px; color: var(--vscode-descriptionForeground); text-transform: uppercase; margin-right: 6px; }
+    .scenario .file-item { display: inline-block; margin-right: 10px; }
+    .new-tag { font-size: 10px; font-weight: 700; text-transform: uppercase; padding: 1px 6px; border-radius: 8px;
+      border: 1px solid var(--vscode-textLink-foreground); color: var(--vscode-textLink-foreground); margin-left: 4px; }
+    .suppress-btn { background: none; border: none; color: var(--vscode-descriptionForeground); cursor: pointer;
+      font-size: 11px; padding: 0; float: right; }
+    .suppress-btn:hover { color: var(--vscode-errorForeground); text-decoration: underline; }
+    .suppressed-row { border-top: 1px solid var(--vscode-panel-border); padding: 6px 0; font-size: 12px;
+      display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .suppressed-row .info { color: var(--vscode-descriptionForeground); }
   </style></head>
   <body>
-    <div class="gate">${gate.label}</div>
+    <div class="top-row">
+      <div class="gate">${gate.label}</div>
+      <button class="gto-btn" id="copyMd">Copy as Markdown</button>
+    </div>
     <div class="meta">
       <span>Risk score: ${score}/100</span>
       <span>${r.files_changed} file${r.files_changed === 1 ? '' : 's'} changed</span>
@@ -144,27 +294,267 @@ function renderReport(r: AnalysisReport): string {
     ${r.risk?.rationale ? `<p class="dim">${escapeHtml(r.risk.rationale)}</p>` : ''}
     <h2 style="margin-top:16px;font-size:14px;">Top issues (${issues.length})</h2>
     ${issuesHtml}
+    ${fixSuggestionsHtml(r.remediation?.fix_suggestions ?? [])}
+    ${qaScenariosHtml(r.qa_scenarios?.scenarios ?? [])}
+    ${suppressedHtml}
     ${filesHtml}
     ${r.errors?.length ? `<div class="errs">${r.errors.map(escapeHtml).join('<br>')}</div>` : ''}
     <script>
       const vscode = acquireVsCodeApi();
+
       document.querySelectorAll('.issue').forEach(el => {
-        el.addEventListener('click', () => {
+        el.addEventListener('click', (e) => {
+          if (e.target.closest('.fix')) return; // let the fix <details> toggle without navigating
           vscode.postMessage({ command: 'openFinding', file: el.dataset.file, line: el.dataset.line });
         });
+      });
+
+      document.querySelectorAll('.file-item').forEach(el => {
+        el.addEventListener('click', () => {
+          vscode.postMessage({ command: 'openFinding', file: el.dataset.file, line: 1 });
+        });
+      });
+
+      document.querySelectorAll('.apply-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          btn.disabled = true;
+          btn.textContent = 'Applying…';
+          vscode.postMessage({ command: 'applyFix', file: btn.dataset.file, line0: Number(btn.dataset.line0) });
+        });
+      });
+
+      const copyBtn = document.getElementById('copyMd');
+      if (copyBtn) copyBtn.addEventListener('click', () => vscode.postMessage({ command: 'copyMarkdown' }));
+
+      document.querySelectorAll('.copy-skeleton-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          vscode.postMessage({ command: 'copyText', text: btn.dataset.code, id: btn.dataset.id });
+        });
+      });
+
+      document.querySelectorAll('.create-test-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          vscode.postMessage({
+            command: 'createTestFile',
+            affectedFile: btn.dataset.affected,
+            filename: btn.dataset.filename,
+            code: btn.dataset.code,
+          });
+        });
+      });
+
+      document.querySelectorAll('.suppress-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          vscode.postMessage({
+            command: 'suppressFinding',
+            fingerprint: btn.dataset.fingerprint,
+            file: btn.dataset.file,
+            line: Number(btn.dataset.line),
+            title: btn.dataset.title,
+          });
+        });
+      });
+
+      document.querySelectorAll('.unsuppress-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          vscode.postMessage({ command: 'unsuppressFinding', fingerprint: btn.dataset.fingerprint });
+        });
+      });
+
+      window.addEventListener('message', (event) => {
+        const msg = event.data;
+        if (msg?.command === 'fixResult') {
+          const btn = document.querySelector(
+            '.apply-btn[data-file="' + CSS.escape(msg.file) + '"][data-line0="' + msg.line0 + '"]'
+          );
+          if (!btn) return;
+          btn.disabled = msg.status === 'applied';
+          btn.dataset.status = msg.status;
+          btn.textContent = msg.status === 'applied' ? 'Applied ✓' : msg.status === 'stale' ? 'File changed — skipped' : 'Failed to apply';
+        } else if (msg?.command === 'copyMarkdownDone' && copyBtn) {
+          const prev = copyBtn.textContent;
+          copyBtn.textContent = 'Copied ✓';
+          setTimeout(() => { copyBtn.textContent = prev; }, 2000);
+        } else if (msg?.command === 'copyTextDone') {
+          const btn = document.querySelector('.copy-skeleton-btn[data-id="' + CSS.escape(msg.id) + '"]');
+          if (!btn) return;
+          const prev = btn.textContent;
+          btn.textContent = 'Copied ✓';
+          setTimeout(() => { btn.textContent = prev; }, 2000);
+        } else if (msg?.command === 'suppressDone') {
+          const card = document.querySelector('.issue[data-fingerprint="' + CSS.escape(msg.fingerprint) + '"]');
+          if (card) card.remove();
+        } else if (msg?.command === 'unsuppressDone') {
+          const row = document.querySelector('.suppressed-row[data-fingerprint="' + CSS.escape(msg.fingerprint) + '"]');
+          if (row) row.remove();
+        }
       });
     </script>
   </body></html>`;
 }
 
-function issueHtml(it: CorrelatedIssue): string {
-  const color = SEVERITY_COLOR[it.severity?.toLowerCase()] ?? SEVERITY_COLOR.low;
-  const clickable = it.file_path ? ` data-file="${escapeHtml(it.file_path)}" data-line="${it.line || 1}"` : '';
-  return `<div class="issue"${clickable}>
+function renderDiffLines(diff: string): string {
+  return diff
+    .split('\n')
+    .map((l) => {
+      const esc = escapeHtml(l);
+      if (l.startsWith('+') && !l.startsWith('+++')) return `<span class="diff-add">${esc}</span>`;
+      if (l.startsWith('-') && !l.startsWith('---')) return `<span class="diff-del">${esc}</span>`;
+      return `<span class="diff-ctx">${esc}</span>`;
+    })
+    .join('\n');
+}
+
+function fixHtml(fix: CodeFix, file: string): string {
+  const line0 = parseFixLine(fix);
+  if (line0 === null) return '';
+  // Deterministic fixes (agents/fix_generator.py, regex-matched) are always
+  // "high" confidence. "low" marks an LLM-proposed patch — plausible but not
+  // guaranteed correct the way a mechanical regex match is; label it so a
+  // reviewer knows to actually read it before clicking Apply.
+  const aiTag = fix.confidence === 'low' ? ' <span class="ai-tag">AI-suggested — review before applying</span>' : '';
+  return `<details class="fix">
+    <summary>💡 Suggested fix: ${escapeHtml(fix.title)}${aiTag}</summary>
+    ${fix.explanation ? `<p class="dim" style="margin:6px 0;">${escapeHtml(fix.explanation)}</p>` : ''}
+    <pre class="diff">${renderDiffLines(fix.diff)}</pre>
+    <button class="gto-btn apply-btn" data-file="${escapeHtml(file)}" data-line0="${line0}">Apply fix</button>
+  </details>`;
+}
+
+/** The remediation agent's text-level fix descriptions — not tied to a
+ * specific top_issue 1:1, so shown as its own list rather than merged into
+ * issue cards (unlike code_fixes, which do match a specific issue/line). */
+function fixSuggestionsHtml(suggestions: string[]): string {
+  if (!suggestions.length) return '';
+  return `<h2 style="margin-top:16px;font-size:14px;">Suggested fixes (${suggestions.length})</h2>
+    <ul class="suggestions">${suggestions.map((s) => `<li>${escapeHtml(s)}</li>`).join('')}</ul>`;
+}
+
+function scenarioHtml(s: QAScenario): string {
+  const color = SEVERITY_COLOR[(s.priority || 'medium').toLowerCase()] ?? SEVERITY_COLOR.low;
+  const filesHtml = s.affected_files?.length
+    ? `<div class="loc">${s.affected_files
+        .map((f) => `<span class="file-item" data-file="${escapeHtml(f)}">${escapeHtml(f)}</span>`)
+        .join('')}</div>`
+    : '';
+  const firstFile = s.affected_files?.[0] ?? '';
+  const skeletonHtml = s.test_skeleton
+    ? `<details class="fix">
+        <summary>🧪 Test skeleton${s.test_skeleton_filename ? ` — ${escapeHtml(s.test_skeleton_filename)}` : ''}</summary>
+        <pre class="diff">${escapeHtml(s.test_skeleton)}</pre>
+        <button class="gto-btn copy-skeleton-btn" data-id="${escapeHtml(s.id)}" data-code="${escapeHtml(s.test_skeleton)}">Copy code</button>
+        ${
+          s.test_skeleton_filename
+            ? `<button class="gto-btn create-test-btn" data-affected="${escapeHtml(firstFile)}" data-filename="${escapeHtml(s.test_skeleton_filename)}" data-code="${escapeHtml(s.test_skeleton)}" style="margin-left:6px;">Create test file…</button>`
+            : ''
+        }
+      </details>`
+    : '';
+  return `<div class="scenario">
     <div class="issue-title">
-      <span class="sev" style="color:${color}">${escapeHtml(it.severity || 'info')}</span>${escapeHtml(it.title)}
+      <span class="sev" style="color:${color}">${escapeHtml(s.priority || 'medium')}</span>
+      <span class="scenario-type">${escapeHtml(s.type || '')}</span>${escapeHtml(s.title)}
+    </div>
+    ${s.description ? `<p class="dim" style="margin:4px 0;">${escapeHtml(s.description)}</p>` : ''}
+    ${filesHtml}
+    ${skeletonHtml}
+  </div>`;
+}
+
+function qaScenariosHtml(scenarios: QAScenario[]): string {
+  if (!scenarios.length) return '';
+  return `<h2 style="margin-top:16px;font-size:14px;">Unit test coverage gaps (${scenarios.length})</h2>
+    ${scenarios.map(scenarioHtml).join('')}`;
+}
+
+function issueHtml(it: CorrelatedIssue, fix: CodeFix | undefined, isNew: boolean): string {
+  const color = SEVERITY_COLOR[it.severity?.toLowerCase()] ?? SEVERITY_COLOR.low;
+  const fp = fingerprint(it.file_path, it.line);
+  const clickable = it.file_path ? ` data-file="${escapeHtml(it.file_path)}" data-line="${it.line || 1}"` : '';
+  const newTag = isNew ? ' <span class="new-tag">New</span>' : '';
+  const suppressBtn = `<button class="suppress-btn" data-fingerprint="${escapeHtml(fp)}" data-file="${escapeHtml(it.file_path)}" data-line="${it.line || 0}" data-title="${escapeHtml(it.title)}" title="Suppress this finding — stops it reappearing on future runs">🚫 Ignore</button>`;
+  return `<div class="issue" data-fingerprint="${escapeHtml(fp)}"${clickable}>
+    ${suppressBtn}
+    <div class="issue-title">
+      <span class="sev" style="color:${color}">${escapeHtml(it.severity || 'info')}</span>${escapeHtml(truncateAtWord(it.title, 240))}${newTag}
     </div>
     ${it.file_path ? `<div class="loc">${escapeHtml(it.file_path)}${it.line ? ':' + it.line : ''}</div>` : ''}
     ${it.agents?.length ? `<div class="agents">${it.agents.map(escapeHtml).join(', ')}</div>` : ''}
+    ${fix ? fixHtml(fix, it.file_path) : ''}
   </div>`;
+}
+
+function suppressedListHtml(suppressed: SuppressedEntry[]): string {
+  if (!suppressed.length) return '';
+  return `<details><summary>Suppressed findings (${suppressed.length})</summary>
+    ${suppressed
+      .map(
+        (s) => `<div class="suppressed-row" data-fingerprint="${escapeHtml(s.fingerprint)}">
+          <span class="info">${escapeHtml(s.title || s.file_path)}${s.reason ? ' — ' + escapeHtml(s.reason) : ''}</span>
+          <button class="gto-btn unsuppress-btn" data-fingerprint="${escapeHtml(s.fingerprint)}">Unsuppress</button>
+        </div>`
+      )
+      .join('')}
+  </details>`;
+}
+
+function reportToMarkdown(r: AnalysisReport): string {
+  const score = r.risk?.risk_score ?? 0;
+  const issues = r.top_issues ?? [];
+  const lines: string[] = [];
+
+  lines.push(`# GTO Review — ${r.gate_decision}`);
+  lines.push('');
+  lines.push(`Risk score: ${score}/100 · ${r.files_changed} file${r.files_changed === 1 ? '' : 's'} changed · ${r.duration_s?.toFixed?.(1) ?? '—'}s`);
+  if (r.risk?.rationale) {
+    lines.push('');
+    lines.push(r.risk.rationale);
+  }
+  lines.push('');
+  lines.push(`## Top issues (${issues.length})`);
+  for (const it of issues) {
+    lines.push('');
+    lines.push(`### [${(it.severity || 'info').toUpperCase()}] ${it.title}`);
+    if (it.file_path) lines.push(`- File: \`${it.file_path}${it.line ? ':' + it.line : ''}\``);
+    if (it.agents?.length) lines.push(`- Agents: ${it.agents.join(', ')}`);
+  }
+  const suggestions = r.remediation?.fix_suggestions ?? [];
+  if (suggestions.length) {
+    lines.push('');
+    lines.push(`## Suggested fixes (${suggestions.length})`);
+    for (const s of suggestions) lines.push(`- ${s}`);
+  }
+  const scenarios = r.qa_scenarios?.scenarios ?? [];
+  if (scenarios.length) {
+    lines.push('');
+    lines.push(`## Unit test coverage gaps (${scenarios.length})`);
+    for (const s of scenarios) {
+      lines.push('');
+      lines.push(`### [${(s.priority || 'medium').toUpperCase()}] ${s.title} (${s.type})`);
+      if (s.description) lines.push(s.description);
+      if (s.affected_files?.length) lines.push(`- Files: ${s.affected_files.map((f) => `\`${f}\``).join(', ')}`);
+      if (s.test_skeleton) {
+        lines.push('');
+        if (s.test_skeleton_filename) lines.push(`**${s.test_skeleton_filename}**`);
+        lines.push('```');
+        lines.push(s.test_skeleton);
+        lines.push('```');
+      }
+    }
+  }
+  if (r.files_changed_list?.length) {
+    lines.push('');
+    lines.push(`## Files changed (${r.files_changed_list.length})`);
+    for (const f of r.files_changed_list) lines.push(`- \`${f}\``);
+  }
+  if (r.errors?.length) {
+    lines.push('');
+    lines.push('## Errors');
+    for (const e of r.errors) lines.push(`- ${e}`);
+  }
+  return lines.join('\n');
 }

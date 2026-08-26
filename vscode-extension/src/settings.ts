@@ -47,6 +47,15 @@ export function getAutoAnalyzeOnSave(): boolean {
   return vscode.workspace.getConfiguration('gto').get<boolean>('autoAnalyzeOnSave', false);
 }
 
+/** .gitignore-flavored glob patterns dropped from every analysis (both
+ * Analyze Changes and Analyze Branch), on top of files .gitignore already
+ * hides. Default lives in package.json's configuration schema (the source of
+ * truth shown in Settings UI); the fallback array here only matters if the
+ * schema default is ever missing. */
+export function getExcludePatterns(): string[] {
+  return vscode.workspace.getConfiguration('gto').get<string[]>('excludePatterns', []);
+}
+
 export async function getApiKey(secrets: vscode.SecretStorage): Promise<string | undefined> {
   return secrets.get(SECRET_KEY);
 }

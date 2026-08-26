@@ -64,6 +64,32 @@ class GitClient:
             "application/vnd.github.v3.diff",
         )
 
+    def get_file_content(self, repo_slug: str, ref: str, path: str) -> str | None:
+        """Raw content of `path` at `ref`, or None if it doesn't exist there
+        (a 404 is expected/normal — most repos won't have every optional
+        config file). Used for reading trust-boundary config files (e.g.
+        .gto.yaml) from a specific branch — see
+        ingestion/path_review_config.py."""
+        try:
+            if self._cfg.provider == "bitbucket":
+                resp = self._session.get(
+                    f"{self._cfg.base_url}/repositories/{self._cfg.workspace}/{repo_slug}"
+                    f"/src/{ref}/{path}"
+                )
+            else:
+                resp = self._session.get(
+                    f"{self._cfg.base_url}/repos/{repo_slug}/contents/{path}",
+                    params={"ref": ref},
+                    headers={"Accept": "application/vnd.github.v3.raw"},
+                )
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            return resp.text
+        except requests.RequestException:
+            log.debug("get_file_content(%s@%s:%s) failed", repo_slug, ref, path, exc_info=True)
+            return None
+
     def list_pr_files(self, repo_slug: str, pr_id: int) -> list[str]:
         """List file paths changed in a PR (without full diff content)."""
         if self._cfg.provider == "github":

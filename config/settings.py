@@ -278,6 +278,20 @@ class Settings(BaseSettings):
     # user having to tick the box. Off → only an explicit deep_scan request does it.
     deep_scan_auto:        bool = Field(default=True,  alias="DEEP_SCAN_AUTO")
 
+    # Kill switch for GitHub/Bitbucket one-click "suggestion" fences on inline PR
+    # comments (output/pr_commenter.py) — only ever attached to deterministic
+    # (confidence="high") code_fixes, never AI-suggested ones. Off → inline
+    # comments render as plain findings, no suggestion blocks, no redeploy needed
+    # if the suggestion-apply UX misbehaves on some diff shape.
+    pr_suggestion_fences_enabled: bool = Field(default=True, alias="PR_SUGGESTION_FENCES_ENABLED")
+
+    # Max auto-answered interactive PR chat replies (api/routes/webhooks.py::
+    # _handle_reply) per (repo, PR, author) per hour — the standing bot
+    # credential answers unattended, so this bounds cost/abuse from a
+    # comment-spam loop. Blocked-by-rate-limit replies are logged (not
+    # answered) via governance/review_session_store.py's pr_reply_log.
+    reply_rate_limit_per_hour: int = Field(default=10, alias="REPLY_RATE_LIMIT_PER_HOUR")
+
     # ── LLM retry (tenacity) ──────────────────────────────────────────────────
     llm_retry_attempts:    int = Field(default=5,  alias="LLM_RETRY_ATTEMPTS")
     llm_retry_max_wait_s:  int = Field(default=90, alias="LLM_RETRY_MAX_WAIT_S")

@@ -111,6 +111,41 @@ class PRMetadata(BaseModel):
     head_sha:   str    = ""
 
 
+class ReplyEvent(BaseModel):
+    """A PR-comment webhook event (a reply/new comment, NOT a new diff to
+    analyze) — deliberately its own type rather than AnalysisRequest, which
+    it has no relationship to. See ingestion/webhook_parser.py's
+    parse_github_comment_webhook/parse_bitbucket_comment_webhook and
+    governance/reply_answerer.py."""
+    provider:        str            # github | bitbucket
+    repo_slug:        str
+    pr_id:            str
+    comment_id:       str
+    in_reply_to_id:   str | None = None
+    body:             str
+    author:           str
+    is_bot:           bool = False   # mandatory guard against bot-replies-to-itself loops
+
+
+class PathReviewRule(BaseModel):
+    """One glob-scoped rule from a repo's .gto.yaml — narrows (never widens)
+    the request-wide agent selection for hunks whose file matches `match`.
+    See ingestion/path_review_config.py for the loader and glob semantics
+    (same mental model as the VS Code extension's gto.excludePatterns)."""
+    match:              str
+    agents:             list[str] | None = None   # None = inherit request-wide selection; [] = skip all
+    user_instructions:  str = ""                   # path-scoped steering text — same untrusted-context
+                                                    # treatment as AnalysisRequest.user_instructions below
+    skip:               bool = False                # shorthand for agents: []
+
+
+class PathReviewConfig(BaseModel):
+    """Parsed .gto.yaml content. NEVER copied onto AnalysisReport — see the
+    isolation note on AnalysisRequest.path_review_config below."""
+    version: int = 1
+    paths:   list[PathReviewRule] = []
+
+
 class AnalysisRequest(BaseModel):
     """Canonical input to the orchestrator."""
     model_config = ConfigDict(protected_namespaces=())
@@ -132,6 +167,13 @@ class AnalysisRequest(BaseModel):
     # and governance.rationale.build_rationale both take only the report, by design,
     # so anything on AnalysisRequest structurally cannot reach the deterministic gate.
     user_instructions: str = ""
+    # Parsed .gto.yaml — a repo's own per-path review rules (e.g. "skip the
+    # performance agent under scripts/"). Same structural isolation as
+    # user_instructions above: NEVER copied onto AnalysisReport, so it cannot
+    # reach gate_policy.evaluate_policy or governance.rationale.build_rationale.
+    # Only ever NARROWS the request-wide selected_agents (intersects, never
+    # widens) — see core/orchestrator.py::_hunks_for_agent.
+    path_review_config: PathReviewConfig | None = None
     created_at:   datetime = Field(default_factory=datetime.utcnow)
 
     @property
@@ -294,9 +336,21 @@ class CodeFix(BaseModel):
     confidence:  str  = "medium"  # high (deterministic) | medium | low (LLM-suggested)
 
 
+class MermaidDiagram(BaseModel):
+    """An AI-generated (narrative, not call-graph-verified) diagram of a
+    complex change's control flow. confidence is hardcoded "low" in code —
+    see agents/remediation_agent.py — never LLM-settable, same enforcement
+    pattern as CodeFix.confidence for AI-suggested fixes."""
+    diagram_type:   str = "sequenceDiagram"
+    mermaid_source: str = ""
+    confidence:     str = "low"
+    note: str = "AI-generated from the diff — not verified against the actual call graph; may be incomplete or incorrect"
+
+
 class RemediationResult(AgentResultBase):
     fix_suggestions:      list[str] = []
     code_fixes:           list[CodeFix] = []    # concrete before/after patches
+    diagrams:             list[MermaidDiagram] = []   # narrative sequence diagrams for complex changes
     validation_checklist: list[str] = []
     deployment_strategy:  DeploymentStrategy = DeploymentStrategy.STANDARD
     executive_summary:    str = ""

@@ -1,7 +1,8 @@
 // vscode-extension/src/extension.ts
 // -----------------------------------------------------------------------------
 // Commands:
-//   GTO: Analyze Changes    — uncommitted diff (staged+unstaged vs HEAD).
+//   GTO: Analyze Changes    — uncommitted diff: staged+unstaged vs HEAD, plus
+//                             any untracked (never `git add`ed) files.
 //   GTO: Analyze Branch...  — quick-pick a base branch, three-dot diff against it.
 //   GTO: Set API Key        — stores the key in SecretStorage.
 //   GTO: Show Last Result   — reopens the most recent report from this session.
@@ -20,6 +21,7 @@ import {
   getSelectedAgents,
   getAgentPreset,
   getAutoAnalyzeOnSave,
+  getExcludePatterns,
   AgentPreset,
   AGENT_PRESET_META,
 } from './settings';
@@ -28,8 +30,18 @@ import { ResultsPanel } from './resultsPanel';
 import { initDiagnostics, updateDiagnostics } from './diagnostics';
 import { registerCodeActions, updateCodeFixes } from './codeActions';
 import { scanUserInstructions } from './promptGuard';
+import {
+  fingerprint,
+  loadSuppressed,
+  getLastSeenFingerprints,
+  setLastSeenFingerprints,
+  SuppressedEntry,
+} from './reportState';
+import { loadPathReviewConfig } from './pathReviewConfig';
 
-let lastReport: { report: AnalysisReport; repoRoot: string } | undefined;
+let lastReport:
+  | { report: AnalysisReport; repoRoot: string; opts: { suppressed: SuppressedEntry[]; newFingerprints: Set<string> } }
+  | undefined;
 let statusBarItem: vscode.StatusBarItem;
 let lastPriorities = ''; // in-memory only, remembered for convenience within the session — never persisted
 let analysisInFlight = false;
@@ -77,7 +89,7 @@ function showLastResult(): void {
     vscode.window.showInformationMessage('No GTO analysis has run yet in this session.');
     return;
   }
-  ResultsPanel.showReport(lastReport.report, lastReport.repoRoot);
+  ResultsPanel.showReport(lastReport.report, lastReport.repoRoot, lastReport.opts);
 }
 
 async function analyzeUncommitted(context: vscode.ExtensionContext, interactive: boolean): Promise<void> {
@@ -85,7 +97,7 @@ async function analyzeUncommitted(context: vscode.ExtensionContext, interactive:
   let diffText: string;
   try {
     repo = await resolveRepoRoot(interactive);
-    diffText = await getUncommittedDiff(repo.cwd);
+    diffText = await getUncommittedDiff(repo.cwd, getExcludePatterns());
   } catch (e) {
     if (interactive) vscode.window.showErrorMessage(e instanceof GitError ? e.message : String(e));
     return;
@@ -93,9 +105,7 @@ async function analyzeUncommitted(context: vscode.ExtensionContext, interactive:
 
   if (!diffText.trim()) {
     if (interactive) {
-      vscode.window.showInformationMessage(
-        "No uncommitted changes to analyze. New files must be `git add`ed before GTO can see them — `git diff` only shows changes to files git already tracks."
-      );
+      vscode.window.showInformationMessage('No changes to analyze — nothing staged, unstaged, or new in the working tree.');
     }
     return;
   }
@@ -132,7 +142,7 @@ async function analyzeBranch(context: vscode.ExtensionContext): Promise<void> {
 
   let diffText: string;
   try {
-    diffText = await getBranchDiff(repo.cwd, base);
+    diffText = await getBranchDiff(repo.cwd, base, getExcludePatterns());
   } catch (e) {
     vscode.window.showErrorMessage(e instanceof GitError ? e.message : String(e));
     return;
@@ -201,11 +211,12 @@ async function runAnalysis(context: vscode.ExtensionContext, params: RunParams):
     lastPriorities = userInstructions;
   }
   const selectedAgents = getSelectedAgents(preset);
+  const pathReviewConfig = await loadPathReviewConfig(repo.cwd);
 
-  const runKey = JSON.stringify({ diffText, sourceRef, targetRef, preset, userInstructions });
+  const runKey = JSON.stringify({ diffText, sourceRef, targetRef, preset, userInstructions, pathReviewConfig });
   if (interactive && runKey === lastRunKey && lastReport) {
     vscode.window.showInformationMessage('GTO: nothing changed since the last run — showing the previous result.');
-    ResultsPanel.showReport(lastReport.report, lastReport.repoRoot);
+    ResultsPanel.showReport(lastReport.report, lastReport.repoRoot, lastReport.opts);
     return;
   }
 
@@ -242,6 +253,7 @@ async function runAnalysis(context: vscode.ExtensionContext, params: RunParams):
             diffText,
             selectedAgents,
             userInstructions,
+            pathReviewConfig,
           },
           token,
           onStatus
@@ -258,9 +270,24 @@ async function runAnalysis(context: vscode.ExtensionContext, params: RunParams):
           return;
         }
 
-        lastReport = { report, repoRoot: repo.cwd };
+        // Suppressed findings (.gto-ignore.json, team-shared) are dropped
+        // before anything else sees them, so they stop showing in the panel,
+        // Problems panel, and diagnostics alike — not just visually hidden.
+        const suppressed = await loadSuppressed(repo.cwd);
+        const suppressedFps = new Set(suppressed.map((s) => s.fingerprint));
+        const allIssues = report.top_issues ?? [];
+        report.top_issues = allIssues.filter((it) => !suppressedFps.has(fingerprint(it.file_path, it.line)));
+
+        // Delta view: badge issues not present in the previous run's snapshot
+        // for this exact (repo, branch) as new, then overwrite the snapshot.
+        const currentFps = report.top_issues.map((it) => fingerprint(it.file_path, it.line));
+        const lastSeen = getLastSeenFingerprints(context.workspaceState, repo.cwd, sourceRef);
+        const newFingerprints = new Set(lastSeen ? currentFps.filter((fp) => !lastSeen.has(fp)) : []);
+        await setLastSeenFingerprints(context.workspaceState, repo.cwd, sourceRef, currentFps);
+
+        lastReport = { report, repoRoot: repo.cwd, opts: { suppressed, newFingerprints } };
         lastRunKey = runKey;
-        ResultsPanel.showReport(report, repo.cwd);
+        ResultsPanel.showReport(report, repo.cwd, lastReport.opts);
         updateDiagnostics(report, repo.cwd);
         updateCodeFixes(report, repo.cwd);
         updateStatusBar(report);

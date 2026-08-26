@@ -2,7 +2,7 @@
   "name": "gto-pr-review",
   "displayName": "GTO Pull Request Review Framework",
   "description": "Multi-agent PR review, risk gating & business-impact mapping — run it on your uncommitted changes without leaving the editor.",
-  "version": "0.3.1",
+  "version": "0.10.0",
   "publisher": "gto",
   "icon": "media/icon.png",
   "engines": {
@@ -61,6 +61,50 @@
           "type": "boolean",
           "default": false,
           "description": "Automatically run 'GTO: Analyze Changes' (uncommitted diff, no priorities prompt) shortly after you save a file. Off by default — this makes an LLM-backed backend call on every save."
+        },
+        "gto.excludePatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            ".vscode/**",
+            ".vscode-test/**",
+            ".claude/**",
+            ".idea/**",
+            ".gitignore",
+            ".gto-ignore.json",
+            ".gto.yaml",
+            ".gitattributes",
+            ".editorconfig",
+            ".DS_Store",
+            ".trunk/**",
+            "**/node_modules/**",
+            "**/dist/**",
+            "**/out/**",
+            "**/build/**",
+            "*.lock",
+            "*.iml",
+            "package-lock.json",
+            "yarn.lock",
+            "pnpm-lock.yaml",
+            "**/target/**",
+            "**/.gradle/**",
+            "*.class",
+            "**/obj/**",
+            "**/__pycache__/**",
+            "*.pyc",
+            "**/.venv/**",
+            "**/venv/**",
+            "**/.pytest_cache/**",
+            "**/.mypy_cache/**",
+            "**/.ruff_cache/**",
+            "**/*.egg-info/**",
+            "**/vendor/**",
+            "**/.build/**",
+            "**/DerivedData/**"
+          ],
+          "description": "Glob patterns (.gitignore-flavored — a pattern with no '/' matches at any depth) for files to leave out of every analysis, on top of what .gitignore already hides. Defaults cover common IDE/tooling noise plus build/dependency output for JS/TS (node_modules, lock files), Java/Kotlin (target, .gradle, *.class), Python (__pycache__, venv, .pytest_cache, egg-info), .NET (obj — not bin, which some projects use for real shipped code), Go/PHP/Ruby (vendor), and Swift (.build, DerivedData). Applies to both 'Analyze Changes' and 'Analyze Branch...'."
         }
       }
     }
@@ -73,12 +117,17 @@
     "compile": "node esbuild.js",
     "watch": "node esbuild.js --watch",
     "package": "node esbuild.js --production",
-    "vscode:prepublish": "npm run package"
+    "vscode:prepublish": "npm run package",
+    "vsix": "npx @vscode/vsce package --no-dependencies -o gto-pr-review-$npm_package_version.vsix"
   },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
     "esbuild": "^0.28.2",
     "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "js-yaml": "^5.4.0"
   }
 }

@@ -78,8 +78,96 @@ class SQLiteReviewSessionStore:
                 PRIMARY KEY (request_id, finding_key)
             );
             CREATE INDEX IF NOT EXISTS idx_rt_req ON review_triage(request_id);
+            CREATE TABLE IF NOT EXISTS pr_comment_map (
+                provider      TEXT NOT NULL,
+                repo_slug     TEXT NOT NULL,
+                pr_id         TEXT NOT NULL,
+                comment_id    TEXT NOT NULL,
+                request_id    TEXT NOT NULL,
+                finding_key   TEXT DEFAULT '',
+                file_path     TEXT DEFAULT '',
+                line          TEXT DEFAULT '',
+                created_at    TEXT NOT NULL,
+                PRIMARY KEY (provider, repo_slug, pr_id, comment_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_pcm_req ON pr_comment_map(request_id);
+            CREATE TABLE IF NOT EXISTS pr_reply_log (
+                provider      TEXT NOT NULL,
+                repo_slug     TEXT NOT NULL,
+                pr_id         TEXT NOT NULL,
+                author        TEXT DEFAULT '',
+                reply_comment_id TEXT DEFAULT '',
+                blocked       INTEGER DEFAULT 0,   -- 1 = prompt_guard rejected, no LLM call made
+                created_at    TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_prl_rate
+                ON pr_reply_log(provider, repo_slug, pr_id, author, created_at);
         """)
         self._conn.commit()
+
+    # ── PR comment correlation (interactive chat replies) ───────────────────────
+
+    def record_posted_comment(self, provider: str, repo_slug: str, pr_id: str, comment_id: str,
+                               request_id: str, finding_key: str = "", file_path: str = "",
+                               line: str = "") -> None:
+        """Called right after the bot successfully posts an inline finding
+        comment — the only way a later reply's in_reply_to_id can ever be
+        resolved back to a finding/report."""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO pr_comment_map "
+            "(provider, repo_slug, pr_id, comment_id, request_id, finding_key, file_path, line, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (provider, repo_slug, pr_id, str(comment_id), request_id, finding_key, file_path, line, _now()),
+        )
+        self._conn.commit()
+
+    def lookup_comment(self, provider: str, repo_slug: str, pr_id: str, comment_id: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM pr_comment_map WHERE provider=? AND repo_slug=? AND pr_id=? AND comment_id=?",
+            (provider, repo_slug, pr_id, str(comment_id)),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def latest_comment_for_pr(self, provider: str, repo_slug: str, pr_id: str) -> dict | None:
+        """Most recently posted comment for this PR — the fallback used when
+        a reply has no in_reply_to_id (a top-level comment addressing the bot
+        generally, not threaded to a specific finding)."""
+        row = self._conn.execute(
+            "SELECT * FROM pr_comment_map WHERE provider=? AND repo_slug=? AND pr_id=? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (provider, repo_slug, pr_id),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def log_reply(self, provider: str, repo_slug: str, pr_id: str, author: str,
+                   reply_comment_id: str = "", blocked: bool = False) -> None:
+        """Audit-only record of an auto-answered (or guard-blocked) reply —
+        never mutates review_session/review_triage or the report itself."""
+        self._conn.execute(
+            "INSERT INTO pr_reply_log (provider, repo_slug, pr_id, author, reply_comment_id, blocked, created_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (provider, repo_slug, pr_id, author, reply_comment_id, int(blocked), _now()),
+        )
+        self._conn.commit()
+
+    def count_recent_replies(self, provider: str, repo_slug: str, pr_id: str, author: str,
+                              window_seconds: int) -> int:
+        """Replies logged for this (PR, author) within the last `window_seconds`
+        — the rate-limit check in governance/reply_answerer.py."""
+        cutoff = datetime.now(timezone.utc).timestamp() - window_seconds
+        rows = self._conn.execute(
+            "SELECT created_at FROM pr_reply_log WHERE provider=? AND repo_slug=? AND pr_id=? AND author=?",
+            (provider, repo_slug, pr_id, author),
+        ).fetchall()
+        count = 0
+        for r in rows:
+            try:
+                ts = datetime.fromisoformat(r["created_at"]).timestamp()
+                if ts >= cutoff:
+                    count += 1
+            except ValueError:
+                continue
+        return count
 
     # ── Session ───────────────────────────────────────────────────────────────
 
@@ -203,6 +291,11 @@ class _NullReviewSessionStore:
     def reopen(self, *a, **k): return None
     def finalize(self, *a, **k): return None
     def validated_findings(self, *a, **k): return []
+    def record_posted_comment(self, *a, **k): return None
+    def lookup_comment(self, *a, **k): return None
+    def latest_comment_for_pr(self, *a, **k): return None
+    def log_reply(self, *a, **k): return None
+    def count_recent_replies(self, *a, **k): return 0
 
 
 _store = None

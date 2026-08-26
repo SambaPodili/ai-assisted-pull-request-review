@@ -39,6 +39,40 @@ function normalizeRepoUrl(remoteUrl: string, folderName: string): string {
   return trimmed.replace(/\.git$/, '');
 }
 
+/** Converts one glob pattern (`.gitignore`-flavored) to an anchored RegExp
+ * tested against a path relative to the repo root. A pattern with no `/` is
+ * treated as `**\/<pattern>` (matches at any depth, like a slash-less
+ * .gitignore line); a pattern containing `/` is anchored to the repo root. */
+function globToRegExp(glob: string): RegExp {
+  const pattern = glob.includes('/') ? glob : `**/${glob}`;
+  let re = '';
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i];
+    if (c === '*' && pattern[i + 1] === '*') {
+      if (pattern[i + 2] === '/') {
+        re += '(?:.*/)?';
+        i += 2;
+      } else {
+        re += '.*';
+        i += 1;
+      }
+    } else if (c === '*') {
+      re += '[^/]*';
+    } else if (c === '?') {
+      re += '[^/]';
+    } else if ('.+^${}()|[]\\'.includes(c)) {
+      re += '\\' + c;
+    } else {
+      re += c;
+    }
+  }
+  return new RegExp('^' + re + '$');
+}
+
+function matchesAnyPattern(file: string, patterns: string[]): boolean {
+  return patterns.some((p) => globToRegExp(p).test(file));
+}
+
 async function isGitRepo(cwd: string): Promise<boolean> {
   try {
     await git(cwd, ['rev-parse', '--is-inside-work-tree']);
@@ -93,9 +127,50 @@ export async function resolveRepoRoot(interactive = true): Promise<RepoRoot> {
   return loadRepoRoot(picked.folder);
 }
 
-/** Staged + unstaged changes vs HEAD (your last commit). */
-export async function getUncommittedDiff(cwd: string): Promise<string> {
-  return git(cwd, ['diff', 'HEAD', '--']);
+/** Files git doesn't track at all yet (never `git add`ed) — respects
+ * .gitignore. `git diff` alone never sees these, which is why analysis used
+ * to silently skip brand-new files until they were staged. Also filtered by
+ * `excludePatterns` (gto.excludePatterns) on top of .gitignore. */
+async function listUntrackedFiles(cwd: string, excludePatterns: string[]): Promise<string[]> {
+  const raw = await git(cwd, ['ls-files', '--others', '--exclude-standard']);
+  const files = raw.split('\n').map((l) => l.trim()).filter(Boolean);
+  return files.filter((f) => !matchesAnyPattern(f, excludePatterns));
+}
+
+/** Unified diff for one untracked file, as an addition against /dev/null.
+ * Uses `--no-index` so this never touches the index — no silent `git add`
+ * side effect. `--no-index` exits 1 when it finds differences (the expected
+ * outcome here, not an error) and only >1 signals a real failure. */
+async function diffUntrackedFile(cwd: string, file: string): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync('git', ['diff', '--no-index', '/dev/null', `./${file}`], {
+      cwd,
+      maxBuffer: 1024 * 1024 * 50,
+    });
+    return stdout;
+  } catch (err: any) {
+    if (err?.code === 1 && typeof err?.stdout === 'string') return err.stdout;
+    throw new GitError(err?.stderr?.trim() || err?.message || `git diff --no-index failed for ${file}`);
+  }
+}
+
+/** Staged + unstaged changes vs HEAD, plus every untracked file in the
+ * working tree — the full picture of "what's changed", regardless of
+ * whether any of it has been `git add`ed. `excludePatterns` (gto.excludePatterns,
+ * .gitignore-flavored globs) drops noise like `.vscode/**` or lock files from
+ * both halves before diffing. */
+export async function getUncommittedDiff(cwd: string, excludePatterns: string[] = []): Promise<string> {
+  const [trackedFiles, untrackedFiles] = await Promise.all([
+    git(cwd, ['diff', '--name-only', 'HEAD', '--']).then((r) => r.split('\n').map((l) => l.trim()).filter(Boolean)),
+    listUntrackedFiles(cwd, excludePatterns),
+  ]);
+
+  const keptTracked = trackedFiles.filter((f) => !matchesAnyPattern(f, excludePatterns));
+  const tracked = keptTracked.length ? await git(cwd, ['diff', 'HEAD', '--', ...keptTracked]) : '';
+
+  if (untrackedFiles.length === 0) return tracked;
+  const untrackedDiffs = await Promise.all(untrackedFiles.map((f) => diffUntrackedFile(cwd, f)));
+  return [tracked, ...untrackedDiffs].filter(Boolean).join('\n');
 }
 
 /** Local branches other than the current one, most-recently-committed first —
@@ -112,6 +187,13 @@ export async function listOtherBranches(cwd: string, currentBranch: string): Pro
  * against the merge-base, matching what a PR against `base` would contain
  * (not "everything different between the two tips", which would also include
  * commits made to `base` after the branches diverged). */
-export async function getBranchDiff(cwd: string, base: string): Promise<string> {
-  return git(cwd, ['diff', `${base}...HEAD`, '--']);
+export async function getBranchDiff(cwd: string, base: string, excludePatterns: string[] = []): Promise<string> {
+  const range = `${base}...HEAD`;
+  const files = (await git(cwd, ['diff', '--name-only', range, '--']))
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const kept = files.filter((f) => !matchesAnyPattern(f, excludePatterns));
+  if (!kept.length) return '';
+  return git(cwd, ['diff', range, '--', ...kept]);
 }

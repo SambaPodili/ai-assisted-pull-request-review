@@ -278,6 +278,25 @@ class ImpactAnalysisOrchestrator:
                             request.request_id)
                 selected = None
 
+        # ── Path-scoped review config (.gto.yaml) — narrows agent selection
+        #    further (never widens) and adds steering text. Never touches the
+        #    report or gate directly; see AnalysisRequest.path_review_config
+        #    and ingestion/path_review_config.py. ──────────────────────────
+        if request.path_review_config and request.path_review_config.paths:
+            from ingestion.path_review_config import agent_fully_excluded, collect_path_scoped_instructions
+            base = selected if selected is not None else set(_ALL_AGENT_KEYS)
+            path_excluded = {k for k in base if agent_fully_excluded(request.path_review_config, k, request.hunks)}
+            if path_excluded:
+                selected = base - path_excluded
+                log.info("[%s] .gto.yaml excludes agent(s) for this diff: %s",
+                         request.request_id, sorted(path_excluded))
+            extra_instructions = collect_path_scoped_instructions(request.path_review_config, request.hunks)
+            if extra_instructions:
+                request.user_instructions = (
+                    f"{request.user_instructions}\n{extra_instructions}".strip()
+                    if request.user_instructions else extra_instructions
+                )
+
         # ── Phase 1: code_analysis + security ─────────────────────────────────
         from config.settings import get_settings as _gs
         _cfg = _gs()

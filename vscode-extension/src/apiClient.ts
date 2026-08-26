@@ -8,6 +8,8 @@
 // Uses the global `fetch` (Node 18+, available in the VS Code extension host
 // — no extra HTTP dependency needed).
 
+import { PathReviewConfig } from './pathReviewConfig';
+
 export interface AnalyzeOptions {
   backendUrl: string;
   apiKey: string;
@@ -20,6 +22,10 @@ export interface AnalyzeOptions {
    * before this is ever called, and re-validated authoritatively server-side
    * (governance/prompt_guard.py) regardless. */
   userInstructions?: string;
+  /** Parsed .gto.yaml (pathReviewConfig.ts) — re-validated/re-scanned
+   * server-side (core/orchestrator.py) before any of its free text reaches
+   * an LLM prompt; this client-side parse is not itself a trust boundary. */
+  pathReviewConfig?: PathReviewConfig;
 }
 
 export interface SubmitResponse {
@@ -63,12 +69,42 @@ export interface CodeFix {
   confidence: string;
 }
 
+/** One missing/at-risk test scenario found by the `qa_scenarios` agent
+ * (Thorough preset only). `test_skeleton` is a real, language-aware
+ * Arrange/Act/Assert stub — generated deterministically from the actual
+ * changed symbol, not LLM prose — see agents/qa_scenarios_agent.py. */
+export interface QAScenario {
+  id: string;
+  title: string;
+  type: string;
+  priority: string;
+  description: string;
+  steps: string[];
+  expected_result: string;
+  affected_files: string[];
+  automation_hint: string;
+  preconditions: string[];
+  acceptance_criteria: string[];
+  test_skeleton: string;
+  test_skeleton_filename: string;
+}
+
+export interface QAScenariosResult {
+  scenarios: QAScenario[];
+  total_scenarios: number;
+  critical_count: number;
+  high_count: number;
+  coverage_areas: string[];
+  summary: string;
+}
+
 export interface AnalysisReport {
   request_id: string;
   gate_decision: string;
   final_risk: string;
   risk?: { risk_score?: number; rationale?: string };
-  remediation?: { code_fixes?: CodeFix[] };
+  remediation?: { code_fixes?: CodeFix[]; fix_suggestions?: string[] };
+  qa_scenarios?: QAScenariosResult;
   files_changed: number;
   files_changed_list: string[];
   top_issues: CorrelatedIssue[];
@@ -110,6 +146,7 @@ export async function submitAnalysis(opts: AnalyzeOptions): Promise<SubmitRespon
       diff_text: opts.diffText,
       selected_agents: opts.selectedAgents,
       user_instructions: opts.userInstructions ?? '',
+      path_review_config: opts.pathReviewConfig ?? null,
     }),
   });
   if (resp.status === 401) throw new ApiError('Unauthorized — check your API key (GTO: Set API Key).', 401);

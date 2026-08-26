@@ -6,8 +6,9 @@ Idempotent: finds and updates an existing bot comment rather than creating dupli
 """
 from __future__ import annotations
 import logging
+import re
 import requests
-from core.models import AnalysisReport, GateDecision, RiskLevel
+from core.models import AnalysisReport, CodeFix, GateDecision, RiskLevel
 
 log = logging.getLogger(__name__)
 
@@ -124,6 +125,31 @@ class PRCommenter:
             log.error("post_text failed: %s", exc)
             return False
 
+    def reply_to_comment(self, repo_slug: str, pr_id: str | int, body: str,
+                          in_reply_to_id: str | int | None = None) -> str | None:
+        """Post a reply in a PR comment thread (interactive chat replies —
+        see governance/reply_answerer.py). Always creates a NEW comment,
+        never patches an existing one (unlike post(), which maintains one
+        rolling bot summary comment). Returns the new comment's id, or None
+        on failure.
+
+        `in_reply_to_id` threads the reply under a specific GitHub PR review
+        comment (only meaningful for pull_request_review_comment-originated
+        replies — GitHub's Issues API has no threading concept, so an
+        issue_comment-originated reply is posted as a new top-level comment
+        regardless of this argument)."""
+        try:
+            if self._provider in ("bitbucket", "bitbucket_cloud"):
+                return self._bb_reply(repo_slug, pr_id, body, in_reply_to_id)
+            elif self._provider == "bitbucket_server":
+                log.warning("reply_to_comment: Bitbucket Server threaded replies not supported — posting top-level")
+                ok = self._bb_server_post(repo_slug, pr_id, body)
+                return "unknown" if ok else None
+            return self._gh_reply(repo_slug, pr_id, body, in_reply_to_id)
+        except Exception as exc:
+            log.error("reply_to_comment failed: %s", exc)
+            return None
+
     # ── Bitbucket Cloud ───────────────────────────────────────────────────────
 
     def _bb_post(self, repo_slug: str, pr_id: int | str, body: str) -> bool:
@@ -132,6 +158,17 @@ class PRCommenter:
         resp    = self._session.post(url, json={"content": {"raw": body}}, headers=headers)
         resp.raise_for_status()
         return True
+
+    def _bb_reply(self, repo_slug: str, pr_id: int | str, body: str,
+                   in_reply_to_id: str | int | None) -> str | None:
+        url     = f"https://api.bitbucket.org/2.0/repositories/{self._workspace}/{repo_slug}/pullrequests/{pr_id}/comments"
+        headers = {"Authorization": f"Bearer {self._token}", "Content-Type": "application/json"}
+        payload: dict = {"content": {"raw": body}}
+        if in_reply_to_id is not None:
+            payload["parent"] = {"id": in_reply_to_id}
+        resp = self._session.post(url, json=payload, headers=headers)
+        resp.raise_for_status()
+        return str(resp.json().get("id")) if resp.content else None
 
     # ── Bitbucket Server ──────────────────────────────────────────────────────
 
@@ -172,6 +209,25 @@ class PRCommenter:
             if _BOT_TAG in comment.get("body", ""):
                 return comment["id"]
         return None
+
+    def _gh_reply(self, repo_slug: str, pr_id: int | str, body: str,
+                   in_reply_to_id: str | int | None) -> str | None:
+        headers = {
+            "Authorization": f"token {self._token}",
+            "Accept":        "application/vnd.github.v3+json",
+        }
+        if in_reply_to_id is not None:
+            # Threaded reply under a specific PR review comment — the only
+            # GitHub endpoint that supports true comment threading.
+            url  = f"{self._api_url}/repos/{repo_slug}/pulls/{pr_id}/comments"
+            resp = self._session.post(url, json={"body": body, "in_reply_to": int(in_reply_to_id)}, headers=headers)
+        else:
+            # No threading concept for issue-level comments — post a new
+            # top-level PR comment instead.
+            url  = f"{self._api_url}/repos/{repo_slug}/issues/{pr_id}/comments"
+            resp = self._session.post(url, json={"body": body}, headers=headers)
+        resp.raise_for_status()
+        return str(resp.json().get("id")) if resp.content else None
 
     # ── Markdown renderer ─────────────────────────────────────────────────────
 
@@ -483,25 +539,60 @@ def _report_link(request_id: str) -> str:
 
 # ── Finding collection ────────────────────────────────────────────────────────
 
+_FIX_LINE_RE = re.compile(r'@@ line (\d+) @@')
+
+
+def _fix_diff_line(fix: CodeFix) -> int | None:
+    """Line number a CodeFix targets, parsed from its `diff`'s `@@ line N @@`
+    marker (CodeFix has no direct line field) — mirrors the identical parsing
+    in agents/remediation_agent.py::_fix_line and
+    vscode-extension/src/codeActions.ts::parseFixLine. Kept as a local copy
+    rather than a cross-module import, matching how this parsing is already
+    duplicated across those two independent modules."""
+    m = _FIX_LINE_RE.search(fix.diff)
+    return int(m.group(1)) if m else None
+
+
+def _find_matching_fix(file_path: str, line: int, code_fixes: list[CodeFix]) -> CodeFix | None:
+    """Deterministic (confidence="high") fixes only, exact file+line match —
+    unlike the VS Code panel's forgiving same-file fallback, a suggestion fence
+    here is one-click-apply on a real PR, so a fuzzy match is worse than no
+    suggestion at all."""
+    if not file_path or not line:
+        return None
+    for fix in code_fixes:
+        if fix.confidence == "high" and fix.file_path == file_path and _fix_diff_line(fix) == line:
+            return fix
+    return None
+
+
 def _collect_inline_findings(report: AnalysisReport) -> list[dict]:
     """
     Gather all findings that have a file path, normalised to:
-      { file_path, line, severity, category, message }
+      { file_path, line, severity, category, message, fix }
 
     line=0 means we know the file but not an exact line — we still include
     these so they appear as file-level comments rather than being dropped.
+    `fix` is a matching deterministic CodeFix (or None) — see _find_matching_fix.
     """
     findings: list[dict] = []
+
+    from config.settings import get_settings
+    fences_enabled = get_settings().pr_suggestion_fences_enabled
+    code_fixes = (report.remediation.code_fixes if report.remediation else []) if fences_enabled else []
 
     def _add(file_path: str, line: int, severity: str, category: str, message: str) -> None:
         if not file_path:
             return
+        fp = file_path.strip()
+        ln = max(0, int(line or 0))
         findings.append({
-            "file_path": file_path.strip(),
-            "line":      max(0, int(line or 0)),
+            "file_path": fp,
+            "line":      ln,
             "severity":  severity.lower(),
             "category":  category,
             "message":   message,
+            "fix":       _find_matching_fix(fp, ln, code_fixes),
         })
 
     # Security — SecurityFinding uses file_path, line_range (str), severity (enum),
@@ -586,6 +677,21 @@ def _render_file_comment(file_path: str, findings: list[dict]) -> str:
         msg     = f["message"].replace("|", "\\|")
         lines.append(f"| {icon} **{f['severity']}** | {f['category']} | {line_s} | {msg} |")
 
+    rendered_lines: set[int] = set()
+    for f in findings:
+        fix: CodeFix | None = f.get("fix")
+        # Multiple findings often land on the same line (e.g. security + privacy
+        # + quality all flag the same hardcoded secret) — render each matched
+        # fix once, not once per finding that happens to share its line.
+        if fix is None or f["line"] in rendered_lines:
+            continue
+        rendered_lines.add(f["line"])
+        lines.append(
+            f"\n<details><summary>Suggested fix (line {f['line']})</summary>\n\n"
+            f"```suggestion\n{fix.after}\n```\n"
+            f"{fix.explanation}\n</details>"
+        )
+
     lines.append(f"\n<sub>_CAR auto-review · {len(findings)} finding(s)_</sub>")
     return "\n".join(lines)
 
@@ -650,6 +756,24 @@ def _render_pr_summary_comment(report: AnalysisReport, file_groups: dict[str, li
             lines.append(f"- {fix}")
         lines.append("")
 
+    # AI-generated sequence diagram — narrative, not call-graph-verified (see
+    # core.models.MermaidDiagram). Collapsed by default since it's most
+    # likely to be imperfect on exactly the complex PRs it's shown for.
+    diagrams = getattr(report.remediation, "diagrams", []) if report.remediation else []
+    if diagrams:
+        d = diagrams[0]
+        lines += [
+            "<details><summary>📊 AI-generated sequence diagram (unverified)</summary>",
+            "",
+            "```mermaid",
+            d.mermaid_source,
+            "```",
+            "",
+            f"⚠️ {d.note}",
+            "</details>",
+            "",
+        ]
+
     lines.append(
         f"<sub>Analysis ID: `{report.request_id}` &nbsp;·&nbsp; "
         f"[View full report in CAR dashboard]({_report_link(report.request_id)})</sub>"
@@ -703,6 +827,27 @@ def post_inline_comments(
     session.timeout = 20
     posted = 0
     pid = str(pr_id).replace("#", "") or str(getattr(report.pr, "pr_number", ""))
+
+    # Normalised to exactly what ReplyEvent.provider produces (github|bitbucket,
+    # never the enterprise/cloud/server variants) so a later reply's lookup in
+    # pr_comment_map (governance/review_session_store.py) actually matches.
+    _provider_key = "github" if provider in ("github", "github_enterprise") else "bitbucket"
+
+    def _record_posted(slug_: str, comment_id, fp: str = "", line=0) -> None:
+        """Capture a just-posted comment's id so a later reply to it can be
+        correlated back to this report/file — see governance/reply_answerer.py.
+        Best-effort: a failure here must never break comment posting itself."""
+        if not comment_id:
+            return
+        try:
+            from governance.review_session_store import get_review_store
+            get_review_store().record_posted_comment(
+                provider=_provider_key, repo_slug=slug_, pr_id=pid,
+                comment_id=str(comment_id), request_id=report.request_id,
+                file_path=fp, line=str(line),
+            )
+        except Exception:
+            log.debug("record_posted_comment failed", exc_info=True)
 
     # ── GitHub / GitHub Enterprise ────────────────────────────────────────────
     if provider in ("github", "github_enterprise"):
@@ -774,6 +919,16 @@ def post_inline_comments(
                         "GitHub PR review posted: %d file comment(s) + summary (pid=%s)",
                         len(file_groups), pid,
                     )
+                    # Correlate each posted review comment back to its file —
+                    # the response's `comments` array mirrors review_payload's
+                    # order, one id per file we submitted.
+                    try:
+                        posted_comments = resp.json().get("comments", [])
+                        for (fp, flist), pc in zip(file_groups.items(), posted_comments):
+                            anchor = next((f["line"] for f in flist if f["line"] > 0), 1)
+                            _record_posted(slug, pc.get("id"), fp, anchor)
+                    except Exception:
+                        log.debug("Could not correlate GitHub review comments", exc_info=True)
                     return posted
                 elif resp.status_code == 403:
                     err_msg = resp.json().get("message", resp.text[:200])
@@ -828,9 +983,9 @@ def post_inline_comments(
         # One comment per file
         for fp, flist in file_groups.items():
             body = _render_file_comment(fp, flist)
+            anchor = next((f["line"] for f in flist if f["line"] > 0), 1)
             try:
                 if head_sha:
-                    anchor = next((f["line"] for f in flist if f["line"] > 0), 1)
                     payload: dict = {
                         "body": body, "commit_id": head_sha,
                         "path": fp, "line": anchor, "side": "RIGHT",
@@ -846,6 +1001,7 @@ def post_inline_comments(
                     )
                 if resp.status_code in (200, 201):
                     posted += 1
+                    _record_posted(slug, resp.json().get("id"), fp, anchor)
                 elif resp.status_code == 403:
                     log.warning("File comment 403 for %s — token may lack write scope", fp)
                 else:
@@ -893,6 +1049,7 @@ def post_inline_comments(
                 resp = session.post(f"{base_pr}/comments", headers=headers, json=payload)
                 if resp.status_code in (200, 201):
                     posted += 1
+                    _record_posted(slug, resp.json().get("id"), fp, anchor_line)
                 else:
                     log.debug("BB Server file comment failed (%d) for %s: %s",
                               resp.status_code, fp, resp.text[:200])
@@ -933,6 +1090,7 @@ def post_inline_comments(
                 resp = session.post(f"{base_pr}/comments", headers=headers, json=payload)
                 if resp.status_code in (200, 201):
                     posted += 1
+                    _record_posted(slug, resp.json().get("id"), fp, anchor_line)
                 else:
                     log.debug("BB Cloud file comment failed (%d) for %s: %s",
                               resp.status_code, fp, resp.text[:200])

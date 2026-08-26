@@ -1,12 +1,13 @@
 """
 ingestion/webhook_parser.py
 ----------------------------
-Converts raw Bitbucket / GitHub webhook payloads into AnalysisRequest objects.
-Pure functions — no I/O, no HTTP calls.
+Converts raw Bitbucket / GitHub webhook payloads into AnalysisRequest objects
+(new-diff-to-analyze events), or into ReplyEvent objects (PR-comment events —
+a reply/new comment, not a new diff). Pure functions — no I/O, no HTTP calls.
 """
 from __future__ import annotations
 import uuid
-from core.models import AnalysisRequest, ChangeType
+from core.models import AnalysisRequest, ChangeType, ReplyEvent
 
 
 def parse_bitbucket_webhook(event: str, payload: dict) -> AnalysisRequest | None:
@@ -110,6 +111,92 @@ def parse_github_webhook(event: str, payload: dict) -> AnalysisRequest | None:
         )
 
     return None   # unsupported event
+
+
+def parse_github_comment_webhook(event: str, payload: dict) -> ReplyEvent | None:
+    """
+    Map a GitHub comment webhook event to a ReplyEvent (interactive PR chat
+    replies — see governance/reply_answerer.py). NOT an AnalysisRequest —
+    this is a reply to answer, not a diff to analyze.
+
+    Supported events:
+      issue_comment              (action: created) — top-level PR conversation
+                                  comment. Only when the issue IS a PR
+                                  (payload["issue"]["pull_request"] present).
+      pull_request_review_comment (action: created) — threaded review comment,
+                                  may carry in_reply_to_id.
+    """
+    if event not in ("issue_comment", "pull_request_review_comment"):
+        return None
+    if payload.get("action") != "created":
+        return None
+
+    comment = payload.get("comment", {})
+    user    = comment.get("user", {}) or {}
+    repo_slug = payload.get("repository", {}).get("full_name", "")
+
+    if event == "issue_comment":
+        issue = payload.get("issue", {})
+        if "pull_request" not in issue:
+            return None   # a plain issue comment, not a PR — nothing to answer
+        pr_id = str(issue.get("number", ""))
+        in_reply_to = None   # issue_comment is always top-level, never threaded
+    else:
+        pr = payload.get("pull_request", {})
+        pr_id = str(pr.get("number", ""))
+        raw_reply_to = comment.get("in_reply_to_id")
+        in_reply_to = str(raw_reply_to) if raw_reply_to is not None else None
+
+    if not repo_slug or not pr_id or not comment.get("id"):
+        return None
+
+    return ReplyEvent(
+        provider=      "github",
+        repo_slug=     repo_slug,
+        pr_id=         pr_id,
+        comment_id=    str(comment.get("id")),
+        in_reply_to_id=in_reply_to,
+        body=          comment.get("body", "") or "",
+        author=        user.get("login", ""),
+        is_bot=        user.get("type", "") == "Bot",
+    )
+
+
+def parse_bitbucket_comment_webhook(event: str, payload: dict) -> ReplyEvent | None:
+    """
+    Map a Bitbucket comment webhook event to a ReplyEvent.
+
+    Supported events:
+      pullrequest:comment_created (Bitbucket Cloud)
+
+    NOTE: Bitbucket's webhook payload has no standardized bot-account marker
+    the way GitHub's `user.type == "Bot"` does — is_bot is always False here.
+    Rate-limiting (governance/reply_answerer.py) is the backstop for this
+    provider, not the is_bot guard.
+    """
+    if event != "pullrequest:comment_created":
+        return None
+
+    pr      = payload.get("pullrequest", {})
+    comment = payload.get("comment", {})
+    repo_slug = payload.get("repository", {}).get("full_name", "")
+    pr_id     = str(pr.get("id", ""))
+    body      = _bb_nested(comment, "content", "raw")
+    parent_id = comment.get("parent", {}).get("id") if isinstance(comment.get("parent"), dict) else None
+
+    if not repo_slug or not pr_id or not comment.get("id"):
+        return None
+
+    return ReplyEvent(
+        provider=      "bitbucket",
+        repo_slug=     repo_slug,
+        pr_id=         pr_id,
+        comment_id=    str(comment.get("id")),
+        in_reply_to_id=str(parent_id) if parent_id is not None else None,
+        body=          body,
+        author=        _bb_nested(comment, "user", "display_name"),
+        is_bot=        False,
+    )
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
