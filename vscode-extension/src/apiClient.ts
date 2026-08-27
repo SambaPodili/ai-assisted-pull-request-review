@@ -133,6 +133,31 @@ export class ApiError extends Error {
   }
 }
 
+/** Node's global fetch() collapses every network-level failure (DNS,
+ * connection refused, timeout, TLS) into a generic "fetch failed" — the
+ * actual reason lives on `err.cause`, which a plain `.message` read drops
+ * silently. Walks the cause chain so the real reason (e.g. "connect
+ * ECONNREFUSED 10.0.0.5:8080") reaches the user instead of a dead end. Only
+ * matters for errors that never got an HTTP response — ApiError (a real
+ * response came back) already carries a useful, backend-provided message. */
+export function describeError(e: unknown): string {
+  if (!(e instanceof Error)) return String(e);
+  const parts = [e.message];
+  let cause: unknown = (e as { cause?: unknown }).cause;
+  let depth = 0;
+  while (cause && depth < 5) {
+    if (cause instanceof Error) {
+      parts.push(cause.message);
+      cause = (cause as { cause?: unknown }).cause;
+    } else {
+      parts.push(String(cause));
+      cause = undefined;
+    }
+    depth++;
+  }
+  return parts.filter((p, i) => parts.indexOf(p) === i).join(' — caused by: ');
+}
+
 function headers(apiKey: string): Record<string, string> {
   return { 'Content-Type': 'application/json', 'X-API-Key': apiKey };
 }

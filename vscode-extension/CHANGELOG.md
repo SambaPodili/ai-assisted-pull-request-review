@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.13.1
+
+- Network-failure error messages now show the real cause instead of Node's
+  generic `fetch failed` — e.g. `connect ECONNREFUSED 10.0.0.5:8080` instead
+  of a dead end. Node's `fetch()` collapses DNS failures, connection refused,
+  timeouts, and TLS errors into one opaque message and buries the actual
+  reason on `err.cause`, which was previously dropped silently on both
+  `GTO: Analyze Changes`/`Analyze Branch...` and `GTO: Select Model`.
+
 ## 0.13.0
 
 - **CodeLens inline annotation** — findings now show as an inline "⚠ N GTO

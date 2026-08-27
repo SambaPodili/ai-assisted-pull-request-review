@@ -5,7 +5,7 @@
 // theme the user has, light or dark, with zero extra theming code.
 
 import * as vscode from 'vscode';
-import { AnalysisReport, CorrelatedIssue, CodeFix, QAScenario, submitFindingFeedback, ApiError } from './apiClient';
+import { AnalysisReport, CorrelatedIssue, CodeFix, QAScenario, submitFindingFeedback, ApiError, describeError } from './apiClient';
 import { parseFixLine, applyCodeFix } from './codeActions';
 import { fingerprint, SuppressedEntry, addSuppression, removeSuppression } from './reportState';
 
@@ -83,7 +83,7 @@ export class ResultsPanel {
       this.panel.webview.postMessage({ command: 'fpDone', fingerprint: fp });
       vscode.window.setStatusBarMessage('GTO: recorded as false positive', 2500);
     } catch (err) {
-      const message = err instanceof ApiError ? err.message : 'Could not submit feedback.';
+      const message = err instanceof ApiError ? err.message : describeError(err);
       vscode.window.showErrorMessage(`GTO: ${message}`);
     }
   }

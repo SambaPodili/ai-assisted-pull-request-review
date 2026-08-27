@@ -30,7 +30,7 @@ import {
   AgentPreset,
   AGENT_PRESET_META,
 } from './settings';
-import { runAnalysisToCompletion, ApiError, AnalysisReport, StatusResponse, fetchModelPresets } from './apiClient';
+import { runAnalysisToCompletion, AnalysisReport, StatusResponse, fetchModelPresets, describeError } from './apiClient';
 import { ResultsPanel } from './resultsPanel';
 import { initDiagnostics, updateDiagnostics } from './diagnostics';
 import { registerCodeActions, updateCodeFixes } from './codeActions';
@@ -114,7 +114,7 @@ async function selectModelCommand(context: vscode.ExtensionContext): Promise<voi
   try {
     presets = await fetchModelPresets(backendUrl, apiKey);
   } catch (e) {
-    vscode.window.showErrorMessage(`GTO: couldn't fetch model presets — ${e instanceof Error ? e.message : String(e)}`);
+    vscode.window.showErrorMessage(`GTO: couldn't fetch model presets — ${describeError(e)}`);
     return;
   }
   if (!presets.length) {
@@ -380,7 +380,7 @@ async function runAnalysis(context: vscode.ExtensionContext, params: RunParams):
         else if (report.gate_decision === 'HOLD') vscode.window.showWarningMessage(msg);
         else if (interactive) vscode.window.showInformationMessage(msg);
       } catch (e) {
-        const message = e instanceof ApiError || e instanceof Error ? e.message : String(e);
+        const message = describeError(e);
         vscode.window.showErrorMessage(`GTO analysis failed: ${message}`);
         ResultsPanel.showError(message, repo.cwd);
         resetStatusBar();
