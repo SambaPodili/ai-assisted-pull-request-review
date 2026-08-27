@@ -34,8 +34,14 @@ function normalizeRepoUrl(remoteUrl: string, folderName: string): string {
   const trimmed = remoteUrl.trim();
   if (!trimmed) return `local/${folderName}`;
   // git@github.com:org/repo.git -> https://github.com/org/repo
+  // (also matches Bitbucket Cloud's identical scp-like SSH convention)
   const sshMatch = trimmed.match(/^git@([^:]+):(.+?)(\.git)?$/);
   if (sshMatch) return `https://${sshMatch[1]}/${sshMatch[2]}`;
+  // ssh://git@bitbucket.mycompany.com:7999/PROJ/repo.git -> https://bitbucket.mycompany.com/PROJ/repo
+  // (Bitbucket Server/Data Center's SSH convention — full ssh:// URL with an
+  // explicit, often non-standard, port, not the scp-like form above)
+  const sshUrlMatch = trimmed.match(/^ssh:\/\/git@([^:/]+)(?::\d+)?\/(.+?)(\.git)?$/);
+  if (sshUrlMatch) return `https://${sshUrlMatch[1]}/${sshUrlMatch[2]}`;
   return trimmed.replace(/\.git$/, '');
 }
 

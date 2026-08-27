@@ -1111,6 +1111,8 @@ def make_pr_commenter(settings=None) -> PRCommenter | None:
     cfg = settings or get_settings()
     if not cfg.post_pr_comments:
         return None
+    if cfg.git_provider == "bitbucket_server":
+        return PRCommenter(cfg.bitbucket_token, "bitbucket_server", cfg.bitbucket_workspace, cfg.bitbucket_api_url)
     if cfg.git_provider == "bitbucket":
         return PRCommenter(cfg.bitbucket_token, "bitbucket", cfg.bitbucket_workspace, cfg.bitbucket_api_url)
     return PRCommenter(cfg.github_token, "github", api_url=cfg.github_api_url)

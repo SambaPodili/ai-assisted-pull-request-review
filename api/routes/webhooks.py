@@ -132,11 +132,13 @@ async def _run_with_diff(req, provider, orch, store):
         log.warning("[%s] Diff fetch failed (%s) — proceeding without diff", req.request_id, exc)
 
     try:
-        from ingestion.path_review_config import load_from_git_client
+        from ingestion.path_review_config import load_from_git_client, load_team_default, merge_path_review_configs
         # Resolve .gto.yaml from the TARGET branch, never the PR's own head —
         # a PR must not be able to weaken scrutiny of itself via its own
         # config file. `git` here is the same client just used for the diff.
-        req.path_review_config = load_from_git_client(git, repo, req.target_ref)
+        repo_cfg = load_from_git_client(git, repo, req.target_ref)
+        team_cfg = load_team_default(git)
+        req.path_review_config = merge_path_review_configs(repo_cfg, team_cfg)
     except Exception as exc:
         log.debug("[%s] .gto.yaml load failed (%s) — proceeding without path-scoped rules", req.request_id, exc)
 

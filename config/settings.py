@@ -61,6 +61,18 @@ class Settings(BaseSettings):
     # in the URL. Lets the UI omit the key entirely (prefilled from this env).
     llm_api_key:      str = Field(default="",                    alias="LLM_API_KEY")
 
+    # Named model choices a user can pick from the VS Code extension / web app
+    # without ever seeing a credential — e.g. a shared multi-user deployment
+    # where the admin has already set up LLM_BASE_URL/LLM_API_KEY to a gateway
+    # serving several models (Llama, Qwen, ...) under one key. JSON list of
+    # {"name": "qwen", "label": "Qwen 2.5 72B", "model": "qwen2.5-72b"}
+    # (optional "provider", defaults to LLM_PROVIDER — only set it per-preset
+    # if that preset genuinely uses a different provider). Never put a key or
+    # base_url in a preset — those always come from the shared env config above,
+    # by design; this field is intentionally secret-free so it's safe to expose
+    # via GET /api/v1/model-presets. Empty by default (no presets to offer).
+    model_presets:    str = Field(default="",                    alias="MODEL_PRESETS")
+
     # OpenAI
     openai_api_key:   str = Field(default="", alias="OPENAI_API_KEY")
 
@@ -124,12 +136,26 @@ class Settings(BaseSettings):
     elk_timeout_s:        float = Field(default=5.0, alias="ELK_TIMEOUT_S")
 
     # ── Git providers ─────────────────────────────────────────────────────────
+    # "github" | "bitbucket" (Cloud, api.bitbucket.org) | "bitbucket_server"
+    # (self-hosted Server/Data Center — set BITBUCKET_API_URL to your server's
+    # root URL, e.g. https://bitbucket.yourcompany.com; BITBUCKET_WORKSPACE is
+    # used as the project-key fallback when a repo slug is submitted bare
+    # instead of "PROJECTKEY/repo").
     git_provider:              str = Field(default="github", alias="GIT_PROVIDER")
     # Disable TLS cert verification for git clone/fetch ONLY. For corporate
     # Bitbucket/GitHub Enterprise behind a self-signed or internal-CA cert that
     # git cannot verify (clone fails rc=128 "SSL certificate problem"). INSECURE:
     # prefer trusting the corporate CA. Off by default; opt in per deployment.
     git_ssl_no_verify:         bool = Field(default=False, alias="GIT_SSL_NO_VERIFY")
+
+    # Team-wide default .gto.yaml (same schema, fetched the same way as a
+    # repo's own file — see ingestion/path_review_config.py::load_team_default).
+    # Opt-in: empty repo means the feature is a no-op. Merged as a UNION with
+    # a repo's own .gto.yaml, never a replacement — a team default can only
+    # ever narrow scrutiny further, never loosen what the repo's own file
+    # already restricts (see merge_path_review_configs).
+    team_gto_config_repo:      str = Field(default="",     alias="TEAM_GTO_CONFIG_REPO")
+    team_gto_config_ref:       str = Field(default="main",  alias="TEAM_GTO_CONFIG_REF")
 
     # SCA / dependency TLS + endpoints. Declared so .env values are honoured (the
     # SSL helpers read these via the Settings object, not just os.getenv — a value
@@ -421,3 +447,31 @@ class Settings(BaseSettings):
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()
+
+
+def get_model_presets(settings: "Settings | None" = None) -> list[dict]:
+    """Parsed MODEL_PRESETS — never raises; malformed JSON just means no
+    presets to offer (same "degrade, don't break" treatment as everything
+    else optional in this file). See Settings.model_presets for the schema
+    and the secret-free design rationale."""
+    cfg = settings or get_settings()
+    raw = (cfg.model_presets or "").strip()
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(data, list):
+        return []
+    presets = []
+    for item in data:
+        if not isinstance(item, dict) or not item.get("name") or not item.get("model"):
+            continue
+        presets.append({
+            "name":     str(item["name"]),
+            "label":    str(item.get("label") or item["name"]),
+            "provider": str(item.get("provider") or cfg.llm_provider),
+            "model":    str(item["model"]),
+        })
+    return presets

@@ -62,6 +62,43 @@ def load_from_git_client(git_client, repo_slug: str, ref: str) -> PathReviewConf
     return parse_path_review_config(raw)
 
 
+def load_team_default(git_client, settings=None) -> PathReviewConfig | None:
+    """Fetches the team-wide default .gto.yaml — a file in a designated
+    shared repo (settings.team_gto_config_repo @ settings.team_gto_config_ref),
+    fetched via the same GitClient.get_file_content used for a repo's own
+    config. No-op (returns None) when team_gto_config_repo is unset — this
+    feature is entirely opt-in."""
+    if settings is None:
+        from config.settings import get_settings
+        settings = get_settings()
+    repo = getattr(settings, "team_gto_config_repo", "") or ""
+    if not repo:
+        return None
+    ref = getattr(settings, "team_gto_config_ref", "") or "main"
+    return load_from_git_client(git_client, repo, ref)
+
+
+def merge_path_review_configs(
+    repo_cfg: PathReviewConfig | None, team_cfg: PathReviewConfig | None
+) -> PathReviewConfig | None:
+    """Union a repo's own .gto.yaml with the team-wide default. Every
+    PathReviewRule field is purely restrictive (agents/skip can only exclude,
+    never add agents beyond the request-wide baseline — see PathReviewRule's
+    docstring), so simple concatenation of both rule lists preserves
+    narrows-never-widens automatically: a rule from either source can only
+    ever remove scrutiny, so the union is always at least as restrictive as
+    either input alone. A team default is never allowed to override or
+    replace a repo's own rules — same trust-boundary reasoning as resolving
+    .gto.yaml from the target branch, not the PR head (see module docstring)."""
+    if repo_cfg is None and team_cfg is None:
+        return None
+    if repo_cfg is None:
+        return team_cfg
+    if team_cfg is None:
+        return repo_cfg
+    return PathReviewConfig(version=repo_cfg.version, paths=[*repo_cfg.paths, *team_cfg.paths])
+
+
 def match_path(rule_match: str, file_path: str) -> bool:
     """True if `file_path` matches the glob `rule_match` — see module
     docstring for semantics."""

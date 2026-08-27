@@ -236,3 +236,151 @@ def to_summary_json(report: AnalysisReport) -> dict:
             for u in report.token_usage
         ],
     }
+
+
+_SARIF_LEVEL = {
+    "critical": "error",
+    "high":     "error",
+    "medium":   "warning",
+    "low":      "note",
+}
+
+
+def to_sarif(report: AnalysisReport) -> dict:
+    """Render `report.top_issues` as a SARIF 2.1.0 log (dict, JSON-serializable).
+
+    Rule ids are synthesized per-report from each issue's category/CWE label —
+    no static rule catalog exists in this codebase, so the driver's rule set is
+    built dynamically from whatever categories actually appear. `line <= 0` is
+    a legitimate value (an LLM finding with no resolvable line_range,
+    governance/correlation.py) — SARIF permits a location with no `region`, so
+    that's what's emitted rather than a fabricated startLine.
+    """
+    rules: dict[str, dict] = {}
+    results = []
+
+    for issue in report.top_issues:
+        rule_id = issue.categories[0] if issue.categories else "gto-uncategorized"
+        if rule_id not in rules:
+            rules[rule_id] = {
+                "id": rule_id,
+                "name": rule_id,
+                "shortDescription": {"text": issue.title},
+            }
+
+        text = issue.title
+        if issue.descriptions:
+            text = f"{text} — {issue.descriptions[0]}"
+        if issue.unverified:
+            text = f"{text} (unverified location)"
+
+        artifact_location = {"uri": issue.file_path} if issue.file_path else {}
+        physical_location: dict = {"artifactLocation": artifact_location}
+        if issue.line > 0:
+            physical_location["region"] = {"startLine": issue.line}
+
+        results.append({
+            "ruleId": rule_id,
+            "level": _SARIF_LEVEL.get(issue.severity, "warning"),
+            "message": {"text": text},
+            "locations": [{"physicalLocation": physical_location}] if artifact_location else [],
+        })
+
+    return {
+        "version": "2.1.0",
+        "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": "GTO",
+                        "informationUri": "https://github.com/SambaPodili/code-impact-analysis-review",
+                        "rules": list(rules.values()),
+                    }
+                },
+                "results": results,
+            }
+        ],
+    }
+
+
+def to_compliance_markdown(report: AnalysisReport) -> str:
+    """Compliance/audit-facing report for a PR — distinct framing from
+    `to_markdown` (which is developer-facing): gate rationale, human override
+    history, full findings list, and what auto-suppression removed.
+
+    v1 is Markdown only (no PDF library exists in this codebase) and has no
+    true audit-log trail (`governance/audit_logger.py` is write-only, no
+    read-by-request_id path exists) — override history instead comes from
+    `governance.rbac.GateOverrideStore`, the same read-capable store `/overrides`
+    already uses. Both limits are stated in the footer, not silently omitted.
+    """
+    from governance.rbac import get_gate_override_store
+
+    gate = report.gate_decision
+    icon = {"APPROVE": "✅", "HOLD": "⚠️", "BLOCK": "🚫"}.get(gate.value, "❓")
+
+    lines = [
+        f"# {icon} Compliance Report — {gate.value}",
+        "",
+        f"**Repository:**  {report.repo_url}",
+        f"**Change:**      `{report.source_ref}` → `{report.target_ref}`",
+        f"**Request ID:**  `{report.request_id}`",
+        f"**Completed:**   {report.completed_at.strftime('%Y-%m-%d %H:%M UTC')}",
+        "",
+        "---",
+        "## Gate Decision",
+        f"- **Final gate:** **{gate.value}**",
+        f"- **AI-proposed gate:** {report.ai_proposed_gate or '—'}",
+        f"- **Overridden by deterministic policy:** {'Yes' if report.gate_overridden_by_policy else 'No'}",
+    ]
+    if report.gate_policy_reasons:
+        lines.append("- **Policy reasons:**")
+        for reason in report.gate_policy_reasons:
+            lines.append(f"  - {reason}")
+    lines.append("")
+
+    overrides = [o for o in get_gate_override_store().list_all() if o.request_id == report.request_id]
+    lines += ["---", "## Human Override History"]
+    if overrides:
+        lines.append("")
+        lines.append("| From | To | Reason | Overridden By | Team |")
+        lines.append("|------|----|--------|--------------|----|")
+        for o in overrides:
+            lines.append(f"| {o.original_gate} | {o.override_to} | {o.reason} | {o.override_by} | {o.override_team} |")
+    else:
+        lines.append("_No human overrides recorded for this analysis._")
+    lines.append("")
+
+    lines += ["---", "## Findings"]
+    if report.top_issues:
+        severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+        ranked = sorted(report.top_issues, key=lambda i: severity_order.get(i.severity, 4))
+        lines.append("")
+        lines.append("| Severity | File | Line | Title | Confidence | Agents |")
+        lines.append("|----------|------|------|-------|------------|--------|")
+        for issue in ranked:
+            loc = f"{issue.line}" if issue.line > 0 else "—"
+            lines.append(
+                f"| {issue.severity.upper()} | `{issue.file_path}` | {loc} | {issue.title} | "
+                f"{issue.confidence} | {', '.join(issue.agents)} |"
+            )
+    else:
+        lines.append("_No findings._")
+    lines.append("")
+
+    lines += ["---", "## Finding Quality & Suppression Notes"]
+    if report.suppressed_notes:
+        for note in report.suppressed_notes:
+            lines.append(f"- {note}")
+    else:
+        lines.append("_None for this analysis._")
+    lines.append("")
+
+    lines += [
+        "---",
+        "_Generated by GTO — Markdown export. PDF export and full audit-log-trail "
+        "integration are planned upgrades, not included in this document._",
+    ]
+
+    return "\n".join(lines)

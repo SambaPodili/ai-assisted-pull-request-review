@@ -22,13 +22,19 @@ import {
   getAgentPreset,
   getAutoAnalyzeOnSave,
   getExcludePatterns,
+  getModelOverride,
+  getSelectedModelPreset,
+  setSelectedModelPreset,
+  promptForModelApiKey,
+  ModelOverride,
   AgentPreset,
   AGENT_PRESET_META,
 } from './settings';
-import { runAnalysisToCompletion, ApiError, AnalysisReport, StatusResponse } from './apiClient';
+import { runAnalysisToCompletion, ApiError, AnalysisReport, StatusResponse, fetchModelPresets } from './apiClient';
 import { ResultsPanel } from './resultsPanel';
 import { initDiagnostics, updateDiagnostics } from './diagnostics';
 import { registerCodeActions, updateCodeFixes } from './codeActions';
+import { registerCodeLenses, updateCodeLenses } from './codeLenses';
 import { scanUserInstructions } from './promptGuard';
 import {
   fingerprint,
@@ -40,7 +46,11 @@ import {
 import { loadPathReviewConfig } from './pathReviewConfig';
 
 let lastReport:
-  | { report: AnalysisReport; repoRoot: string; opts: { suppressed: SuppressedEntry[]; newFingerprints: Set<string> } }
+  | {
+      report: AnalysisReport;
+      repoRoot: string;
+      opts: { suppressed: SuppressedEntry[]; newFingerprints: Set<string>; backendUrl: string; apiKey: string };
+    }
   | undefined;
 let statusBarItem: vscode.StatusBarItem;
 let lastPriorities = ''; // in-memory only, remembered for convenience within the session — never persisted
@@ -57,6 +67,7 @@ const SAVE_DEBOUNCE_MS = 1500;
 export function activate(context: vscode.ExtensionContext): void {
   initDiagnostics(context);
   registerCodeActions(context);
+  registerCodeLenses(context);
 
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   statusBarItem.command = 'gto.analyzeChanges';
@@ -68,6 +79,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('gto.analyzeChanges', () => analyzeUncommitted(context, true)),
     vscode.commands.registerCommand('gto.analyzeBranch', () => analyzeBranch(context)),
     vscode.commands.registerCommand('gto.setApiKey', () => setApiKeyCommand(context)),
+    vscode.commands.registerCommand('gto.setModelApiKey', () => promptForModelApiKey(context.secrets)),
+    vscode.commands.registerCommand('gto.selectModel', () => selectModelCommand(context)),
     vscode.commands.registerCommand('gto.showLastResult', showLastResult),
     vscode.workspace.onDidSaveTextDocument(() => onDidSave(context))
   );
@@ -82,6 +95,74 @@ export function deactivate(): void {
 async function setApiKeyCommand(context: vscode.ExtensionContext): Promise<void> {
   const key = await promptForApiKey(context.secrets);
   if (key) vscode.window.showInformationMessage('GTO API key saved.');
+}
+
+/** `GTO: Select Model` — quick-picks from the backend's admin-configured
+ * presets (config/settings.py's MODEL_PRESETS). This is the primary,
+ * recommended way to change models on a shared multi-user backend — no
+ * credential ever leaves the server. gto.modelProvider/etc. remain available
+ * as an advanced manual override for a personal backend, but this command
+ * doesn't touch those settings. */
+async function selectModelCommand(context: vscode.ExtensionContext): Promise<void> {
+  const apiKey = await getApiKey(context.secrets);
+  if (!apiKey) {
+    vscode.window.showWarningMessage('GTO: run "GTO: Set API Key" first.');
+    return;
+  }
+  const backendUrl = getBackendUrl();
+  let presets;
+  try {
+    presets = await fetchModelPresets(backendUrl, apiKey);
+  } catch (e) {
+    vscode.window.showErrorMessage(`GTO: couldn't fetch model presets — ${e instanceof Error ? e.message : String(e)}`);
+    return;
+  }
+  if (!presets.length) {
+    vscode.window.showInformationMessage(
+      'GTO: the backend has no model presets configured (MODEL_PRESETS is empty) — it always uses its own default model. Ask your admin to add presets, or use the advanced gto.modelProvider settings for a personal backend.'
+    );
+    return;
+  }
+
+  const current = getSelectedModelPreset();
+  const items = [
+    { label: 'Default', description: current ? undefined : '(current)', detail: "Use the backend's own configured model — clears gto.modelPreset.", name: '' },
+    ...presets.map((p) => ({
+      label: p.label,
+      description: current === p.name ? '(current)' : p.model,
+      detail: `${p.provider} · ${p.model}`,
+      name: p.name,
+    })),
+  ];
+  items.sort((a, b) => (a.name === current ? -1 : b.name === current ? 1 : 0));
+
+  const picked = await vscode.window.showQuickPick(items, { title: 'GTO — Select Model', placeHolder: 'Press Enter to keep the current selection' });
+  if (!picked) return;
+  await setSelectedModelPreset(picked.name);
+  vscode.window.showInformationMessage(picked.name ? `GTO: model set to ${picked.label}.` : 'GTO: using the backend default model.');
+}
+
+/** Preset (gto.modelPreset) takes priority when set — the primary path for a
+ * shared backend. Falls back to the advanced free-text override
+ * (settings.ts::getModelOverride) only when no preset is selected. A
+ * selected-but-unresolved preset (removed server-side, fetch failed) does
+ * NOT silently fall through to the free-text settings — that would apply an
+ * override the user didn't ask for; better to warn and run unmodified. */
+async function resolveModelOverride(context: vscode.ExtensionContext, backendUrl: string, apiKey: string): Promise<ModelOverride | undefined> {
+  const presetName = getSelectedModelPreset();
+  if (!presetName) return getModelOverride(context.secrets);
+
+  try {
+    const presets = await fetchModelPresets(backendUrl, apiKey);
+    const match = presets.find((p) => p.name === presetName);
+    if (match) {
+      return { provider: match.provider, model: match.model, api_key: '', base_url: '', api_version: '' };
+    }
+    vscode.window.showWarningMessage(`GTO: model preset "${presetName}" (gto.modelPreset) not found on the backend — running with the default model.`);
+  } catch {
+    vscode.window.showWarningMessage('GTO: could not reach the backend for model presets — running with the default model.');
+  }
+  return undefined;
 }
 
 function showLastResult(): void {
@@ -212,15 +293,15 @@ async function runAnalysis(context: vscode.ExtensionContext, params: RunParams):
   }
   const selectedAgents = getSelectedAgents(preset);
   const pathReviewConfig = await loadPathReviewConfig(repo.cwd);
+  const backendUrl = getBackendUrl();
+  const modelOverride = await resolveModelOverride(context, backendUrl, apiKey);
 
-  const runKey = JSON.stringify({ diffText, sourceRef, targetRef, preset, userInstructions, pathReviewConfig });
+  const runKey = JSON.stringify({ diffText, sourceRef, targetRef, preset, userInstructions, pathReviewConfig, modelOverride });
   if (interactive && runKey === lastRunKey && lastReport) {
     vscode.window.showInformationMessage('GTO: nothing changed since the last run — showing the previous result.');
     ResultsPanel.showReport(lastReport.report, lastReport.repoRoot, lastReport.opts);
     return;
   }
-
-  const backendUrl = getBackendUrl();
 
   analysisInFlight = true;
   ResultsPanel.showLoading(repo.cwd);
@@ -254,6 +335,7 @@ async function runAnalysis(context: vscode.ExtensionContext, params: RunParams):
             selectedAgents,
             userInstructions,
             pathReviewConfig,
+            modelOverride,
           },
           token,
           onStatus
@@ -285,11 +367,12 @@ async function runAnalysis(context: vscode.ExtensionContext, params: RunParams):
         const newFingerprints = new Set(lastSeen ? currentFps.filter((fp) => !lastSeen.has(fp)) : []);
         await setLastSeenFingerprints(context.workspaceState, repo.cwd, sourceRef, currentFps);
 
-        lastReport = { report, repoRoot: repo.cwd, opts: { suppressed, newFingerprints } };
+        lastReport = { report, repoRoot: repo.cwd, opts: { suppressed, newFingerprints, backendUrl, apiKey: apiKey! } };
         lastRunKey = runKey;
         ResultsPanel.showReport(report, repo.cwd, lastReport.opts);
         updateDiagnostics(report, repo.cwd);
         updateCodeFixes(report, repo.cwd);
+        updateCodeLenses(report, repo.cwd);
         updateStatusBar(report);
 
         const msg = `GTO: ${report.gate_decision} — risk ${report.risk?.risk_score ?? 0}/100, ${report.top_issues?.length ?? 0} issue(s)`;

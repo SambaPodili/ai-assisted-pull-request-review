@@ -28,7 +28,7 @@ from governance.rbac import (
     get_current_subject, require_permission,
 )
 from ingestion.diff_parser import parse_diff
-from output.report_formatter import to_summary_json, to_markdown
+from output.report_formatter import to_summary_json, to_markdown, to_sarif, to_compliance_markdown
 
 log = logging.getLogger(__name__)
 
@@ -669,6 +669,21 @@ def get_me(subject: Subject = Depends(get_current_subject)):
     }
 
 
+@router.get("/model-presets")
+def get_model_presets_route(subject: Subject = Depends(get_current_subject)):
+    """
+    Named model choices the backend admin has configured (see
+    config.settings.Settings.model_presets / get_model_presets) — e.g. "Llama",
+    "Qwen" behind a shared gateway. Secret-free by design: presets never carry
+    a base_url or api_key, only provider+model, so this is safe for any
+    authenticated client (VS Code extension, web app) to fetch and populate a
+    picker with. Empty list is normal — most deployments have none configured
+    and just use the backend's single default model.
+    """
+    from config.settings import get_model_presets
+    return {"presets": get_model_presets()}
+
+
 # ── Developer productivity endpoints ──────────────────────────────────────────
 
 @router.get("/report/{request_id}/checklist")
@@ -695,6 +710,37 @@ def get_pr_description(request_id: str):
     if not report:
         raise HTTPException(404, detail=f"Report '{request_id}' not found.")
     return {"markdown": _build_pr_description(report)}
+
+
+@router.get("/report/{request_id}/sarif")
+def get_report_sarif(request_id: str):
+    """
+    Return the analysis report as a SARIF 2.1.0 log — for GitHub code scanning,
+    SARIF viewers, or SIEM/security dashboard ingestion.
+    """
+    from api.app import get_report_store
+    report = get_report_store().get(request_id)
+    if not report:
+        raise HTTPException(404, detail=f"Report '{request_id}' not found.")
+    return to_sarif(report)
+
+
+@router.get("/report/{request_id}/compliance-report")
+def get_compliance_report(
+    request_id: str,
+    subject: Subject = require_permission(Permission.AUDIT_READ),
+):
+    """
+    One-click compliance report for a PR — gate rationale, human override
+    history, and full findings list. Gated behind AUDIT_READ (unlike its
+    no-auth siblings /report and /pr-description) since it surfaces approver
+    identities and override rationale.
+    """
+    from api.app import get_report_store
+    report = get_report_store().get(request_id)
+    if not report:
+        raise HTTPException(404, detail=f"Report '{request_id}' not found.")
+    return {"markdown": to_compliance_markdown(report)}
 
 
 class CommentPRRequest(BaseModel):

@@ -8,6 +8,7 @@
 import * as vscode from 'vscode';
 
 const SECRET_KEY = 'gto.apiKey';
+const MODEL_SECRET_KEY = 'gto.modelApiKey';
 
 export function getBackendUrl(): string {
   const url = vscode.workspace.getConfiguration('gto').get<string>('backendUrl', 'http://localhost:8080');
@@ -75,4 +76,78 @@ export async function promptForApiKey(secrets: vscode.SecretStorage): Promise<st
   if (!key) return undefined;
   await setApiKey(secrets, key.trim());
   return key.trim();
+}
+
+// ── Model override — mirrors the web app's Configure → AI Model panel
+// (frontend/src/state.js's modelProvider/modelName/modelApiKey/modelBaseUrl/
+// modelApiVer, sent as `llm_config` in the request body). Entirely opt-in:
+// leaving gto.modelProvider unset sends no llm_config at all, byte-identical
+// to today's behaviour — the backend then uses whatever it's configured
+// with. The API key is a credential, so it goes through SecretStorage like
+// the main API key, never a plain setting.
+//
+// Two ways to pick a model, resolved in extension.ts's runAnalysis:
+//  1. gto.modelPreset — the PRIMARY path for a shared multi-user backend.
+//     Names a preset the admin already configured server-side (see
+//     config/settings.py's MODEL_PRESETS / GET /api/v1/model-presets in
+//     apiClient.ts::fetchModelPresets) — no credential ever leaves the
+//     server or touches this extension.
+//  2. gto.modelProvider/modelName/modelBaseUrl/modelApiVersion below — the
+//     ADVANCED/manual path, for a personal backend where you want to bring
+//     your own separate provider or endpoint. Only consulted when
+//     gto.modelPreset is empty.
+
+export interface ModelOverride {
+  provider: string;
+  model: string;
+  api_key: string;
+  base_url: string;
+  api_version: string;
+}
+
+export function getSelectedModelPreset(): string {
+  return (vscode.workspace.getConfiguration('gto').get<string>('modelPreset', '') || '').trim();
+}
+
+export async function setSelectedModelPreset(name: string): Promise<void> {
+  await vscode.workspace.getConfiguration('gto').update('modelPreset', name, vscode.ConfigurationTarget.Global);
+}
+
+/** The ADVANCED/manual override — undefined when gto.modelProvider is
+ * unset/empty (the common case: no gto.modelPreset either, so nothing is
+ * overridden at all). A blank api_key here is intentional, not an error: it
+ * tells the backend "use the configured env key for this provider" rather
+ * than supplying the caller's own — the same fallback the web app relies on.
+ * Only called when gto.modelPreset is empty — see extension.ts::runAnalysis. */
+export async function getModelOverride(secrets: vscode.SecretStorage): Promise<ModelOverride | undefined> {
+  const cfg = vscode.workspace.getConfiguration('gto');
+  const provider = (cfg.get<string>('modelProvider', '') || '').trim();
+  if (!provider) return undefined;
+  return {
+    provider,
+    model: (cfg.get<string>('modelName', '') || '').trim(),
+    api_key: (await getModelApiKey(secrets)) || '',
+    base_url: (cfg.get<string>('modelBaseUrl', '') || '').trim(),
+    api_version: (cfg.get<string>('modelApiVersion', '') || '').trim(),
+  };
+}
+
+export async function getModelApiKey(secrets: vscode.SecretStorage): Promise<string | undefined> {
+  return secrets.get(MODEL_SECRET_KEY);
+}
+
+export async function setModelApiKey(secrets: vscode.SecretStorage, key: string): Promise<void> {
+  await secrets.store(MODEL_SECRET_KEY, key);
+}
+
+export async function promptForModelApiKey(secrets: vscode.SecretStorage): Promise<void> {
+  const key = await vscode.window.showInputBox({
+    title: 'GTO — Model API Key',
+    prompt: 'API key for the model provider set in gto.modelProvider. Leave blank and press Enter to clear it (falls back to the backend\'s configured key).',
+    password: true,
+    ignoreFocusOut: true,
+  });
+  if (key === undefined) return; // Escape — leave the stored key untouched
+  await setModelApiKey(secrets, key.trim());
+  vscode.window.showInformationMessage(key.trim() ? 'GTO: model API key saved.' : 'GTO: model API key cleared.');
 }

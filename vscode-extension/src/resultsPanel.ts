@@ -5,13 +5,18 @@
 // theme the user has, light or dark, with zero extra theming code.
 
 import * as vscode from 'vscode';
-import { AnalysisReport, CorrelatedIssue, CodeFix, QAScenario } from './apiClient';
+import { AnalysisReport, CorrelatedIssue, CodeFix, QAScenario, submitFindingFeedback, ApiError } from './apiClient';
 import { parseFixLine, applyCodeFix } from './codeActions';
 import { fingerprint, SuppressedEntry, addSuppression, removeSuppression } from './reportState';
 
 export interface ReportViewOpts {
   suppressed: SuppressedEntry[];
   newFingerprints: Set<string>;
+  // Needed to call POST /report/{id}/feedback for "mark false positive" — the
+  // same reviewer feedback loop the web app's ResultsView already exposes.
+  // Optional so showLoading/showError (which never need it) stay unaffected.
+  backendUrl?: string;
+  apiKey?: string;
 }
 
 const GATE_META: Record<string, { label: string; color: string }> = {
@@ -32,6 +37,7 @@ export class ResultsPanel {
   private readonly panel: vscode.WebviewPanel;
   private readonly repoRoot: string;
   private report: AnalysisReport | undefined;
+  private opts: ReportViewOpts | undefined;
 
   private constructor(panel: vscode.WebviewPanel, repoRoot: string) {
     this.panel = panel;
@@ -56,8 +62,30 @@ export class ResultsPanel {
         this.panel.webview.postMessage({ command: 'unsuppressDone', fingerprint: msg.fingerprint });
       } else if (msg?.command === 'createTestFile') {
         await this.handleCreateTestFile(msg.affectedFile ?? '', msg.filename ?? '', msg.code ?? '');
+      } else if (msg?.command === 'markFalsePositive') {
+        await this.handleMarkFalsePositive(msg.fingerprint ?? '', msg.agent ?? '', msg.category ?? '', msg.file ?? '');
       }
     });
+  }
+
+  private async handleMarkFalsePositive(fp: string, agent: string, category: string, filePath: string): Promise<void> {
+    if (!this.report || !this.opts?.backendUrl || !this.opts?.apiKey) {
+      vscode.window.showErrorMessage('GTO: could not submit feedback — no active backend connection for this report.');
+      return;
+    }
+    try {
+      await submitFindingFeedback(this.opts.backendUrl, this.opts.apiKey, this.report.request_id, {
+        agent,
+        category,
+        file_path: filePath,
+        verdict: 'false_positive',
+      });
+      this.panel.webview.postMessage({ command: 'fpDone', fingerprint: fp });
+      vscode.window.setStatusBarMessage('GTO: recorded as false positive', 2500);
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : 'Could not submit feedback.';
+      vscode.window.showErrorMessage(`GTO: ${message}`);
+    }
   }
 
   private async handleSuppress(fp: string, filePath: string, line: number, title: string): Promise<void> {
@@ -129,7 +157,8 @@ export class ResultsPanel {
   static showReport(report: AnalysisReport, repoRoot: string, opts?: ReportViewOpts): void {
     const p = ResultsPanel.getOrCreate(repoRoot);
     p.report = report;
-    p.panel.webview.html = renderReport(report, opts ?? { suppressed: [], newFingerprints: new Set() });
+    p.opts = opts ?? { suppressed: [], newFingerprints: new Set() };
+    p.panel.webview.html = renderReport(report, p.opts);
   }
 
   private static getOrCreate(repoRoot: string): ResultsPanel {
@@ -291,6 +320,10 @@ function renderReport(r: AnalysisReport, opts: ReportViewOpts): string {
     .suppress-btn { background: none; border: none; color: var(--vscode-descriptionForeground); cursor: pointer;
       font-size: 11px; padding: 0; float: right; }
     .suppress-btn:hover { color: var(--vscode-errorForeground); text-decoration: underline; }
+    .fp-btn { background: none; border: none; color: var(--vscode-descriptionForeground); cursor: pointer;
+      font-size: 11px; padding: 0; float: right; margin-right: 12px; }
+    .fp-btn:hover { color: var(--vscode-editorWarning-foreground); text-decoration: underline; }
+    .fp-btn:disabled { cursor: default; text-decoration: none; }
     .suppressed-row { border-top: 1px solid var(--vscode-panel-border); padding: 6px 0; font-size: 12px;
       display: flex; justify-content: space-between; align-items: center; gap: 8px; }
     .suppressed-row .info { color: var(--vscode-descriptionForeground); }
@@ -384,6 +417,21 @@ function renderReport(r: AnalysisReport, opts: ReportViewOpts): string {
         });
       });
 
+      document.querySelectorAll('.fp-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          btn.disabled = true;
+          btn.textContent = 'Recording…';
+          vscode.postMessage({
+            command: 'markFalsePositive',
+            fingerprint: btn.dataset.fingerprint,
+            agent: btn.dataset.agent,
+            category: btn.dataset.category,
+            file: btn.dataset.file,
+          });
+        });
+      });
+
       window.addEventListener('message', (event) => {
         const msg = event.data;
         if (msg?.command === 'fixResult') {
@@ -410,6 +458,9 @@ function renderReport(r: AnalysisReport, opts: ReportViewOpts): string {
         } else if (msg?.command === 'unsuppressDone') {
           const row = document.querySelector('.suppressed-row[data-fingerprint="' + CSS.escape(msg.fingerprint) + '"]');
           if (row) row.remove();
+        } else if (msg?.command === 'fpDone') {
+          const btn = document.querySelector('.fp-btn[data-fingerprint="' + CSS.escape(msg.fingerprint) + '"]');
+          if (btn) { btn.textContent = 'Recorded ✓'; }
         }
       });
     </script>
@@ -496,8 +547,10 @@ function issueHtml(it: CorrelatedIssue, fix: CodeFix | undefined, isNew: boolean
   const clickable = it.file_path ? ` data-file="${escapeHtml(it.file_path)}" data-line="${it.line || 1}"` : '';
   const newTag = isNew ? ' <span class="new-tag">New</span>' : '';
   const suppressBtn = `<button class="suppress-btn" data-fingerprint="${escapeHtml(fp)}" data-file="${escapeHtml(it.file_path)}" data-line="${it.line || 0}" data-title="${escapeHtml(it.title)}" title="Suppress this finding — stops it reappearing on future runs">🚫 Ignore</button>`;
+  const fpBtn = `<button class="fp-btn" data-fingerprint="${escapeHtml(fp)}" data-agent="${escapeHtml(it.agents?.[0] ?? '')}" data-category="${escapeHtml(it.categories?.[0] ?? '')}" data-file="${escapeHtml(it.file_path)}" title="Mark as a false positive — after enough of these on this repo, GTO auto-suppresses this pattern on future runs (see the Insights tab in the web app)">🚩 False positive</button>`;
   return `<div class="issue" data-fingerprint="${escapeHtml(fp)}"${clickable}>
     ${suppressBtn}
+    ${fpBtn}
     <div class="issue-title">
       <span class="sev" style="color:${color}">${escapeHtml(it.severity || 'info')}</span>${escapeHtml(truncateAtWord(it.title, 240))}${newTag}
     </div>

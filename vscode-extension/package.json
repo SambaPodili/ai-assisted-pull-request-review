@@ -2,7 +2,7 @@
   "name": "gto-pr-review",
   "displayName": "GTO Pull Request Review Framework",
   "description": "Multi-agent PR review, risk gating & business-impact mapping — run it on your uncommitted changes without leaving the editor.",
-  "version": "0.10.1",
+  "version": "0.13.0",
   "publisher": "gto",
   "icon": "media/icon.png",
   "engines": {
@@ -30,8 +30,20 @@
         "title": "GTO: Set API Key"
       },
       {
+        "command": "gto.setModelApiKey",
+        "title": "GTO: Set Model API Key"
+      },
+      {
+        "command": "gto.selectModel",
+        "title": "GTO: Select Model"
+      },
+      {
         "command": "gto.showLastResult",
         "title": "GTO: Show Last Result"
+      },
+      {
+        "command": "gto.showLineIssues",
+        "title": "GTO: Show Issues on This Line"
       }
     ],
     "configuration": {
@@ -61,6 +73,40 @@
           "type": "boolean",
           "default": false,
           "description": "Automatically run 'GTO: Analyze Changes' (uncommitted diff, no priorities prompt) shortly after you save a file. Off by default — this makes an LLM-backed backend call on every save."
+        },
+        "gto.modelPreset": {
+          "type": "string",
+          "default": "",
+          "description": "Which admin-configured backend model preset to use (see the 'GTO: Select Model' command — easier than editing this directly). Empty = the backend's own default model. This is the recommended way to pick a model on a shared multi-user backend: no credential ever leaves the server. Takes priority over gto.modelProvider below when set."
+        },
+        "gto.modelProvider": {
+          "type": "string",
+          "enum": ["", "anthropic", "openai", "azure_openai", "ollama", "custom"],
+          "enumDescriptions": [
+            "Use whatever the backend is configured with (default — leaves every run unchanged).",
+            "Anthropic Claude — console.anthropic.com",
+            "OpenAI — platform.openai.com",
+            "Azure OpenAI — needs gto.modelBaseUrl set to your Azure resource endpoint.",
+            "Ollama (local) — needs gto.modelBaseUrl, e.g. http://localhost:11434. No API key needed.",
+            "Any OpenAI-compatible endpoint (org-deployed Llama, vLLM, LM Studio, Groq, Together AI, Fireworks, ...) — needs gto.modelBaseUrl."
+          ],
+          "default": "",
+          "description": "ADVANCED — a manual override for a personal backend with your own separate provider/endpoint. Ignored whenever gto.modelPreset is set. On a shared team backend, use 'GTO: Select Model' (gto.modelPreset) instead — that one needs no credential from you at all. Leave empty to use the backend's own configuration."
+        },
+        "gto.modelName": {
+          "type": "string",
+          "default": "",
+          "description": "ADVANCED — model name for gto.modelProvider, e.g. 'claude-sonnet-4-6', 'gpt-4o', 'llama3.2', or your own deployment name. Ignored when gto.modelProvider is empty or gto.modelPreset is set."
+        },
+        "gto.modelBaseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "ADVANCED — endpoint URL, only relevant alongside gto.modelProvider (azure_openai/ollama/custom need it; anthropic/openai ignore it). Leave empty on a shared backend with MODEL_PRESETS configured — presets already point at the right endpoint server-side."
+        },
+        "gto.modelApiVersion": {
+          "type": "string",
+          "default": "",
+          "description": "ADVANCED — API version string, only used for azure_openai (e.g. '2024-08-01-preview')."
         },
         "gto.excludePatterns": {
           "type": "array",

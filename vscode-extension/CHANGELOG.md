@@ -1,5 +1,77 @@
 # Changelog
 
+## 0.13.0
+
+- **CodeLens inline annotation** — findings now show as an inline "⚠ N GTO
+  issue(s)" annotation right above the flagged line, not just as squiggles/the
+  results panel. Click to view (or, for multiple issues on one line,
+  quick-pick between) the finding's full detail. Skipped for findings with no
+  resolvable line (a real case for some LLM-sourced findings) — a CodeLens
+  pinned to line 1 of an unrelated file would be more misleading than useful.
+- **Backend**: SARIF 2.1.0 export — `GET /report/{id}/sarif` — for GitHub code
+  scanning, SARIF viewers, or SIEM ingestion. Rule ids are built dynamically
+  per-report from each finding's CWE/category label.
+- **Backend**: one-click compliance report per PR — `GET
+  /report/{id}/compliance-report` (requires `audit:read`) — gate rationale,
+  human override history, full findings list, and suppression notes as a
+  single Markdown document. v1 is Markdown only (no PDF library in this repo
+  yet) and pulls override history from the existing override store, not a
+  full audit-log query (that read path doesn't exist yet either) — both
+  limits are stated in the document's own footer.
+- **Mark as false positive** — a "🚩 False positive" action on each issue card
+  in the results panel, using the same feedback loop the web app already has
+  (`POST /report/{id}/feedback`). After enough false-positive verdicts on the
+  same repo/agent/category, GTO auto-suppresses that pattern on future runs —
+  always visibly noted, never silent.
+- **Backend**: team-wide default `.gto.yaml` — set `TEAM_GTO_CONFIG_REPO` (+
+  optional `TEAM_GTO_CONFIG_REF`) to a shared repo, and its `.gto.yaml` is
+  merged into every webhook-triggered analysis alongside the target repo's
+  own file. Merged as a union, never a replacement — a team default can only
+  add restriction, the same narrows-never-widens rule a repo's own file
+  already follows; it can never loosen scrutiny a repo has set for itself.
+  Opt-in — unset by default, changes nothing.
+
+## 0.12.1
+
+- Cosmetic: Bitbucket Server/Data Center's `ssh://git@host:port/PROJ/repo.git`
+  remote format now normalizes to a clean `https://host/PROJ/repo` display
+  string, matching how GitHub/Bitbucket Cloud remotes already display —
+  previously shown as-is (`ssh://...`). Display only, never used for auth;
+  local `Analyze Changes`/`Analyze Branch` never touch Bitbucket credentials
+  at all — they only read your already-cloned local repo.
+
+## 0.12.0
+
+- **`GTO: Select Model`** — the correct fix for a shared multi-user backend
+  (v0.11.0's model-selection settings assumed a personal backend and required
+  each user to bring their own credential, which doesn't fit a team server
+  where the admin has already configured shared model access). This command
+  fetches admin-defined presets (e.g. "Llama", "Qwen") from a new backend
+  endpoint (`GET /api/v1/model-presets`, `config/settings.py`'s
+  `MODEL_PRESETS`) and lets you pick one — no API key or URL ever needs to
+  come from the extension; the backend already has it server-side. New
+  `gto.modelPreset` setting stores the choice. The v0.11.0 settings
+  (`gto.modelProvider`/`modelName`/`modelBaseUrl`/`modelApiVersion` +
+  `GTO: Set Model API Key`) remain available as an advanced manual override
+  for a personal backend with a separate provider, but are now clearly
+  secondary — ignored whenever `gto.modelPreset` is set.
+
+## 0.11.0
+
+- **Model selection** — new `gto.modelProvider`/`modelName`/`modelBaseUrl`/
+  `modelApiVersion` settings and a `GTO: Set Model API Key` command, mirroring
+  the web app's Configure → AI Model panel (`llm_config` on the request).
+  Entirely opt-in: leaving `gto.modelProvider` empty changes nothing.
+- **Backend**: Bitbucket Server/Data Center (self-hosted) support — diff
+  fetching (`ingestion/git_client.py`) and webhook parsing
+  (`ingestion/webhook_parser.py`) previously only understood Bitbucket
+  Cloud's API/payload shape; PR-triggered analysis and chat replies would
+  silently never fire on Server. Set `GIT_PROVIDER=bitbucket_server`,
+  `BITBUCKET_API_URL` to your server root, `BITBUCKET_WORKSPACE` as the
+  project-key fallback. Also wired the existing `GIT_SSL_NO_VERIFY` setting
+  into these REST calls (previously only used for git-clone), for a
+  corporate server behind a self-signed/internal-CA cert.
+
 ## 0.10.1
 
 - **Backend**: `path_review_summary` on the report — a safe, display-only

@@ -12,15 +12,24 @@ from core.models import AnalysisRequest, ChangeType, ReplyEvent
 
 def parse_bitbucket_webhook(event: str, payload: dict) -> AnalysisRequest | None:
     """
-    Map a Bitbucket webhook event to an AnalysisRequest.
+    Map a Bitbucket webhook event to an AnalysisRequest. Bitbucket Cloud and
+    Server/Data Center use ENTIRELY DIFFERENT event keys and payload shapes
+    for the same conceptual events (a PR opening, a branch being pushed) —
+    handled as two separate branches below, not a shared one.
 
-    Supported events:
-      pullrequest:created, pullrequest:updated, pullrequest:fulfilled
-      repo:push  (commit push)
+    Cloud events:  pullrequest:created, pullrequest:updated, pullrequest:fulfilled;
+                   repo:push
+    Server events: pr:opened, pr:modified, pr:merged; repo:refs_changed
+
+    NOTE: the Server branch is UNTESTED against a real Bitbucket Server
+    instance (none available in development) — payload shapes here follow
+    Atlassian's documented webhook format but haven't been exercised
+    end-to-end. If PR-triggered analysis doesn't fire on a real Server
+    instance, log the raw payload and compare against what's read below.
     """
     request_id = str(uuid.uuid4())
-    repo_url   = _bb_repo_url(payload)
 
+    # ── Bitbucket Cloud ──────────────────────────────────────────────────────
     if event in ("pullrequest:created", "pullrequest:updated", "pullrequest:fulfilled"):
         pr  = payload.get("pullrequest", {})
         src = _bb_nested(pr, "source",      "branch", "name")
@@ -28,7 +37,7 @@ def parse_bitbucket_webhook(event: str, payload: dict) -> AnalysisRequest | None
         return AnalysisRequest(
             request_id=request_id,
             change_type=ChangeType.PR,
-            repo_url=repo_url,
+            repo_url=_bb_repo_url(payload),
             source_ref=src,
             target_ref=dst,
             metadata={
@@ -36,10 +45,11 @@ def parse_bitbucket_webhook(event: str, payload: dict) -> AnalysisRequest | None
                 "pr_title": pr.get("title", ""),
                 "author":   _bb_nested(pr, "author", "display_name"),
                 "provider": "bitbucket",
+                "repo_slug": _bb_nested(payload, "repository", "full_name"),
             },
         )
 
-    if event in ("repo:push", "repo:refs_changed"):
+    if event == "repo:push":
         changes = payload.get("push", {}).get("changes", [{}])
         change  = changes[0] if changes else {}
         new_ref = _bb_nested(change, "new",    "name")  or "HEAD"
@@ -47,10 +57,54 @@ def parse_bitbucket_webhook(event: str, payload: dict) -> AnalysisRequest | None
         return AnalysisRequest(
             request_id=request_id,
             change_type=ChangeType.COMMIT,
-            repo_url=repo_url,
+            repo_url=_bb_repo_url(payload),
             source_ref=new_ref,
             target_ref=old_sha,
-            metadata={"provider": "bitbucket"},
+            metadata={"provider": "bitbucket", "repo_slug": _bb_nested(payload, "repository", "full_name")},
+        )
+
+    # ── Bitbucket Server / Data Center ───────────────────────────────────────
+    if event in ("pr:opened", "pr:modified", "pr:merged"):
+        pr   = payload.get("pullRequest", {})
+        src  = _bb_nested(pr, "fromRef", "displayId")
+        dst  = _bb_nested(pr, "toRef", "displayId") or "main"
+        proj = _bb_nested(pr, "toRef", "repository", "project", "key")
+        slug = _bb_nested(pr, "toRef", "repository", "slug")
+        return AnalysisRequest(
+            request_id=request_id,
+            change_type=ChangeType.PR,
+            repo_url=f"{proj}/{slug}" if proj and slug else slug,
+            source_ref=src,
+            target_ref=dst,
+            metadata={
+                "pr_id":     pr.get("id"),
+                "pr_title":  pr.get("title", ""),
+                "author":    _bb_nested(pr, "author", "user", "displayName"),
+                "provider":  "bitbucket_server",
+                # Server addresses a repo as "PROJECT_KEY/slug", not a single
+                # slug — see ingestion.git_client._split_project_repo, which
+                # this must match exactly for diff-fetching to resolve correctly.
+                "repo_slug": f"{proj}/{slug}" if proj and slug else slug,
+            },
+        )
+
+    if event == "repo:refs_changed":
+        changes = payload.get("changes", [{}])
+        change  = changes[0] if changes else {}
+        new_ref = _bb_nested(change, "ref", "displayId") or "HEAD"
+        old_sha = change.get("fromHash") or "HEAD~1"
+        proj = _bb_nested(payload, "repository", "project", "key")
+        slug = _bb_nested(payload, "repository", "slug")
+        return AnalysisRequest(
+            request_id=request_id,
+            change_type=ChangeType.COMMIT,
+            repo_url=f"{proj}/{slug}" if proj and slug else slug,
+            source_ref=new_ref,
+            target_ref=old_sha,
+            metadata={
+                "provider": "bitbucket_server",
+                "repo_slug": f"{proj}/{slug}" if proj and slug else slug,
+            },
         )
 
     return None   # unsupported event
@@ -168,35 +222,68 @@ def parse_bitbucket_comment_webhook(event: str, payload: dict) -> ReplyEvent | N
 
     Supported events:
       pullrequest:comment_created (Bitbucket Cloud)
+      pr:comment:added            (Bitbucket Server/Data Center — UNTESTED
+                                   against a real Server instance, see
+                                   parse_bitbucket_webhook's module note)
 
     NOTE: Bitbucket's webhook payload has no standardized bot-account marker
     the way GitHub's `user.type == "Bot"` does — is_bot is always False here.
     Rate-limiting (governance/reply_answerer.py) is the backstop for this
     provider, not the is_bot guard.
     """
-    if event != "pullrequest:comment_created":
-        return None
+    if event == "pullrequest:comment_created":
+        pr      = payload.get("pullrequest", {})
+        comment = payload.get("comment", {})
+        repo_slug = payload.get("repository", {}).get("full_name", "")
+        pr_id     = str(pr.get("id", ""))
+        body      = _bb_nested(comment, "content", "raw")
+        parent_id = comment.get("parent", {}).get("id") if isinstance(comment.get("parent"), dict) else None
 
-    pr      = payload.get("pullrequest", {})
-    comment = payload.get("comment", {})
-    repo_slug = payload.get("repository", {}).get("full_name", "")
-    pr_id     = str(pr.get("id", ""))
-    body      = _bb_nested(comment, "content", "raw")
-    parent_id = comment.get("parent", {}).get("id") if isinstance(comment.get("parent"), dict) else None
+        if not repo_slug or not pr_id or not comment.get("id"):
+            return None
 
-    if not repo_slug or not pr_id or not comment.get("id"):
-        return None
+        return ReplyEvent(
+            provider=      "bitbucket",
+            repo_slug=     repo_slug,
+            pr_id=         pr_id,
+            comment_id=    str(comment.get("id")),
+            in_reply_to_id=str(parent_id) if parent_id is not None else None,
+            body=          body,
+            author=        _bb_nested(comment, "user", "display_name"),
+            is_bot=        False,
+        )
 
-    return ReplyEvent(
-        provider=      "bitbucket",
-        repo_slug=     repo_slug,
-        pr_id=         pr_id,
-        comment_id=    str(comment.get("id")),
-        in_reply_to_id=str(parent_id) if parent_id is not None else None,
-        body=          body,
-        author=        _bb_nested(comment, "user", "display_name"),
-        is_bot=        False,
-    )
+    if event == "pr:comment:added":
+        pr      = payload.get("pullRequest", {})
+        comment = payload.get("comment", {})
+        proj = _bb_nested(pr, "toRef", "repository", "project", "key")
+        slug = _bb_nested(pr, "toRef", "repository", "slug")
+        repo_slug = f"{proj}/{slug}" if proj and slug else slug
+        pr_id     = str(pr.get("id", ""))
+        body      = comment.get("text", "") or ""
+        parent_id = comment.get("parent", {}).get("id") if isinstance(comment.get("parent"), dict) else None
+
+        if not repo_slug or not pr_id or not comment.get("id"):
+            return None
+
+        return ReplyEvent(
+            # NOT "bitbucket_server" — ReplyEvent.provider is a correlation
+            # key into pr_comment_map, which output/pr_commenter.py always
+            # normalises Cloud/Server down to "bitbucket" when recording a
+            # posted comment (see post_inline_comments's `_provider_key`).
+            # This must match that normalisation or a reply on Server would
+            # never resolve to the finding it's replying to.
+            provider=      "bitbucket",
+            repo_slug=     repo_slug,
+            pr_id=         pr_id,
+            comment_id=    str(comment.get("id")),
+            in_reply_to_id=str(parent_id) if parent_id is not None else None,
+            body=          body,
+            author=        _bb_nested(comment, "author", "displayName"),
+            is_bot=        False,
+        )
+
+    return None
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
