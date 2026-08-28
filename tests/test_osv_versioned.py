@@ -8,7 +8,9 @@ ever filed against the package (which over-reports fixed vulns).
 from unittest.mock import patch
 
 from core.models import AnalysisRequest, ChangeType, DiffHunk
-from agents.dependency_agent import _extract_versioned_packages, _osv_lookup, _clean_ver
+from agents.dependency_agent import (
+    _extract_versioned_packages, _osv_lookup, _clean_ver, DependencyMappingAgent,
+)
 from ingestion.osv_client import OsvVuln
 
 
@@ -66,15 +68,43 @@ def test_osv_lookup_uses_versioned_query():
          patch("ingestion.osv_client.query_versioned", fake_versioned), \
          patch("ingestion.osv_client.query_batch", return_value={}):
         gs.return_value.osv_enabled = True
-        cves = _osv_lookup(["requests"], req)
+        cves, findings = _osv_lookup(["requests"], req)
 
     # the pinned version was passed through to OSV
     assert ("requests", "PyPI", "2.19.0") in captured["items"]
     assert cves == ["CVE-2018-18074"]
+    assert len(findings) == 1
+    assert findings[0].package == "requests"
+    assert findings[0].cve_id == "CVE-2018-18074"
+    assert findings[0].severity == "HIGH"
 
 
 def test_osv_lookup_disabled_returns_empty():
     req = _req("requirements.txt", "python", "@@ -1 +1 @@\n+requests==2.19.0\n")
     with patch("config.settings.get_settings") as gs:
         gs.return_value.osv_enabled = False
-        assert _osv_lookup(["requests"], req) == []
+        assert _osv_lookup(["requests"], req) == ([], [])
+
+
+def test_notes_not_written_when_osv_found_cves_on_llm_fallback():
+    """Regression (found via live validation): the agent claimed "no known
+    CVEs ... identified" even when OSV had just found real ones, because the
+    empty-remit notes guard didn't check cve_hits before writing that message —
+    only affected_services/blast_radius_score, which OSV-only CVE hits (no
+    graph, no declared dependents) never touch."""
+    from core.models import CveFinding
+    from core.token_manager import TokenBudgetManager
+
+    req = _req("requirements.txt", "python", "@@ -1 +1 @@\n+requests==2.19.0\n")
+    agent  = DependencyMappingAgent(api_key=None)
+    budget = TokenBudgetManager(request_id="t", custom_budgets={"dependency": 0, "_reserve": 0})
+
+    with patch("agents.dependency_agent._osv_lookup", return_value=(
+        ["CVE-2018-18074"],
+        [CveFinding(package="requests", cve_id="CVE-2018-18074",
+                     severity="HIGH", fixed_version="2.20.0")],
+    )):
+        result = agent.run(req, budget)
+
+    assert result.cve_hits == ["CVE-2018-18074"]
+    assert not any("no known CVEs" in n or "no downstream services" in n for n in result.notes)

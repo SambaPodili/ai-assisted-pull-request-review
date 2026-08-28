@@ -7,7 +7,7 @@ a reply/new comment, not a new diff). Pure functions — no I/O, no HTTP calls.
 """
 from __future__ import annotations
 import uuid
-from core.models import AnalysisRequest, ChangeType, ReplyEvent
+from core.models import AnalysisRequest, ChangeType, ReplyEvent, PRMetadata
 
 
 def parse_bitbucket_webhook(event: str, payload: dict) -> AnalysisRequest | None:
@@ -40,6 +40,13 @@ def parse_bitbucket_webhook(event: str, payload: dict) -> AnalysisRequest | None
             repo_url=_bb_repo_url(payload),
             source_ref=src,
             target_ref=dst,
+            pr=PRMetadata(
+                pr_number=pr.get("id") or 0,
+                pr_title=pr.get("title", "") or "",
+                author=_bb_nested(pr, "author", "display_name"),
+                base_sha=_bb_nested(pr, "destination", "commit", "hash"),
+                head_sha=_bb_nested(pr, "source", "commit", "hash"),
+            ),
             metadata={
                 "pr_id":    pr.get("id"),
                 "pr_title": pr.get("title", ""),
@@ -76,6 +83,13 @@ def parse_bitbucket_webhook(event: str, payload: dict) -> AnalysisRequest | None
             repo_url=f"{proj}/{slug}" if proj and slug else slug,
             source_ref=src,
             target_ref=dst,
+            pr=PRMetadata(
+                pr_number=pr.get("id") or 0,
+                pr_title=pr.get("title", "") or "",
+                author=_bb_nested(pr, "author", "user", "displayName"),
+                base_sha=_bb_nested(pr, "toRef", "latestCommit"),
+                head_sha=_bb_nested(pr, "fromRef", "latestCommit"),
+            ),
             metadata={
                 "pr_id":     pr.get("id"),
                 "pr_title":  pr.get("title", ""),
@@ -134,6 +148,13 @@ def parse_github_webhook(event: str, payload: dict) -> AnalysisRequest | None:
             repo_url=repo_url,
             source_ref=src,
             target_ref=dst,
+            pr=PRMetadata(
+                pr_number=pr.get("number") or 0,
+                pr_title=pr.get("title", "") or "",
+                author=_gh_nested(pr, "user", "login"),
+                base_sha=_gh_nested(pr, "base", "sha"),
+                head_sha=_gh_nested(pr, "head", "sha"),
+            ),
             metadata={
                 "pr_id":       pr.get("number"),
                 "pr_title":    pr.get("title", ""),

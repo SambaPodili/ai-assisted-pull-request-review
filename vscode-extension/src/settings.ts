@@ -9,10 +9,24 @@ import * as vscode from 'vscode';
 
 const SECRET_KEY = 'gto.apiKey';
 const MODEL_SECRET_KEY = 'gto.modelApiKey';
+const BITBUCKET_SECRET_KEY = 'gto.bitbucketToken';
 
 export function getBackendUrl(): string {
   const url = vscode.workspace.getConfiguration('gto').get<string>('backendUrl', 'http://localhost:8080');
   return url.replace(/\/+$/, '');
+}
+
+/** Which provider "Post to PR"/"Approve PR" target — matches the backend's
+ * own GIT_PROVIDER setting so repo_slug/URL shapes line up. Only relevant to
+ * those two report-level actions; local Analyze Changes/Branch never needs it. */
+export function getGitProvider(): 'github' | 'bitbucket' | 'bitbucket_server' {
+  return vscode.workspace.getConfiguration('gto').get('gitProvider', 'github');
+}
+
+/** Pre-push hook behavior — "warn" (default, never blocks) or "block"
+ * (refuses the push on a BLOCK-severity finding). See gitHook.ts. */
+export function getGitHookMode(): 'warn' | 'block' {
+  return vscode.workspace.getConfiguration('gto').get('gitHookMode', 'warn');
 }
 
 export type AgentPreset = 'fast' | 'standard' | 'thorough';
@@ -150,4 +164,30 @@ export async function promptForModelApiKey(secrets: vscode.SecretStorage): Promi
   if (key === undefined) return; // Escape — leave the stored key untouched
   await setModelApiKey(secrets, key.trim());
   vscode.window.showInformationMessage(key.trim() ? 'GTO: model API key saved.' : 'GTO: model API key cleared.');
+}
+
+/** Personal Bitbucket/GitHub access token — used ONLY for "Approve PR"
+ * (resultsPanel.ts::handleApprovePr), never for "Post to PR" (which
+ * deliberately uses the backend's shared bot credential instead — see
+ * apiClient.ts::postFindingsToPR). Approving as the shared bot would defeat
+ * the entire point of this feature: the approval must show as YOU on the
+ * PR, for audit/compliance purposes, not "GTO Bot". */
+export async function getBitbucketToken(secrets: vscode.SecretStorage): Promise<string | undefined> {
+  return secrets.get(BITBUCKET_SECRET_KEY);
+}
+
+export async function setBitbucketToken(secrets: vscode.SecretStorage, key: string): Promise<void> {
+  await secrets.store(BITBUCKET_SECRET_KEY, key);
+}
+
+export async function promptForBitbucketToken(secrets: vscode.SecretStorage): Promise<void> {
+  const key = await vscode.window.showInputBox({
+    title: 'GTO — Personal Git Provider Token',
+    prompt: 'Your own Bitbucket/GitHub access token, used only for "Approve PR" so the approval shows as you, not the shared bot. Stored securely in your OS keychain.',
+    password: true,
+    ignoreFocusOut: true,
+  });
+  if (key === undefined) return; // Escape — leave the stored token untouched
+  await setBitbucketToken(secrets, key.trim());
+  vscode.window.showInformationMessage(key.trim() ? 'GTO: personal token saved.' : 'GTO: personal token cleared.');
 }

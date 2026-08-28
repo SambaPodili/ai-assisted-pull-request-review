@@ -9,7 +9,7 @@ import pytest
 
 from core.models import (
     AnalysisReport, ChangeType, GateDecision, RiskLevel,
-    RiskResult, SecurityResult, SecurityFinding, DependencyResult,
+    RiskResult, SecurityResult, SecurityFinding, DependencyResult, CveFinding,
     InterfaceResult, ContractBreak, TestCoverageResult, ReferenceImpactResult, SymbolReference,
     CodeAnalysisResult, CodeFinding,
 )
@@ -113,9 +113,45 @@ def test_coverage_drop_thresholds():
 
 
 def test_cve_forces_block():
+    """No structured severity data (cve_findings empty) — fail-safe: any CVE blocks,
+    same as before severity-tiering existed."""
     r = _report(risk=_risk(GateDecision.APPROVE),
                 dependency=DependencyResult(cve_hits=["CVE-2023-32681"]))
     assert evaluate_policy(r).gate == GateDecision.BLOCK
+
+
+def test_cve_critical_forces_block():
+    r = _report(risk=_risk(GateDecision.APPROVE), dependency=DependencyResult(
+        cve_hits=["CVE-2023-1"],
+        cve_findings=[CveFinding(package="lodash", cve_id="CVE-2023-1",
+                                  severity="CRITICAL", fixed_version="4.17.21")]))
+    res = evaluate_policy(r)
+    assert res.gate == GateDecision.BLOCK
+    assert any("CVE-2023-1" in reason for reason in res.reasons)
+
+
+def test_cve_medium_only_holds_not_blocks():
+    r = _report(risk=_risk(GateDecision.APPROVE), dependency=DependencyResult(
+        cve_hits=["CVE-2023-2"],
+        cve_findings=[CveFinding(package="foo", cve_id="CVE-2023-2", severity="MEDIUM")]))
+    res = evaluate_policy(r)
+    assert res.gate == GateDecision.HOLD
+
+
+def test_cve_low_is_informational_only():
+    r = _report(risk=_risk(GateDecision.APPROVE), dependency=DependencyResult(
+        cve_hits=["CVE-2023-3"],
+        cve_findings=[CveFinding(package="bar", cve_id="CVE-2023-3", severity="LOW")]))
+    res = evaluate_policy(r)
+    assert res.gate == GateDecision.APPROVE
+
+
+def test_cve_unrated_severity_fails_safe_to_block():
+    r = _report(risk=_risk(GateDecision.APPROVE), dependency=DependencyResult(
+        cve_hits=["CVE-2023-4"],
+        cve_findings=[CveFinding(package="baz", cve_id="CVE-2023-4", severity="")]))
+    res = evaluate_policy(r)
+    assert res.gate == GateDecision.BLOCK
 
 
 def test_taint_injection_forces_block():

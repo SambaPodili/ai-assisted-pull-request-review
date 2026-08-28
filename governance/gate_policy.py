@@ -141,10 +141,31 @@ def evaluate_policy(report: AnalysisReport, settings=None) -> PolicyResult:
     if sc and getattr(sc, "has_destructive", False) and getattr(sc, "has_irreversible", False):
         block_reasons.append("Destructive AND irreversible database migration (data-loss risk)")
 
-    # Dependency CVEs (known vulnerabilities shipped)
+    # Dependency CVEs (known vulnerabilities shipped) — severity-tiered:
+    # CRITICAL/HIGH (and unrated, fail-safe) BLOCK; MEDIUM only HOLDs; LOW is
+    # informational (still visible in the report, doesn't gate). Falls back to
+    # the old any-CVE-BLOCKs behavior when cve_findings isn't populated (older
+    # cached reports, or a DependencyResult built with cve_hits only, e.g. an
+    # LLM-only run where OSV enrichment couldn't attach severity).
     dep = report.dependency
-    if dep and getattr(dep, "cve_hits", None):
-        block_reasons.append(f"{len(dep.cve_hits)} known CVE(s) in changed dependencies")
+    cve_findings = getattr(dep, "cve_findings", None) or [] if dep else []
+    if cve_findings:
+        severe = [c for c in cve_findings if _is_high_or_critical(c.severity) or not c.severity]
+        medium = [c for c in cve_findings if (c.severity or "").lower() == "medium"]
+        if severe:
+            block_reasons.append(
+                f"{len(severe)} CRITICAL/HIGH (or unrated) CVE(s) in changed dependencies: "
+                + ", ".join(f"{c.cve_id} in {c.package}" for c in severe[:5])
+            )
+        if medium:
+            hold_reasons.append(
+                f"{len(medium)} MEDIUM-severity CVE(s) in changed dependencies: "
+                + ", ".join(f"{c.cve_id} in {c.package}" for c in medium[:5])
+            )
+    elif dep and getattr(dep, "cve_hits", None):
+        block_reasons.append(
+            f"{len(dep.cve_hits)} known CVE(s) in changed dependencies (severity unavailable)"
+        )
 
     # Licence: viral copyleft in proprietary code
     lic = report.license_compliance

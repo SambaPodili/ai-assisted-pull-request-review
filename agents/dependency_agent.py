@@ -15,7 +15,7 @@ from typing import Any
 
 from core.models import (
     AgentName, AnalysisRequest,
-    DependencyResult, DependencyNode,
+    DependencyResult, DependencyNode, CveFinding,
 )
 from core.token_manager import trim_diff_for_budget
 from agents.base_agent import BaseAgent
@@ -141,12 +141,13 @@ class DependencyMappingAgent(BaseAgent[DependencyResult]):
         result = _merge_declared_dependents(result, request)
 
         # Enrich CVE hits via OSV.dev (no auth, free API)
-        result.cve_hits = _osv_lookup(changed_packages, request)
+        result.cve_hits, result.cve_findings = _osv_lookup(changed_packages, request)
 
         # When nothing falls in this agent's remit, explain why instead of
         # returning an empty object (which judges/reviewers read as a miss).
         has_manifest = any(_is_manifest(h.file_path) for h in request.hunks)
-        if not result.notes and not result.affected_services and result.blast_radius_score == 0:
+        if (not result.notes and not result.affected_services
+                and result.blast_radius_score == 0 and not result.cve_hits):
             if not has_manifest:
                 result.notes = [
                     "No dependency manifest (pom.xml, build.gradle, package.json, "
@@ -258,8 +259,14 @@ def _merge_declared_dependents(result: DependencyResult, request: AnalysisReques
     return result
 
 
-def _osv_lookup(packages: list[str], request: AnalysisRequest) -> list[str]:
-    """Return CVE IDs for changed packages via OSV.dev. Silent on failure.
+def _osv_lookup(
+    packages: list[str], request: AnalysisRequest,
+) -> tuple[list[str], list[CveFinding]]:
+    """Return (CVE IDs, structured CveFindings) for changed packages via OSV.dev.
+    Silent on failure. cve_hits stays a bare list of IDs for backward
+    compatibility with existing callers; cve_findings additionally carries
+    severity + fixed_version so the gate/report can act on how bad each one
+    actually is instead of treating every CVE as equally severe.
 
     Precision: where a manifest pins an exact version we query OSV WITH that
     version (query_versioned), so only CVEs actually affecting the pinned version
@@ -270,23 +277,24 @@ def _osv_lookup(packages: list[str], request: AnalysisRequest) -> list[str]:
     try:
         from config.settings import get_settings
         if not get_settings().osv_enabled:
-            return []
+            return [], []
     except Exception:
-        return []
+        return [], []
 
     try:
         from ingestion.osv_client import (
-            query_versioned, query_batch, lookup_multi_ecosystem, cve_ids as _cve_ids,
+            query_versioned, query_batch, lookup_multi_ecosystem,
+            cve_ids as _cve_ids, cve_findings as _cve_findings,
         )
         versioned, name_only = _extract_versioned_packages(request)
-        ids: list[str] = []
+        all_vulns = []
 
         if versioned:
             vres = query_versioned(versioned)                       # exact-version match
-            ids += _cve_ids([v for lst in vres.values() for v in lst])
+            all_vulns += [v for lst in vres.values() for v in lst]
         if name_only:
             bres = query_batch(name_only)                          # name-only (no version)
-            ids += _cve_ids([v for lst in bres.values() for v in lst])
+            all_vulns += [v for lst in bres.values() for v in lst]
 
         # Last resort: nothing parsed from manifests but the caller has names.
         if not versioned and not name_only and packages:
@@ -296,13 +304,18 @@ def _osv_lookup(packages: list[str], request: AnalysisRequest) -> list[str]:
                     lang_pkgs.setdefault(hunk.language, []).extend(packages)
             if not lang_pkgs:
                 lang_pkgs["python"] = packages
-            ids += _cve_ids(lookup_multi_ecosystem(lang_pkgs))
+            all_vulns += lookup_multi_ecosystem(lang_pkgs)
 
-        return list(dict.fromkeys(ids))
+        ids = list(dict.fromkeys(_cve_ids(all_vulns)))
+        findings = [
+            CveFinding(package=pkg, cve_id=cid, severity=sev, fixed_version=fixed)
+            for pkg, cid, sev, fixed in _cve_findings(all_vulns)
+        ]
+        return ids, findings
     except Exception as exc:
         import logging
         logging.getLogger(__name__).debug("OSV lookup failed: %s", exc)
-        return []
+        return [], []
 
 
 def _is_manifest(path: str) -> bool:

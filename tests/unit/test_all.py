@@ -61,7 +61,14 @@ class TestTokenBudgetManager:
     def test_model_selection(self):
         bm = TokenBudgetManager("t5")
         assert "sonnet" in bm.select_model("security").lower()
-        assert "haiku"  in bm.select_model("code_analysis").lower()
+        # code_analysis/maintainability/ast_analysis moved to the strong model —
+        # general bug-hunting and code-quality review benefit from stronger
+        # reasoning the same way security/risk do (see core/token_manager.py's
+        # _STRONG_AGENTS comment for why).
+        assert "sonnet" in bm.select_model("code_analysis").lower()
+        assert "sonnet" in bm.select_model("maintainability").lower()
+        assert "sonnet" in bm.select_model("ast_analysis").lower()
+        assert "haiku"  in bm.select_model("dependency").lower()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -29,8 +29,9 @@ class Permission(str, Enum):
     ANALYSIS_SUBMIT = "analysis:submit"
     ANALYSIS_READ   = "analysis:read"
     ANALYSIS_DELETE = "analysis:delete"
-    GATE_OVERRIDE   = "gate:override"     # approve / block a PR
+    GATE_OVERRIDE   = "gate:override"     # override the GTO gate decision (APPROVE/HOLD/BLOCK)
     PR_COMMENT      = "pr:comment"        # post findings to GitHub / Bitbucket PR
+    PR_APPROVE      = "pr:approve"        # reviewer sign-off on the PR itself — not a gate override
     ADMIN_CONFIG    = "admin:config"
     USER_MANAGE     = "user:manage"       # create/revoke users (hierarchy-limited)
     AUDIT_READ      = "audit:read"
@@ -66,6 +67,7 @@ _ROLE_PERMISSIONS: dict[Role, set[Permission]] = {
         Permission.ANALYSIS_DELETE,
         Permission.GATE_OVERRIDE,
         Permission.PR_COMMENT,
+        Permission.PR_APPROVE,
         Permission.METRICS_READ,
         Permission.AUDIT_READ,
     },
@@ -76,6 +78,7 @@ _ROLE_PERMISSIONS: dict[Role, set[Permission]] = {
         Permission.ANALYSIS_READ,
         Permission.GATE_OVERRIDE,
         Permission.PR_COMMENT,
+        Permission.PR_APPROVE,
         Permission.METRICS_READ,
     },
 

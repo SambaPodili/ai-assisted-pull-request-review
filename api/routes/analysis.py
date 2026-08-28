@@ -743,6 +743,56 @@ def get_compliance_report(
     return {"markdown": to_compliance_markdown(report)}
 
 
+class ExplainFindingRequest(BaseModel):
+    agent:     str = ""
+    category:  str = ""
+    file_path: str = ""
+    title:     str = ""
+
+
+_EXPLAIN_QUESTION = "Explain why this was flagged and what a reviewer should check before dismissing it."
+
+
+@router.post("/report/{request_id}/explain-finding")
+def explain_finding(
+    request_id: str,
+    body: ExplainFindingRequest,
+    subject: Subject = Depends(get_current_subject),
+):
+    """
+    "Explain this finding" — same guardrailed Q&A engine already built for PR
+    chat replies (governance/reply_answerer.py), reused with a FIXED, never
+    user-typed question. No new free-text-from-request surface: reply_text is
+    a hardcoded constant, so there's nothing here for prompt_guard to need to
+    catch that it doesn't already trivially pass.
+    """
+    from api.app import get_report_store
+    from governance.reply_answerer import answer_reply
+
+    report = get_report_store().get(request_id)
+    if not report:
+        raise HTTPException(404, detail=f"Report '{request_id}' not found.")
+
+    finding_context: dict = {}
+    for issue in report.top_issues or []:
+        if body.title and issue.title == body.title:
+            finding_context = issue.model_dump()
+            break
+        if not body.title and issue.file_path == body.file_path and body.agent in (issue.agents or []):
+            finding_context = issue.model_dump()
+            break
+
+    report_summary = {
+        "repo":     report.repo_url,
+        "gate":     report.gate_decision.value if report.gate_decision else "",
+        "risk":     report.final_risk.value if report.final_risk else "",
+        "summary":  report.code_analysis.summary if report.code_analysis else "",
+    }
+
+    answer = answer_reply(reply_text=_EXPLAIN_QUESTION, finding_context=finding_context, report_summary=report_summary)
+    return {"answer": answer}
+
+
 class CommentPRRequest(BaseModel):
     provider:    str = "github"      # github | bitbucket | bitbucket_server
     token:       str = ""
@@ -771,7 +821,33 @@ def comment_pr(
         raise HTTPException(404, detail=f"Report '{request_id}' not found.")
 
     from output.pr_commenter import _normalise_api_url, InsufficientScopeError
-    normalised_url = _normalise_api_url(body.base_url, body.provider)
+
+    # Blank token/provider means "use the server's own shared bot credential" —
+    # the same one webhook-triggered comments already post under
+    # (make_pr_commenter, output/pr_commenter.py:1109-1118). Mirrors the
+    # established "blank client override falls back to server config"
+    # convention already used for model config
+    # (agents/base_agent.py::_resolve_model_config). A caller that DOES supply
+    # its own token (the web app's Post to PR today) is unaffected — this
+    # only fills gaps, never overrides an explicit value.
+    provider = body.provider or ""
+    token = body.token
+    base_url = body.base_url
+    workspace = body.workspace
+    if not token:
+        from config.settings import get_settings
+        cfg = get_settings()
+        provider = provider or cfg.git_provider
+        if provider.startswith("bitbucket"):
+            token = cfg.bitbucket_token
+            base_url = base_url or cfg.bitbucket_api_url
+            workspace = workspace or cfg.bitbucket_workspace
+        else:
+            token = cfg.github_token
+            base_url = base_url or cfg.github_api_url
+    provider = provider or "github"
+
+    normalised_url = _normalise_api_url(base_url, provider)
 
     pid  = body.pr_id or ""
     slug = body.repo_slug or ""
@@ -784,9 +860,9 @@ def comment_pr(
         # the overall PR-level summary in a single coordinated call.
         total_posted = post_inline_comments(
             report=report,
-            token=body.token,
-            provider=body.provider,
-            workspace=body.workspace,
+            token=token,
+            provider=provider,
+            workspace=workspace,
             base_url=normalised_url,
             repo_slug=slug,
             pr_id=pid,

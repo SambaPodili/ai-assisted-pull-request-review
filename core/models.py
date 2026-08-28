@@ -264,11 +264,24 @@ class DependencyNode(BaseModel):
     critical: bool = False   # used by 3+ downstream services
 
 
+class CveFinding(BaseModel):
+    """One CVE against one changed package, with the data needed to gate on
+    severity and to tell the reviewer what to do about it — as opposed to
+    `cve_hits`, which is just a bare list of IDs. severity is "" when OSV
+    couldn't classify it (unrated advisory); treat that as worst-case, not
+    as "safe", in any gating logic."""
+    package:        str
+    cve_id:         str
+    severity:       str = ""   # CRITICAL | HIGH | MEDIUM | LOW | ""
+    fixed_version:  str = ""   # "" when no fix is published yet
+
+
 class DependencyResult(AgentResultBase):
     affected_services:   list[str] = []
     blast_radius_score:  int = 0     # 0-100
     dependency_nodes:    list[DependencyNode] = []
     cve_hits:            list[str] = []
+    cve_findings:        list[CveFinding] = []
     changed_packages:    list[str] = []
     # Plain-English rationale when there is nothing in this agent's remit, so an
     # out-of-scope diff reads as an explanation rather than an empty object.
@@ -366,6 +379,10 @@ class RemediationResult(AgentResultBase):
     validation_checklist: list[str] = []
     deployment_strategy:  DeploymentStrategy = DeploymentStrategy.STANDARD
     executive_summary:    str = ""
+    # 2-4 sentences narrating WHAT the PR changes and WHY, for the PR comment's
+    # own opening — distinct from executive_summary (deployment-risk/CTO framed)
+    # and risk.rationale (explains the gate/risk decision, not the change itself).
+    pr_walkthrough:       str = ""
 
 
 class FSDRequirement(BaseModel):

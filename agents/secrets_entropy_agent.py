@@ -88,6 +88,26 @@ _HEX_BLOB = re.compile(r'["\']([0-9a-fA-F]{32,})["\']')
 # Base64 blobs 40+ chars
 _B64_BLOB = re.compile(r'["\']([A-Za-z0-9+/]{40,}={0,2})["\']')
 
+# Unquoted KEY=value / key: value assignment — the dominant secret shape in
+# .env, .properties, .yaml/.yml, .toml, .tfvars, .ini/.conf files, which never
+# quote their values. _STRING_LITERAL/_HEX_BLOB/_B64_BLOB above all require
+# surrounding quotes, so a raw "DB_PASSWORD=Xk9#mQ2..." line in a .env file was
+# previously invisible to every layer except a known-prefix hit. Gated to
+# env-style files (below) so it doesn't fire on ordinary unquoted code tokens.
+_ENV_ASSIGNMENT = re.compile(r'^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_.\-]*)\s*[:=]\s*([^\s#"\']{16,})\s*(?:#.*)?$')
+
+_ENV_STYLE_EXTENSIONS = (
+    ".env", ".properties", ".yaml", ".yml", ".toml", ".tfvars", ".ini", ".cfg", ".conf",
+)
+
+
+def _is_env_style_file(file_path: str) -> bool:
+    name = (file_path or "unknown").lower().split("/")[-1]
+    if name == ".env" or name.startswith(".env."):
+        return True
+    return any(name.endswith(ext) for ext in _ENV_STYLE_EXTENSIONS)
+
+
 # Variable names that suggest secrets (used to contextualise entropy hits)
 _SECRET_VARIABLE_NAMES = re.compile(
     r'(?i)(password|passwd|pwd|secret|token|api_key|apikey|auth|credential|'
@@ -253,6 +273,34 @@ class SecretsEntropyAgent(BaseAgent[SecretsEntropyResult]):
                     variable=_extract_variable(content),
                 ))
                 high_entropy_count += 1
+
+            # ── Layer 2b: unquoted env-style assignment (.env, .yaml, .properties, …) ──
+            current_file = _guess_file(lines, line_no)
+            if _is_env_style_file(current_file):
+                m = _ENV_ASSIGNMENT.match(content)
+                if m:
+                    var, s = m.group(1), m.group(2)
+                    if (len(s) >= MIN_SECRET_LENGTH and not _SAFE_PATTERNS.search(s)
+                            and not any(p in s or s in p for p in prefix_hits)):
+                        e = shannon_entropy(s)
+                        is_secret_var = bool(_SECRET_VARIABLE_NAMES.search(content))
+                        if e >= ENTROPY_THRESHOLD and not (
+                                _looks_like_identifier(s) and e < 4.3 and not is_secret_var):
+                            severity = (
+                                RiskLevel.CRITICAL if e >= HIGH_SEVERITY_ENTROPY or is_secret_var
+                                else RiskLevel.HIGH if e >= 4.0
+                                else RiskLevel.MEDIUM
+                            )
+                            findings.append(EntropyFinding(
+                                file_path=current_file,
+                                line=src_line,
+                                value=s[:6] + "...",
+                                entropy=round(e, 2),
+                                kind="high_entropy",
+                                severity=severity,
+                                variable=var,
+                            ))
+                            high_entropy_count += 1
 
             # ── Layer 3: Base64 / hex blobs ───────────────────────────────────
             for pattern, kind in [(_B64_BLOB, "base64_blob"), (_HEX_BLOB, "hex_key")]:

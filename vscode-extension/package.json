@@ -2,7 +2,7 @@
   "name": "gto-pr-review",
   "displayName": "GTO Pull Request Review Framework",
   "description": "Multi-agent PR review, risk gating & business-impact mapping — run it on your uncommitted changes without leaving the editor.",
-  "version": "0.13.1",
+  "version": "0.14.0",
   "publisher": "gto",
   "icon": "media/icon.png",
   "engines": {
@@ -38,6 +38,18 @@
         "title": "GTO: Select Model"
       },
       {
+        "command": "gto.setBitbucketToken",
+        "title": "GTO: Set Personal Git Provider Token"
+      },
+      {
+        "command": "gto.installGitHook",
+        "title": "GTO: Install Git Hook"
+      },
+      {
+        "command": "gto.uninstallGitHook",
+        "title": "GTO: Uninstall Git Hook"
+      },
+      {
         "command": "gto.showLastResult",
         "title": "GTO: Show Last Result"
       },
@@ -53,6 +65,22 @@
           "type": "string",
           "default": "http://localhost:8080",
           "description": "Base URL of the GTO Pull Request Review Framework backend (no trailing slash)."
+        },
+        "gto.gitProvider": {
+          "type": "string",
+          "enum": ["github", "bitbucket", "bitbucket_server"],
+          "default": "github",
+          "description": "Which provider 'Post to PR' and 'Approve PR' target — should match the backend's own GIT_PROVIDER. Not used by Analyze Changes/Branch, which never talk to a provider directly."
+        },
+        "gto.gitHookMode": {
+          "type": "string",
+          "enum": ["warn", "block"],
+          "enumDescriptions": [
+            "Print the Fast-preset gate result before a push, but never refuse it.",
+            "Refuse the push (non-zero exit) when the gate comes back BLOCK."
+          ],
+          "default": "warn",
+          "description": "Behavior of the pre-push hook installed via 'GTO: Install Git Hook'. Only takes effect in a repo where the hook is installed."
         },
         "gto.agentPreset": {
           "type": "string",

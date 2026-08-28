@@ -26,6 +26,7 @@ import {
   getSelectedModelPreset,
   setSelectedModelPreset,
   promptForModelApiKey,
+  promptForBitbucketToken,
   ModelOverride,
   AgentPreset,
   AGENT_PRESET_META,
@@ -35,6 +36,7 @@ import { ResultsPanel } from './resultsPanel';
 import { initDiagnostics, updateDiagnostics } from './diagnostics';
 import { registerCodeActions, updateCodeFixes } from './codeActions';
 import { registerCodeLenses, updateCodeLenses } from './codeLenses';
+import { installGitHookCommand, uninstallGitHookCommand } from './gitHook';
 import { scanUserInstructions } from './promptGuard';
 import {
   fingerprint,
@@ -49,7 +51,7 @@ let lastReport:
   | {
       report: AnalysisReport;
       repoRoot: string;
-      opts: { suppressed: SuppressedEntry[]; newFingerprints: Set<string>; backendUrl: string; apiKey: string };
+      opts: { suppressed: SuppressedEntry[]; newFingerprints: Set<string>; backendUrl: string; apiKey: string; secrets: vscode.SecretStorage };
     }
   | undefined;
 let statusBarItem: vscode.StatusBarItem;
@@ -80,6 +82,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('gto.analyzeBranch', () => analyzeBranch(context)),
     vscode.commands.registerCommand('gto.setApiKey', () => setApiKeyCommand(context)),
     vscode.commands.registerCommand('gto.setModelApiKey', () => promptForModelApiKey(context.secrets)),
+    vscode.commands.registerCommand('gto.setBitbucketToken', () => promptForBitbucketToken(context.secrets)),
+    vscode.commands.registerCommand('gto.installGitHook', () => installGitHookCommand(context)),
+    vscode.commands.registerCommand('gto.uninstallGitHook', () => uninstallGitHookCommand()),
     vscode.commands.registerCommand('gto.selectModel', () => selectModelCommand(context)),
     vscode.commands.registerCommand('gto.showLastResult', showLastResult),
     vscode.workspace.onDidSaveTextDocument(() => onDidSave(context))
@@ -367,7 +372,7 @@ async function runAnalysis(context: vscode.ExtensionContext, params: RunParams):
         const newFingerprints = new Set(lastSeen ? currentFps.filter((fp) => !lastSeen.has(fp)) : []);
         await setLastSeenFingerprints(context.workspaceState, repo.cwd, sourceRef, currentFps);
 
-        lastReport = { report, repoRoot: repo.cwd, opts: { suppressed, newFingerprints, backendUrl, apiKey: apiKey! } };
+        lastReport = { report, repoRoot: repo.cwd, opts: { suppressed, newFingerprints, backendUrl, apiKey: apiKey!, secrets: context.secrets } };
         lastRunKey = runKey;
         ResultsPanel.showReport(report, repo.cwd, lastReport.opts);
         updateDiagnostics(report, repo.cwd);

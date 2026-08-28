@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.14.0
+
+A senior-review batch — seven features aimed at cutting manual reviewer/developer
+effort, several of which reuse backend capability that already existed but wasn't
+reachable from the plugin.
+
+- **❓ Explain this finding** — a button on every issue card asks GTO to explain
+  why a finding was flagged and what to check before dismissing it. Reuses the
+  same guardrailed Q&A engine already built for PR chat replies — the question
+  is a fixed, never-user-typed constant, so this introduces no new free-text
+  surface.
+- **Apply all** — a report-level button batch-applies every high-confidence
+  deterministic fix in one click, instead of one at a time.
+- **Similar past PRs** — the results panel now shows past analyses similar to
+  this one (file-overlap + summary-keyword similarity) and their outcomes —
+  the same feature the web app's Results view already had, now also here.
+- **📮 Post to PR** — post findings as grouped per-file PR comments directly
+  from the panel, using the backend's shared bot credential (same identity
+  webhook-triggered comments already post under — no personal token needed).
+- **✅ Approve PR** — a reviewer can approve a PR (never merges) without
+  logging into Bitbucket/GitHub separately. Unlike Post to PR, this requires
+  your own personal token (`GTO: Set Personal Git Provider Token`) so the
+  approval shows as *you* on the PR, not the shared bot — matters for
+  audit/compliance. Backend-gated behind a new dedicated `pr:approve`
+  permission, distinct from gate override.
+- **`GTO: Install Git Hook`** — a local pre-push hook that runs a Fast-preset
+  check on what's about to be pushed. Warn-only by default
+  (`gto.gitHookMode`); can be set to `block` to refuse a push on a
+  BLOCK-severity finding. `GTO: Uninstall Git Hook` removes it (only if GTO
+  installed it).
+- **Backend**: incremental re-analysis v1 — when a PR gets pushed to again,
+  the backend now checks whether the push actually added any net new code
+  (a rebase, a merge commit, a whitespace-only commit) before re-running the
+  full pipeline. A trivial push reuses the prior result instead of paying
+  full LLM cost again; any push with real content still gets a full
+  re-analysis, unchanged from today. Required populating real PR identity
+  (head/base SHA) onto every webhook-triggered report, which was silently
+  empty before this.
+
+## 0.13.2
+
+- **Sequence diagrams** — when the `remediation` agent generates a Mermaid
+  sequence diagram for a complex change (Thorough preset only, and only when
+  the change has real reference-impact data at medium+ risk — this backend
+  capability existed already but was previously only ever posted to PR
+  comments, never shown locally), it now shows in the results panel as a
+  labeled, copy-able code block — "AI-generated — not verified against the
+  real call graph", same framing as an AI-suggested code fix. Raw Mermaid
+  source only (paste into a Mermaid live editor to view) — VS Code's webview
+  has no Mermaid runtime bundled, and that's a bigger step than this earns
+  until there's real demand for inline rendering. Included in "Copy as
+  Markdown" too.
+
 ## 0.13.1
 
 - Network-failure error messages now show the real cause instead of Node's

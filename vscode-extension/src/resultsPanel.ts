@@ -5,9 +5,11 @@
 // theme the user has, light or dark, with zero extra theming code.
 
 import * as vscode from 'vscode';
-import { AnalysisReport, CorrelatedIssue, CodeFix, QAScenario, submitFindingFeedback, ApiError, describeError } from './apiClient';
+import { AnalysisReport, CorrelatedIssue, CodeFix, QAScenario, MermaidDiagram, submitFindingFeedback, fetchSimilarPRs, explainFinding, postFindingsToPR, approvePR, ApiError, describeError } from './apiClient';
 import { parseFixLine, applyCodeFix } from './codeActions';
 import { fingerprint, SuppressedEntry, addSuppression, removeSuppression } from './reportState';
+import { ownerRepoFromUrl } from './gitDiff';
+import { getGitProvider, getBitbucketToken } from './settings';
 
 export interface ReportViewOpts {
   suppressed: SuppressedEntry[];
@@ -17,6 +19,10 @@ export interface ReportViewOpts {
   // Optional so showLoading/showError (which never need it) stay unaffected.
   backendUrl?: string;
   apiKey?: string;
+  // Needed only for "Approve PR" to read the reviewer's personal token
+  // (settings.ts::getBitbucketToken) — "Post to PR" doesn't need this, it
+  // uses the shared bot credential instead.
+  secrets?: vscode.SecretStorage;
 }
 
 const GATE_META: Record<string, { label: string; color: string }> = {
@@ -64,8 +70,35 @@ export class ResultsPanel {
         await this.handleCreateTestFile(msg.affectedFile ?? '', msg.filename ?? '', msg.code ?? '');
       } else if (msg?.command === 'markFalsePositive') {
         await this.handleMarkFalsePositive(msg.fingerprint ?? '', msg.agent ?? '', msg.category ?? '', msg.file ?? '');
+      } else if (msg?.command === 'applyAllFixes') {
+        await this.handleApplyAllFixes();
+      } else if (msg?.command === 'explainIssue') {
+        await this.handleExplainIssue(msg.fingerprint ?? '', msg.agent ?? '', msg.category ?? '', msg.file ?? '', msg.title ?? '');
+      } else if (msg?.command === 'postToPr') {
+        await this.handlePostToPr();
+      } else if (msg?.command === 'approvePr') {
+        await this.handleApprovePr();
       }
     });
+  }
+
+  private async handleExplainIssue(fp: string, agent: string, category: string, filePath: string, title: string): Promise<void> {
+    if (!this.report || !this.opts?.backendUrl || !this.opts?.apiKey) {
+      vscode.window.showErrorMessage('GTO: could not fetch an explanation — no active backend connection for this report.');
+      return;
+    }
+    try {
+      const text = await explainFinding(this.opts.backendUrl, this.opts.apiKey, this.report.request_id, {
+        agent,
+        category,
+        file_path: filePath,
+        title,
+      });
+      this.panel.webview.postMessage({ command: 'explainDone', fingerprint: fp, text });
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : describeError(err);
+      this.panel.webview.postMessage({ command: 'explainDone', fingerprint: fp, text: '', error: message });
+    }
   }
 
   private async handleMarkFalsePositive(fp: string, agent: string, category: string, filePath: string): Promise<void> {
@@ -129,6 +162,105 @@ export class ResultsPanel {
     }
   }
 
+  /** Shared by "Post to PR" and "Approve PR" — neither gitDiff.ts's RepoRoot
+   * nor the report itself carries a PR number (confirmed no such concept
+   * exists locally), so both ask once per click. */
+  private async promptForPrId(): Promise<string | undefined> {
+    const prId = await vscode.window.showInputBox({
+      title: 'Pull request number',
+      prompt: 'Which PR is this for?',
+      placeHolder: 'e.g. 42',
+      ignoreFocusOut: true,
+      validateInput: (v) => (/^\d+$/.test(v.trim()) ? undefined : 'Enter a numeric PR number'),
+    });
+    return prId?.trim();
+  }
+
+  private async handlePostToPr(): Promise<void> {
+    if (!this.report || !this.opts?.backendUrl || !this.opts?.apiKey) {
+      vscode.window.showErrorMessage('GTO: could not post to PR — no active backend connection for this report.');
+      return;
+    }
+    const prId = await this.promptForPrId();
+    if (!prId) {
+      this.panel.webview.postMessage({ command: 'postToPrDone' });
+      return;
+    }
+    const repoSlug = ownerRepoFromUrl(this.report.repo_url);
+    try {
+      const result = await postFindingsToPR(this.opts.backendUrl, this.opts.apiKey, this.report.request_id, {
+        repoSlug,
+        prId,
+        provider: getGitProvider(),
+      });
+      vscode.window.showInformationMessage(
+        result.ok
+          ? `GTO: posted ${result.files_commented} file comment(s) + summary to PR #${prId}.`
+          : "GTO: couldn't post any comments — check the backend's shared bot credential and PR number."
+      );
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : describeError(err);
+      vscode.window.showErrorMessage(`GTO: ${message}`);
+    }
+    this.panel.webview.postMessage({ command: 'postToPrDone' });
+  }
+
+  private async handleApprovePr(): Promise<void> {
+    if (!this.report || !this.opts?.backendUrl || !this.opts?.apiKey) {
+      vscode.window.showErrorMessage('GTO: could not approve — no active backend connection for this report.');
+      return;
+    }
+    const token = this.opts.secrets ? await getBitbucketToken(this.opts.secrets) : undefined;
+    if (!token) {
+      vscode.window.showWarningMessage(
+        'GTO: no personal token set — run "GTO: Set Personal Git Provider Token" first (the approval must show as you, not the shared bot).'
+      );
+      this.panel.webview.postMessage({ command: 'approvePrDone' });
+      return;
+    }
+    const prId = await this.promptForPrId();
+    if (!prId) {
+      this.panel.webview.postMessage({ command: 'approvePrDone' });
+      return;
+    }
+    const repoSlug = ownerRepoFromUrl(this.report.repo_url);
+    try {
+      const result = await approvePR(this.opts.backendUrl, this.opts.apiKey, this.report.request_id, {
+        provider: getGitProvider(),
+        token,
+        repoSlug,
+        prId,
+      });
+      vscode.window.showInformationMessage(
+        result.status === 'approved'
+          ? `GTO: PR #${prId} approved.`
+          : `GTO: could not approve PR #${prId} — ${result.pr_action?.errors?.[0] ?? 'unknown error'}`
+      );
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : describeError(err);
+      vscode.window.showErrorMessage(`GTO: ${message}`);
+    }
+    this.panel.webview.postMessage({ command: 'approvePrDone' });
+  }
+
+  private async handleApplyAllFixes(): Promise<void> {
+    const fixes = (this.report?.remediation?.code_fixes ?? []).filter((f) => f.confidence === 'high');
+    let applied = 0;
+    let skipped = 0;
+    for (const fix of fixes) {
+      const line0 = parseFixLine(fix);
+      if (line0 === null) continue;
+      const status = await applyCodeFix(this.repoRoot, fix);
+      this.panel.webview.postMessage({ command: 'fixResult', file: fix.file_path, line0, status });
+      if (status === 'applied') applied++;
+      else skipped++;
+    }
+    vscode.window.showInformationMessage(
+      skipped > 0 ? `GTO: applied ${applied}/${fixes.length} — ${skipped} stale, skipped.` : `GTO: applied ${applied} fix(es).`
+    );
+    this.panel.webview.postMessage({ command: 'applyAllDone' });
+  }
+
   private async handleCopyMarkdown(): Promise<void> {
     if (!this.report) return;
     await vscode.env.clipboard.writeText(reportToMarkdown(this.report));
@@ -159,6 +291,17 @@ export class ResultsPanel {
     p.report = report;
     p.opts = opts ?? { suppressed: [], newFingerprints: new Set() };
     p.panel.webview.html = renderReport(report, p.opts);
+    void p.loadSimilarPrs();
+  }
+
+  /** Fire-and-forget — a nice-to-have context panel, never worth blocking or
+   * erroring the main report render over. Silently does nothing on failure
+   * or an empty result (fetchSimilarPRs already swallows non-OK responses). */
+  private async loadSimilarPrs(): Promise<void> {
+    if (!this.report || !this.opts?.backendUrl || !this.opts?.apiKey) return;
+    const items = await fetchSimilarPRs(this.opts.backendUrl, this.opts.apiKey, this.report.request_id).catch(() => []);
+    if (!items.length) return;
+    this.panel.webview.postMessage({ command: 'similarPrsResult', items });
   }
 
   private static getOrCreate(repoRoot: string): ResultsPanel {
@@ -324,6 +467,10 @@ function renderReport(r: AnalysisReport, opts: ReportViewOpts): string {
       font-size: 11px; padding: 0; float: right; margin-right: 12px; }
     .fp-btn:hover { color: var(--vscode-editorWarning-foreground); text-decoration: underline; }
     .fp-btn:disabled { cursor: default; text-decoration: none; }
+    .explain-btn { background: none; border: none; color: var(--vscode-descriptionForeground); cursor: pointer;
+      font-size: 11px; padding: 0; float: right; margin-right: 12px; }
+    .explain-btn:hover { color: var(--vscode-textLink-foreground); text-decoration: underline; }
+    .explain-btn:disabled { cursor: default; text-decoration: none; }
     .suppressed-row { border-top: 1px solid var(--vscode-panel-border); padding: 6px 0; font-size: 12px;
       display: flex; justify-content: space-between; align-items: center; gap: 8px; }
     .suppressed-row .info { color: var(--vscode-descriptionForeground); }
@@ -331,11 +478,25 @@ function renderReport(r: AnalysisReport, opts: ReportViewOpts): string {
       background: var(--vscode-textCodeBlock-background); padding: 5px 10px; border-radius: 4px;
       margin: 8px 0 0; }
     .path-review-banner code { font-family: var(--vscode-editor-font-family, monospace); }
+    #similarPrs summary { cursor: pointer; font-size: 12px; color: var(--vscode-descriptionForeground); margin: 8px 0 4px; }
+    .similar-row { font-size: 12px; padding: 3px 0; display: flex; gap: 8px; align-items: baseline; }
+    .sim-pct { font-variant-numeric: tabular-nums; color: var(--vscode-textLink-foreground); min-width: 34px; }
   </style></head>
   <body>
     <div class="top-row">
       <div class="gate">${gate.label}</div>
-      <button class="gto-btn" id="copyMd">Copy as Markdown</button>
+      <div>
+        ${
+          (r.remediation?.code_fixes ?? []).filter((f) => f.confidence === 'high').length > 0
+            ? `<button class="gto-btn" id="applyAll" style="margin-right:6px;">Apply all (${
+                (r.remediation?.code_fixes ?? []).filter((f) => f.confidence === 'high').length
+              })</button>`
+            : ''
+        }
+        <button class="gto-btn" id="copyMd">Copy as Markdown</button>
+        <button class="gto-btn" id="postToPr" style="margin-left:6px;">📮 Post to PR</button>
+        <button class="gto-btn" id="approvePr" style="margin-left:6px;">✅ Approve PR</button>
+      </div>
     </div>
     <div class="meta">
       <span>Risk score: ${score}/100</span>
@@ -344,9 +505,11 @@ function renderReport(r: AnalysisReport, opts: ReportViewOpts): string {
     </div>
     ${r.risk?.rationale ? `<p class="dim">${escapeHtml(r.risk.rationale)}</p>` : ''}
     ${pathReviewBannerHtml(r)}
+    <div id="similarPrs"></div>
     <h2 style="margin-top:16px;font-size:14px;">Top issues (${issues.length})</h2>
     ${issuesHtml}
     ${fixSuggestionsHtml(r.remediation?.fix_suggestions ?? [])}
+    ${diagramsHtml(r.remediation?.diagrams ?? [])}
     ${qaScenariosHtml(r.qa_scenarios?.scenarios ?? [])}
     ${suppressedHtml}
     ${filesHtml}
@@ -378,6 +541,27 @@ function renderReport(r: AnalysisReport, opts: ReportViewOpts): string {
 
       const copyBtn = document.getElementById('copyMd');
       if (copyBtn) copyBtn.addEventListener('click', () => vscode.postMessage({ command: 'copyMarkdown' }));
+
+      const applyAllBtn = document.getElementById('applyAll');
+      if (applyAllBtn) applyAllBtn.addEventListener('click', () => {
+        applyAllBtn.disabled = true;
+        applyAllBtn.textContent = 'Applying…';
+        vscode.postMessage({ command: 'applyAllFixes' });
+      });
+
+      const postToPrBtn = document.getElementById('postToPr');
+      if (postToPrBtn) postToPrBtn.addEventListener('click', () => {
+        postToPrBtn.disabled = true;
+        postToPrBtn.textContent = 'Posting…';
+        vscode.postMessage({ command: 'postToPr' });
+      });
+
+      const approvePrBtn = document.getElementById('approvePr');
+      if (approvePrBtn) approvePrBtn.addEventListener('click', () => {
+        approvePrBtn.disabled = true;
+        approvePrBtn.textContent = 'Approving…';
+        vscode.postMessage({ command: 'approvePr' });
+      });
 
       document.querySelectorAll('.copy-skeleton-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
@@ -432,6 +616,22 @@ function renderReport(r: AnalysisReport, opts: ReportViewOpts): string {
         });
       });
 
+      document.querySelectorAll('.explain-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          btn.disabled = true;
+          btn.textContent = 'Asking…';
+          vscode.postMessage({
+            command: 'explainIssue',
+            fingerprint: btn.dataset.fingerprint,
+            agent: btn.dataset.agent,
+            category: btn.dataset.category,
+            file: btn.dataset.file,
+            title: btn.dataset.title,
+          });
+        });
+      });
+
       window.addEventListener('message', (event) => {
         const msg = event.data;
         if (msg?.command === 'fixResult') {
@@ -461,6 +661,37 @@ function renderReport(r: AnalysisReport, opts: ReportViewOpts): string {
         } else if (msg?.command === 'fpDone') {
           const btn = document.querySelector('.fp-btn[data-fingerprint="' + CSS.escape(msg.fingerprint) + '"]');
           if (btn) { btn.textContent = 'Recorded ✓'; }
+        } else if (msg?.command === 'explainDone') {
+          const btn = document.querySelector('.explain-btn[data-fingerprint="' + CSS.escape(msg.fingerprint) + '"]');
+          const slot = document.querySelector('.explain-slot[data-fingerprint="' + CSS.escape(msg.fingerprint) + '"]');
+          if (btn) { btn.disabled = false; btn.textContent = '❓ Explain'; }
+          if (slot) {
+            const esc = (s) => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+            if (msg.error) {
+              slot.innerHTML = '<p class="dim" style="margin:6px 0;">Could not fetch an explanation — ' + esc(msg.error) + '</p>';
+            } else if (msg.text) {
+              slot.innerHTML = '<details class="fix" open><summary>❓ Explanation</summary>' +
+                '<p class="dim" style="margin:6px 0;white-space:pre-wrap;">' + esc(msg.text) + '</p></details>';
+            }
+          }
+        } else if (msg?.command === 'applyAllDone') {
+          if (applyAllBtn) { applyAllBtn.disabled = false; applyAllBtn.textContent = 'Apply all'; }
+        } else if (msg?.command === 'postToPrDone') {
+          if (postToPrBtn) { postToPrBtn.disabled = false; postToPrBtn.textContent = '📮 Post to PR'; }
+        } else if (msg?.command === 'approvePrDone') {
+          if (approvePrBtn) { approvePrBtn.disabled = false; approvePrBtn.textContent = '✅ Approve PR'; }
+        } else if (msg?.command === 'similarPrsResult') {
+          const el = document.getElementById('similarPrs');
+          if (!el || !Array.isArray(msg.items) || !msg.items.length) return;
+          const esc = (s) => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+          el.innerHTML = '<details open><summary>Similar past PRs (' + msg.items.length + ')</summary>' +
+            msg.items.map((it) => {
+              const pct = Math.round((it.similarity || 0) * 100);
+              const label = it.pr_title || it.source_ref || it.repo;
+              return '<div class="similar-row"><span class="sim-pct">' + pct + '%</span> ' +
+                '<span>' + esc(label) + '</span> ' +
+                '<span class="dim">' + esc(it.gate) + ' · ' + esc(it.elapsed) + '</span></div>';
+            }).join('') + '</details>';
         }
       });
     </script>
@@ -541,6 +772,28 @@ function qaScenariosHtml(scenarios: QAScenario[]): string {
     ${scenarios.map(scenarioHtml).join('')}`;
 }
 
+/** Raw Mermaid source, not rendered — VS Code's webview has no Mermaid
+ * runtime bundled, and adding one is a bigger step than this earns until
+ * there's evidence people actually want inline rendering (Thorough preset +
+ * medium/high risk + real reference_impact data all have to line up for this
+ * to even appear, so it's rare). Paste into a Mermaid live editor to view. */
+function diagramsHtml(diagrams: MermaidDiagram[]): string {
+  if (!diagrams.length) return '';
+  return `<h2 style="margin-top:16px;font-size:14px;">Sequence diagrams (${diagrams.length})</h2>
+    ${diagrams
+      .map(
+        (d, i) => `<details class="fix">
+          <summary>📈 ${escapeHtml(d.diagram_type || 'sequenceDiagram')}
+            <span class="ai-tag">AI-generated — not verified against the real call graph</span>
+          </summary>
+          ${d.note ? `<p class="dim" style="margin:6px 0;">${escapeHtml(d.note)}</p>` : ''}
+          <pre class="diff">${escapeHtml(d.mermaid_source)}</pre>
+          <button class="gto-btn copy-skeleton-btn" data-id="diagram-${i}" data-code="${escapeHtml(d.mermaid_source)}">Copy code</button>
+        </details>`
+      )
+      .join('')}`;
+}
+
 function issueHtml(it: CorrelatedIssue, fix: CodeFix | undefined, isNew: boolean): string {
   const color = SEVERITY_COLOR[it.severity?.toLowerCase()] ?? SEVERITY_COLOR.low;
   const fp = fingerprint(it.file_path, it.line);
@@ -548,15 +801,18 @@ function issueHtml(it: CorrelatedIssue, fix: CodeFix | undefined, isNew: boolean
   const newTag = isNew ? ' <span class="new-tag">New</span>' : '';
   const suppressBtn = `<button class="suppress-btn" data-fingerprint="${escapeHtml(fp)}" data-file="${escapeHtml(it.file_path)}" data-line="${it.line || 0}" data-title="${escapeHtml(it.title)}" title="Suppress this finding — stops it reappearing on future runs">🚫 Ignore</button>`;
   const fpBtn = `<button class="fp-btn" data-fingerprint="${escapeHtml(fp)}" data-agent="${escapeHtml(it.agents?.[0] ?? '')}" data-category="${escapeHtml(it.categories?.[0] ?? '')}" data-file="${escapeHtml(it.file_path)}" title="Mark as a false positive — after enough of these on this repo, GTO auto-suppresses this pattern on future runs (see the Insights tab in the web app)">🚩 False positive</button>`;
+  const explainBtn = `<button class="explain-btn" data-fingerprint="${escapeHtml(fp)}" data-agent="${escapeHtml(it.agents?.[0] ?? '')}" data-category="${escapeHtml(it.categories?.[0] ?? '')}" data-file="${escapeHtml(it.file_path)}" data-title="${escapeHtml(it.title)}" title="Ask GTO to explain why this was flagged">❓ Explain</button>`;
   return `<div class="issue" data-fingerprint="${escapeHtml(fp)}"${clickable}>
     ${suppressBtn}
     ${fpBtn}
+    ${explainBtn}
     <div class="issue-title">
       <span class="sev" style="color:${color}">${escapeHtml(it.severity || 'info')}</span>${escapeHtml(truncateAtWord(it.title, 240))}${newTag}
     </div>
     ${it.file_path ? `<div class="loc">${escapeHtml(it.file_path)}${it.line ? ':' + it.line : ''}</div>` : ''}
     ${it.agents?.length ? `<div class="agents">${it.agents.map(escapeHtml).join(', ')}</div>` : ''}
     ${fix ? fixHtml(fix, it.file_path) : ''}
+    <div class="explain-slot" data-fingerprint="${escapeHtml(fp)}"></div>
   </div>`;
 }
 
@@ -607,6 +863,18 @@ function reportToMarkdown(r: AnalysisReport): string {
     lines.push('');
     lines.push(`## Suggested fixes (${suggestions.length})`);
     for (const s of suggestions) lines.push(`- ${s}`);
+  }
+  const diagrams = r.remediation?.diagrams ?? [];
+  if (diagrams.length) {
+    lines.push('');
+    lines.push(`## Sequence diagrams (${diagrams.length})`);
+    for (const d of diagrams) {
+      lines.push('');
+      lines.push('AI-generated — not verified against the real call graph.');
+      lines.push('```mermaid');
+      lines.push(d.mermaid_source);
+      lines.push('```');
+    }
   }
   const scenarios = r.qa_scenarios?.scenarios ?? [];
   if (scenarios.length) {

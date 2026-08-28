@@ -95,6 +95,19 @@ export interface QAScenario {
   test_skeleton_filename: string;
 }
 
+/** An LLM-narrated (not call-graph-grounded) sequence diagram for a complex
+ * change — see agents/remediation_agent.py::_maybe_generate_diagram. Only
+ * generated on the Thorough preset, and only when the change has real
+ * reference_impact data AND medium+ risk — most reports won't have one.
+ * confidence is hardcoded "low" server-side, never LLM-settable — same
+ * "review before relying on it" framing as an AI-suggested code fix. */
+export interface MermaidDiagram {
+  diagram_type: string;
+  mermaid_source: string;
+  confidence: string;
+  note: string;
+}
+
 export interface QAScenariosResult {
   scenarios: QAScenario[];
   total_scenarios: number;
@@ -114,10 +127,11 @@ export interface PathReviewSummary {
 
 export interface AnalysisReport {
   request_id: string;
+  repo_url: string;
   gate_decision: string;
   final_risk: string;
   risk?: { risk_score?: number; rationale?: string };
-  remediation?: { code_fixes?: CodeFix[]; fix_suggestions?: string[] };
+  remediation?: { code_fixes?: CodeFix[]; fix_suggestions?: string[]; diagrams?: MermaidDiagram[] };
   qa_scenarios?: QAScenariosResult;
   path_review_summary?: PathReviewSummary | null;
   files_changed: number;
@@ -193,11 +207,98 @@ export async function fetchModelPresets(backendUrl: string, apiKey: string): Pro
   return body.presets ?? [];
 }
 
+/** One past analysis similar to the current one — file-overlap + summary-keyword
+ * similarity, see api/routes/insights.py::similar_prs. Same web-app feature
+ * already shown in the frontend's ResultsView, now also in the panel. */
+export interface SimilarPR {
+  request_id: string;
+  repo: string;
+  pr_title: string;
+  pr_number: number;
+  source_ref: string;
+  risk_score: number;
+  gate: string;
+  similarity: number;
+  shared_files: string[];
+  elapsed: string;
+}
+
+/** Best-effort — a nice-to-have context panel, never worth surfacing an error
+ * for. Callers should treat a thrown/empty result as "just hide the section." */
+export async function fetchSimilarPRs(backendUrl: string, apiKey: string, requestId: string, topK = 5): Promise<SimilarPR[]> {
+  const resp = await fetch(`${backendUrl}/api/v1/insights/similar/${requestId}?top_k=${topK}`, { headers: headers(apiKey) });
+  if (!resp.ok) return [];
+  const body = (await resp.json()) as { similar?: SimilarPR[] };
+  return body.similar ?? [];
+}
+
 /** Records a reviewer verdict on one finding — the same feedback loop the web
  * app's ResultsView already exposes (⚐/✓ controls). Aggregated over ≥3
  * false_positive verdicts for the same (agent, category, repo),
  * governance/suppression.py auto-suppresses that pattern on future runs of
  * this repo — always visibly, via report.suppressed_notes, never silently. */
+/** Posts findings as PR comments (one grouped comment per file + an overall
+ * summary) — reuses the existing POST /report/{id}/comment-pr endpoint
+ * unchanged. Deliberately omits token/base_url/workspace so the backend
+ * falls back to its own shared bot credential (the same identity webhook-
+ * triggered comments already post under) — no personal token needed. */
+export async function postFindingsToPR(
+  backendUrl: string,
+  apiKey: string,
+  requestId: string,
+  opts: { repoSlug: string; prId: string; provider: string }
+): Promise<{ ok: boolean; comments_posted: number; files_commented: number }> {
+  const resp = await fetch(`${backendUrl}/api/v1/report/${requestId}/comment-pr`, {
+    method: 'POST',
+    headers: headers(apiKey),
+    body: JSON.stringify({ provider: opts.provider, repo_slug: opts.repoSlug, pr_id: opts.prId, inline: true }),
+  });
+  if (resp.status === 401) throw new ApiError('Unauthorized — check your API key (GTO: Set API Key).', 401);
+  if (!resp.ok) throw new ApiError(await parseErrorBody(resp), resp.status);
+  return (await resp.json()) as { ok: boolean; comments_posted: number; files_commented: number };
+}
+
+/** Reviewer sign-off — approval only, never merges. Requires the reviewer's
+ * OWN token (no server-side fallback, unlike postFindingsToPR) so the
+ * approval shows as them, not the shared bot — see settings.ts's
+ * getBitbucketToken doc comment for why. Distinct endpoint from gate
+ * override: this never changes GTO's own gate decision. */
+export async function approvePR(
+  backendUrl: string,
+  apiKey: string,
+  requestId: string,
+  opts: { provider: string; token: string; repoSlug: string; prId: string }
+): Promise<{ status: string; pr_action: { ok: boolean; errors?: string[] } }> {
+  const resp = await fetch(`${backendUrl}/api/v1/gate/${requestId}/approve-pr`, {
+    method: 'POST',
+    headers: headers(apiKey),
+    body: JSON.stringify({ provider: opts.provider, token: opts.token, repo_slug: opts.repoSlug, pr_id: opts.prId }),
+  });
+  if (resp.status === 401) throw new ApiError('Unauthorized — check your API key (GTO: Set API Key).', 401);
+  if (resp.status === 403) throw new ApiError('Your API key does not have PR-approval permission.', 403);
+  if (!resp.ok) throw new ApiError(await parseErrorBody(resp), resp.status);
+  return (await resp.json()) as { status: string; pr_action: { ok: boolean; errors?: string[] } };
+}
+
+/** "Explain this finding" — a fixed, never-user-typed question, answered by
+ * the same guardrailed Q&A engine already used for PR chat replies. */
+export async function explainFinding(
+  backendUrl: string,
+  apiKey: string,
+  requestId: string,
+  body: { agent: string; category?: string; file_path?: string; title?: string }
+): Promise<string> {
+  const resp = await fetch(`${backendUrl}/api/v1/report/${requestId}/explain-finding`, {
+    method: 'POST',
+    headers: headers(apiKey),
+    body: JSON.stringify(body),
+  });
+  if (resp.status === 401) throw new ApiError('Unauthorized — check your API key (GTO: Set API Key).', 401);
+  if (!resp.ok) throw new ApiError(await parseErrorBody(resp), resp.status);
+  const data = (await resp.json()) as { answer?: string };
+  return data.answer ?? '';
+}
+
 export async function submitFindingFeedback(
   backendUrl: string,
   apiKey: string,

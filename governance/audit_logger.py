@@ -27,6 +27,7 @@ class AuditEvent(str, Enum):
     ANALYSIS_COMPLETED = "analysis_completed"
     GATE_DECISION      = "gate_decision"
     GATE_OVERRIDE      = "gate_override"
+    PR_APPROVED        = "pr_approved"     # reviewer sign-off via GTO — not a gate override
     WEBHOOK_RECEIVED   = "webhook_received"
     AGENT_ERROR        = "agent_error"
     API_ACCESS         = "api_access"

@@ -51,7 +51,12 @@ class RemediationAgent(BaseAgent[RemediationResult]):
         "  • validation_checklist: ordered QA/testing steps before deploy (max 10)\n"
         "    — e.g. 'Run PaymentServiceIntegrationTest against staging DB'\n"
         "  • deployment_strategy: standard | canary | blue_green | phased | feature_flag\n"
-        "  • executive_summary: 3-4 sentences for non-technical audience (CTO / Risk Committee)\n\n"
+        "  • executive_summary: 3-4 sentences for non-technical audience (CTO / Risk Committee),\n"
+        "    framed around deployment risk and sign-off\n"
+        "  • pr_walkthrough: 2-4 sentences for a developer reviewing this PR — what does the change\n"
+        "    actually DO and WHY (the functional/technical purpose), not a restatement of the\n"
+        "    findings list and not a risk/deployment framing. This is the opening of the PR comment,\n"
+        "    the first thing a reviewer reads before the findings — write it that way.\n\n"
         "Be concrete. Avoid generic advice. Reference specific files/methods where possible.\n"
         "Output ONLY compact JSON. No prose."
     )
@@ -206,6 +211,10 @@ class RemediationAgent(BaseAgent[RemediationResult]):
                 "Automated analysis identified issues that require engineering team attention. "
                 "A canary deployment is recommended once all findings are resolved. "
                 "The security and QA teams should provide explicit sign-off."
+            ),
+            pr_walkthrough=(
+                "Automated walkthrough generation was unavailable for this run — "
+                "see the findings below for what was detected in this change."
             ),
         )
 

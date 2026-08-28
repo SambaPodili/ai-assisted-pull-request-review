@@ -102,6 +102,15 @@ class SQLiteReviewSessionStore:
             );
             CREATE INDEX IF NOT EXISTS idx_prl_rate
                 ON pr_reply_log(provider, repo_slug, pr_id, author, created_at);
+            CREATE TABLE IF NOT EXISTS pr_analysis_head (
+                provider      TEXT NOT NULL,
+                repo_slug     TEXT NOT NULL,
+                pr_id         TEXT NOT NULL,
+                head_sha      TEXT DEFAULT '',
+                request_id    TEXT DEFAULT '',
+                analyzed_at   TEXT NOT NULL,
+                PRIMARY KEY (provider, repo_slug, pr_id)
+            );
         """)
         self._conn.commit()
 
@@ -168,6 +177,70 @@ class SQLiteReviewSessionStore:
             except ValueError:
                 continue
         return count
+
+    # ── Triage carry-forward across re-analyses ─────────────────────────────────
+
+    def carry_forward_triage(self, old_request_id: str, new_request_id: str, new_top_issues: list) -> int:
+        """Copies matching review_triage verdicts from a PR's prior analysis
+        onto its new one. review_triage is keyed only by request_id
+        (governance/review_session_store.py's own schema) with no PR-level
+        lookup — a reviewer's false_positive/won't_fix verdict on the old
+        request_id is otherwise silently invisible once a new push creates a
+        new request_id, on EVERY re-analysis (not just incremental ones).
+        Matching is by finding_key, a Python port of the client's own
+        triageKey formula (frontend/src/views/ResultsView.jsx:653) — must
+        stay byte-for-byte identical, since the web app's triage UI reads/
+        writes this same key format:
+            f"{agent or 'issue'}|{file_path or ''}|{line or ''}|{title[:60]}"
+        (line uses JS `line || ''` falsy-zero semantics: line=0 -> '', not
+        '0' — Python's `line or ''` matches this exactly for ints.)
+        Returns the number of verdicts carried forward."""
+        old_rows = {r["finding_key"]: r for r in self.list_triage(old_request_id)}
+        if not old_rows:
+            return 0
+
+        carried = 0
+        for issue in new_top_issues:
+            agent = (issue.agents[0] if getattr(issue, "agents", None) else None) or "issue"
+            key = f"{agent}|{issue.file_path or ''}|{issue.line or ''}|{(issue.title or '')[:60]}"
+            old = old_rows.get(key)
+            if not old or not (old.get("dev_verdict") or old.get("reviewer_verdict")):
+                continue
+            self._conn.execute(
+                """INSERT OR IGNORE INTO review_triage
+                   (request_id, finding_key, title, agent, file, line, severity,
+                    dev_verdict, dev_comment, dev_by, dev_ts,
+                    reviewer_verdict, reviewer_comment, reviewer_by, reviewer_ts)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (new_request_id, key, old.get("title", ""), old.get("agent", ""),
+                 old.get("file", ""), old.get("line", ""), old.get("severity", ""),
+                 old.get("dev_verdict", ""), old.get("dev_comment", ""), old.get("dev_by", ""), old.get("dev_ts", ""),
+                 old.get("reviewer_verdict", ""), old.get("reviewer_comment", ""), old.get("reviewer_by", ""), old.get("reviewer_ts", "")),
+            )
+            carried += 1
+        if carried:
+            self._conn.commit()
+        return carried
+
+    # ── Incremental re-analysis v1 (skip on trivial pushes) ─────────────────────
+
+    def record_pr_head(self, provider: str, repo_slug: str, pr_id: str, head_sha: str, request_id: str) -> None:
+        """Called after a real (first-time or full) analysis completes for a
+        webhook-triggered PR — remembers what was analyzed so the next push
+        can tell whether anything actually changed."""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO pr_analysis_head "
+            "(provider, repo_slug, pr_id, head_sha, request_id, analyzed_at) VALUES (?,?,?,?,?,?)",
+            (provider, repo_slug, pr_id, head_sha, request_id, _now()),
+        )
+        self._conn.commit()
+
+    def get_last_analyzed_head(self, provider: str, repo_slug: str, pr_id: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT head_sha, request_id FROM pr_analysis_head WHERE provider=? AND repo_slug=? AND pr_id=?",
+            (provider, repo_slug, pr_id),
+        ).fetchone()
+        return dict(row) if row else None
 
     # ── Session ───────────────────────────────────────────────────────────────
 
@@ -296,6 +369,9 @@ class _NullReviewSessionStore:
     def latest_comment_for_pr(self, *a, **k): return None
     def log_reply(self, *a, **k): return None
     def count_recent_replies(self, *a, **k): return 0
+    def record_pr_head(self, *a, **k): return None
+    def get_last_analyzed_head(self, *a, **k): return None
+    def carry_forward_triage(self, *a, **k): return 0
 
 
 _store = None

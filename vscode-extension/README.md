@@ -17,6 +17,12 @@ Run the multi-agent PR review without leaving the editor.
 - **`GTO: Set API Key`** — stores your API key in VS Code's secret storage (OS
   keychain). Never written to settings.json or synced.
 - **`GTO: Show Last Result`** — reopens the most recent report from this session.
+- **`GTO: Set Personal Git Provider Token`** — your own Bitbucket/GitHub token,
+  used only by "✅ Approve PR" (see below) so an approval shows as you, not
+  the shared bot.
+- **`GTO: Install Git Hook`** / **`GTO: Uninstall Git Hook`** — installs a local
+  `pre-push` hook that runs a Fast-preset check on what's about to be pushed.
+  See [Git hook](#git-hook) below.
 
 If you have more than one git repo open in the workspace, both analyze
 commands ask which one to use (skipped entirely when there's only one — no
@@ -75,9 +81,13 @@ decision (see `core/models.py`'s `AnalysisRequest.user_instructions` for why).
   scenario with a real, language-aware test skeleton, a "Copy code" button,
   and a "Create test file…" button (opens a save dialog pre-filled with a
   sensible location — co-located with the affected source file, or mirrored
-  into `src/test/...` for a Maven/Gradle-style `src/main/...` layout). A
-  "Copy as Markdown" button copies the whole report for pasting into a PR
-  description or chat.
+  into `src/test/...` for a Maven/Gradle-style `src/main/...` layout). Also on
+  **Thorough**, when the change is complex enough (real reference-impact data
+  at medium+ risk), a "Sequence diagrams" section shows the raw Mermaid
+  source as a labeled, copy-able block — "AI-generated — not verified
+  against the real call graph." Paste it into a Mermaid live editor to view
+  it; the panel doesn't render it inline. A "Copy as Markdown" button copies
+  the whole report for pasting into a PR description or chat.
 - **Code fixes**: findings matched by the 7 deterministic patterns
   (`agents/fix_generator.py` — hardcoded secrets, weak hashes, etc.) get a
   high-confidence Apply-fix. Beyond that, the `remediation` agent also
@@ -130,6 +140,57 @@ Issues not seen in your previous run on the same branch are badged **New**.
 This is tracked locally per (repo, branch) — nothing is written to git for
 it, unlike suppressions.
 
+## Explaining a finding
+
+Click **❓ Explain** on any issue card to ask GTO why it was flagged and what
+to check before dismissing it — answered by the same guardrailed Q&A engine
+already used for PR chat replies. The question sent is always the same fixed
+text; there's no free-text input here, so this can't be used to argue the
+model into changing a severity or the gate decision (it has no authority to
+do either).
+
+## Report actions
+
+Three buttons above the findings act on the whole report, not one issue:
+
+- **Apply all** — batch-applies every high-confidence deterministic fix in
+  one click (only shown when at least one exists).
+- **📮 Post to PR** — posts the findings as grouped per-file comments plus an
+  overall summary on a real PR (prompts for the PR number). Uses the
+  backend's shared bot credential — no setup needed on your end, comments
+  appear as "GTO Bot", same identity webhook-triggered comments already use.
+- **✅ Approve PR** — reviewer sign-off on the PR, **never merges**. Requires
+  your own personal token (`GTO: Set Personal Git Provider Token`) first —
+  the approval must show as *you* on the PR, not the shared bot, so there's
+  no fallback here. Distinct from a gate override: this never changes GTO's
+  own gate decision, it's purely a side-channel "I reviewed this" action.
+
+## Similar past PRs
+
+When available, the panel shows past analyses similar to the current one
+(file-overlap + summary-keyword similarity) with their gate outcomes — useful
+context before you dig through history yourself. Same underlying data the
+web app's Results view already surfaces.
+
+## Git hook
+
+Run **`GTO: Install Git Hook`** to add a local `pre-push` hook that runs a
+Fast-preset (`code_analysis` + `security`) check on whatever you're about to
+push, before it ever reaches a PR. By default (`gto.gitHookMode: "warn"`) it
+only prints the gate result — it never blocks a push. Set it to `"block"`
+and reinstall to refuse a push outright when the gate comes back `BLOCK`.
+
+The hook is written to `.git/hooks/pre-push` — local and untracked by git,
+same as any other git hook, so it's per-clone, not something you commit.
+Your API key and backend URL are baked into the generated script for that
+reason. `GTO: Uninstall Git Hook` removes it (only if GTO installed it — a
+hand-written hook is left untouched). Re-run `GTO: Install Git Hook` after
+changing `gto.gitHookMode` or rotating your API key to pick up the change.
+
+Known limitation: resolves hooks under the repo's own `.git/hooks/` directly
+— doesn't handle a git worktree or submodule, where `.git` is a file
+pointing elsewhere.
+
 ## Setup
 
 1. Set the backend URL (defaults to `http://localhost:8080`):
@@ -151,6 +212,8 @@ it, unlike suppressions.
 | `gto.modelName` | `""` | **Advanced.** Model name for `gto.modelProvider`, e.g. `claude-sonnet-4-6`, `gpt-4o`, `llama3.2`, or your own deployment name. |
 | `gto.modelBaseUrl` | `""` | **Advanced.** Endpoint URL — required for `azure_openai`, `ollama`, and `custom`. |
 | `gto.modelApiVersion` | `""` | **Advanced.** API version string — only used for `azure_openai`. |
+| `gto.gitProvider` | `github` | Which provider "Post to PR" and "Approve PR" target — `github` / `bitbucket` / `bitbucket_server`. Should match the backend's own `GIT_PROVIDER`. |
+| `gto.gitHookMode` | `warn` | Behavior of the pre-push hook installed via `GTO: Install Git Hook` — `warn` (never blocks) or `block` (refuses the push on a `BLOCK` gate). |
 
 ## Choosing a model
 

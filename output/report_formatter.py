@@ -9,6 +9,11 @@ import json
 from datetime import datetime
 from core.models import AnalysisReport, GateDecision, RiskLevel
 
+# Grouped by gate tier (see governance/gate_policy.py) so the report reads in
+# the same priority order the gate acts on: unrated sorts with critical/high
+# since the gate fail-safe-BLOCKs on it too, not with "nothing to worry about".
+_CVE_SEV_ORDER = {"critical": 3, "high": 3, "": 3, "medium": 2, "low": 1}
+
 
 def to_markdown(report: AnalysisReport) -> str:
     """Render a full Markdown report suitable for export or email."""
@@ -93,7 +98,14 @@ def to_markdown(report: AnalysisReport) -> str:
         ]
         if dep.affected_services:
             lines.append(f"- **Services:** {', '.join(dep.affected_services[:10])}")
-        if dep.cve_hits:
+        if dep.cve_findings:
+            sev_icon = {"critical": "🚨", "high": "🔴", "medium": "🟡", "low": "🔵"}
+            lines.append("- **⚠️ CVEs:**")
+            for c in sorted(dep.cve_findings, key=lambda c: _CVE_SEV_ORDER.get((c.severity or "").lower(), 0), reverse=True):
+                icon = sev_icon.get((c.severity or "").lower(), "❓")
+                fix  = f" — fix: bump to `{c.fixed_version}`" if c.fixed_version else " — no published fix"
+                lines.append(f"  - {icon} **{c.cve_id}** ({c.severity or 'severity unknown'}) in `{c.package}`{fix}")
+        elif dep.cve_hits:
             lines.append(f"- **⚠️ CVEs:** {', '.join(dep.cve_hits)}")
         lines.append("")
 

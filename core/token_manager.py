@@ -22,11 +22,21 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 # ── Model constants ───────────────────────────────────────────────────────────
-MODEL_FAST   = "claude-haiku-4-5-20251001"   # code summary, dep scan, test stubs
-MODEL_STRONG = "claude-sonnet-4-6"           # security, risk, interface, remediation
+MODEL_FAST   = "claude-haiku-4-5-20251001"   # dep scan, test stubs, entropy/IaC/observability
+MODEL_STRONG = "claude-sonnet-4-6"           # security, risk, interface, remediation,
+                                              # code_analysis, maintainability, ast_analysis
 
-# Which agents use the strong model
-_STRONG_AGENTS = {"security", "risk", "interface", "remediation"}
+# Which agents use the strong model. code_analysis/maintainability moved here
+# deliberately (previously MODEL_FAST) — general bug-hunting and code-quality
+# review benefit from stronger reasoning the same way security/risk do; the
+# original "classification doesn't need deep reasoning" framing undersold
+# what these two agents are actually asked to find (logic flaws, technical
+# debt, not just a change-type label). ast_analysis's OWN docstring already
+# claimed "LLM enhancement (Sonnet)" — it was never actually wired to
+# MODEL_STRONG; adding it here makes the code match what it already
+# documented, not a new claim.
+_STRONG_AGENTS = {"security", "risk", "interface", "remediation",
+                  "code_analysis", "maintainability", "ast_analysis"}
 
 # Minimum remaining tokens below which we treat the budget as exhausted
 _SAFETY_MARGIN = 200

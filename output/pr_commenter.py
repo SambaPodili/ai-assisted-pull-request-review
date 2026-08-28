@@ -142,7 +142,8 @@ class PRCommenter:
             if self._provider in ("bitbucket", "bitbucket_cloud"):
                 return self._bb_reply(repo_slug, pr_id, body, in_reply_to_id)
             elif self._provider == "bitbucket_server":
-                log.warning("reply_to_comment: Bitbucket Server threaded replies not supported — posting top-level")
+                if in_reply_to_id is not None:
+                    return self._bb_server_reply(repo_slug, pr_id, body, in_reply_to_id)
                 ok = self._bb_server_post(repo_slug, pr_id, body)
                 return "unknown" if ok else None
             return self._gh_reply(repo_slug, pr_id, body, in_reply_to_id)
@@ -179,6 +180,21 @@ class PRCommenter:
         resp    = self._session.post(url, json={"text": body}, headers=headers)
         resp.raise_for_status()
         return True
+
+    def _bb_server_reply(self, repo_slug: str, pr_id: int | str, body: str,
+                          in_reply_to_id: str | int) -> str | None:
+        """Threaded reply on Bitbucket Server — same endpoint/shape as
+        _bb_server_post, plus the documented `parent.id` field. Unverified
+        against a real Server instance, like every other Server codepath in
+        this file — the request shape matches Atlassian's documented format
+        for a threaded PR comment."""
+        proj, repo = (repo_slug.split("/", 1) + [""])[:2] if "/" in repo_slug else (self._workspace, repo_slug)
+        url     = f"{self._api_url}/projects/{proj}/repos/{repo}/pull-requests/{pr_id}/comments"
+        headers = {"Authorization": f"Bearer {self._token}", "Content-Type": "application/json"}
+        payload = {"text": body, "parent": {"id": in_reply_to_id}}
+        resp    = self._session.post(url, json=payload, headers=headers)
+        resp.raise_for_status()
+        return str(resp.json().get("id")) if resp.content else None
 
     # ── GitHub ────────────────────────────────────────────────────────────────
 
@@ -660,10 +676,19 @@ def _group_by_file(findings: list[dict]) -> dict[str, list[dict]]:
     return groups
 
 
-def _render_file_comment(file_path: str, findings: list[dict]) -> str:
+def _render_file_comment(file_path: str, findings: list[dict], anchor_line: int = 0) -> str:
     """
     Render all findings for a single file into one markdown comment block.
     This becomes the body of a single file-level review comment.
+
+    GitHub only renders a "suggestion" code fence as a real one-click-apply
+    widget when it sits inside a review comment anchored to that EXACT diff
+    line (`anchor_line`, the same value the caller used when constructing the
+    comment). A file can have fixes on more than one line, but the comment
+    itself is anchored to only one — so only the fix AT `anchor_line` gets a
+    real suggestion fence; fixes on other lines render as a plain (non-
+    "suggestion") fenced diff block instead of a fence that would look
+    clickable but silently fail to apply.
     """
     sev_icon = {"critical": "🚨", "high": "🔴", "medium": "🟡", "low": "🔵"}
     lines = [
@@ -686,9 +711,13 @@ def _render_file_comment(file_path: str, findings: list[dict]) -> str:
         if fix is None or f["line"] in rendered_lines:
             continue
         rendered_lines.add(f["line"])
+        is_anchor = f["line"] == anchor_line
+        fence = "suggestion" if is_anchor else "diff"
+        body = fix.after if is_anchor else f"- {fix.before}\n+ {fix.after}"
+        summary = f"Suggested fix (line {f['line']})" if is_anchor else f"Suggested fix (line {f['line']}) — apply manually, see line {anchor_line} for one-click apply"
         lines.append(
-            f"\n<details><summary>Suggested fix (line {f['line']})</summary>\n\n"
-            f"```suggestion\n{fix.after}\n```\n"
+            f"\n<details><summary>{summary}</summary>\n\n"
+            f"```{fence}\n{body}\n```\n"
             f"{fix.explanation}\n</details>"
         )
 
@@ -714,6 +743,13 @@ def _render_pr_summary_comment(report: AnalysisReport, file_groups: dict[str, li
         f"**{total_findings}** finding(s) across **{len(file_groups)}** file(s)",
         f"",
     ]
+
+    # Walkthrough — what this PR changes and why, the opening a reviewer reads
+    # before the findings. Distinct from risk.rationale (explains the gate/risk
+    # decision) and executive_summary (deployment-risk/CTO framing, not
+    # rendered here at all).
+    if report.remediation and report.remediation.pr_walkthrough:
+        lines += [report.remediation.pr_walkthrough, ""]
 
     # Deployment strategy
     if report.remediation:
@@ -748,6 +784,23 @@ def _render_pr_summary_comment(report: AnalysisReport, file_groups: dict[str, li
             icon     = sev_icon.get(top_sev, "ℹ️")
             lines.append(f"| `{fp}` | {len(flist)} | {icon} {top_sev} |")
         lines.append("")
+
+    # Dependency vulnerabilities — severity + fix version, so a reviewer
+    # doesn't have to go look each CVE up manually.
+    dep = report.dependency
+    cve_findings = getattr(dep, "cve_findings", None) if dep else None
+    cve_hits     = getattr(dep, "cve_hits", None) if dep else None
+    if cve_findings:
+        cve_icon = {"critical": "🚨", "high": "🔴", "medium": "🟡", "low": "🔵"}
+        order    = {"critical": 3, "high": 3, "": 3, "medium": 2, "low": 1}
+        lines += ["### 🔗 Dependency vulnerabilities", "", "| Severity | CVE | Package | Fix |", "|---|---|---|---|"]
+        for c in sorted(cve_findings, key=lambda c: order.get((c.severity or "").lower(), 0), reverse=True):
+            icon = cve_icon.get((c.severity or "").lower(), "❓")
+            fix  = f"bump to `{c.fixed_version}`" if c.fixed_version else "no published fix"
+            lines.append(f"| {icon} {c.severity or 'unknown'} | {c.cve_id} | `{c.package}` | {fix} |")
+        lines.append("")
+    elif cve_hits:
+        lines += ["### 🔗 Dependency vulnerabilities", "", f"⚠️ {', '.join(cve_hits)} — severity unavailable", ""]
 
     # Key actions
     if report.remediation and getattr(report.remediation, "fix_suggestions", []):
@@ -899,7 +952,7 @@ def post_inline_comments(
                     "path":  fp,
                     "line":  anchor_line,
                     "side":  "RIGHT",
-                    "body":  _render_file_comment(fp, flist),
+                    "body":  _render_file_comment(fp, flist, anchor_line),
                 })
 
             review_payload = {
@@ -920,13 +973,28 @@ def post_inline_comments(
                         len(file_groups), pid,
                     )
                     # Correlate each posted review comment back to its file —
-                    # the response's `comments` array mirrors review_payload's
-                    # order, one id per file we submitted.
+                    # the response's `comments` array is EXPECTED to mirror
+                    # review_payload's order, one id per file we submitted,
+                    # but that shape is not verified against GitHub's actual
+                    # API contract, only assumed. The comments themselves have
+                    # already posted successfully at this point (confirmed by
+                    # the 200/201 above) — a length mismatch here means only
+                    # that reply-threading correlation would be wrong, not
+                    # that anything failed to post, so skip recording rather
+                    # than risk zip() silently mispairing an id with the
+                    # wrong file.
                     try:
                         posted_comments = resp.json().get("comments", [])
-                        for (fp, flist), pc in zip(file_groups.items(), posted_comments):
-                            anchor = next((f["line"] for f in flist if f["line"] > 0), 1)
-                            _record_posted(slug, pc.get("id"), fp, anchor)
+                        if len(posted_comments) != len(review_comments):
+                            log.warning(
+                                "GitHub review response comment count (%d) != submitted (%d) — "
+                                "skipping reply-correlation recording to avoid mispairing (pid=%s)",
+                                len(posted_comments), len(review_comments), pid,
+                            )
+                        else:
+                            for (fp, flist), pc in zip(file_groups.items(), posted_comments):
+                                anchor = next((f["line"] for f in flist if f["line"] > 0), 1)
+                                _record_posted(slug, pc.get("id"), fp, anchor)
                     except Exception:
                         log.debug("Could not correlate GitHub review comments", exc_info=True)
                     return posted
@@ -982,8 +1050,8 @@ def post_inline_comments(
 
         # One comment per file
         for fp, flist in file_groups.items():
-            body = _render_file_comment(fp, flist)
             anchor = next((f["line"] for f in flist if f["line"] > 0), 1)
+            body = _render_file_comment(fp, flist, anchor)
             try:
                 if head_sha:
                     payload: dict = {
@@ -1037,7 +1105,7 @@ def post_inline_comments(
         for fp, flist in file_groups.items():
             anchor_line = next((f["line"] for f in flist if f["line"] > 0), 1)
             payload = {
-                "text": _render_file_comment(fp, flist),
+                "text": _render_file_comment(fp, flist, anchor_line),
                 "anchor": {
                     "line":     anchor_line,
                     "lineType": "ADDED",
@@ -1083,7 +1151,7 @@ def post_inline_comments(
         for fp, flist in file_groups.items():
             anchor_line = next((f["line"] for f in flist if f["line"] > 0), 1)
             payload = {
-                "content": {"raw": _render_file_comment(fp, flist)},
+                "content": {"raw": _render_file_comment(fp, flist, anchor_line)},
                 "inline":  {"to": anchor_line, "path": fp},
             }
             try:

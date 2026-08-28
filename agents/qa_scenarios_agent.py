@@ -13,7 +13,8 @@ Fallback (zero LLM tokens):
     • New dependencies          → integration & compatibility scenarios
     • Config / env changes      → environment validation scenarios
     • UI / template changes     → functional & cross-browser scenarios
-    • Test file changes         → test quality review scenarios
+    • Build/infra/config files, and files that are already tests themselves,
+      are excluded — see _is_scenario_worthy() and is_test_file()
 
 LLM path:
   Produces rich, context-aware scenarios with step-by-step procedures,
@@ -28,7 +29,23 @@ from core.models import (
     QAScenariosResult, QAScenario, QAScenarioType, RiskLevel,
 )
 from agents.base_agent import BaseAgent, format_hunks_for_prompt, format_user_priorities
-from ingestion.language_registry import lang_meta, test_framework_hint, linter_hint, detect_language
+from ingestion.language_registry import lang_meta, test_framework_hint, linter_hint, detect_language, LANGUAGES
+from ingestion.test_detect import is_test_file
+
+
+def _is_scenario_worthy(language: str) -> bool:
+    """True only for a language that's real, testable source — not a log/data
+    file (detect_language falls back to the literal string "unknown"), and
+    not an "orphan" language id like "xml" that EXT_TO_LANG maps to but that
+    has no LangMeta entry (lang_meta() silently degrades those to the same
+    unknown-fallback metadata, so checking `language == "unknown"` alone
+    misses them — pom.xml, web.xml, etc. would otherwise pass through and get
+    a nonsensical "write a unit test for this build file" scenario), and not
+    a real, recognized infra/config language (yaml/json/toml/dockerfile/hcl —
+    LangMeta.is_infra) either, since those aren't unit-tested the same way."""
+    if language == "unknown" or language not in LANGUAGES:
+        return False
+    return not lang_meta(language).is_infra
 
 
 # ── Heuristic classifiers ─────────────────────────────────────────────────────
@@ -355,11 +372,19 @@ def _build_fallback_scenarios(request: AnalysisRequest) -> list[QAScenario]:
     for hunk in request.hunks:
         fp      = hunk.file_path
         content = hunk.content
-        if hunk.language == "unknown":
-            # Not recognized as any source/config/data language (logs, .csv,
-            # .md, .txt, ...) — there's no code or schema here to write a test
-            # against, and keyword regexes below would otherwise false-positive
-            # on log/prose content that merely mentions "auth" or "migration".
+        if not _is_scenario_worthy(hunk.language):
+            # Not recognized as testable source at all (logs, .csv, .md, .txt,
+            # ...), or a build/infra/config file (pom.xml, yaml/json/toml,
+            # Dockerfile, ...) — there's no code or schema here to write a
+            # unit test against, and keyword regexes below would otherwise
+            # false-positive on log/prose content that merely mentions "auth"
+            # or "migration". See _is_scenario_worthy for the full reasoning.
+            continue
+        if is_test_file(fp):
+            # Don't suggest "write a unit test for this" for a file that's
+            # already a test — the test_coverage agent is what reports on
+            # *other* changed files lacking a corresponding test; recommending
+            # a test for a test is meaningless.
             continue
         cats    = _categorise_hunk(fp, content)
         meta    = lang_meta(hunk.language)
@@ -616,15 +641,18 @@ Respond ONLY with valid JSON matching the QAScenariosResult schema."""
     def run(self, request: AnalysisRequest, budget, context: dict[str, Any] | None = None) -> QAScenariosResult:
         result = super().run(request, budget, context)
         # The LLM sees raw diff content in the prompt and sometimes proposes a
-        # scenario for a file that isn't source/config code at all (a log or
-        # data file whose CONTENT merely contains words like "auth" or
-        # "migration") — there's no code there to write a real test against.
-        # Drop any scenario whose every affected_file is unrecognized by the
-        # language registry, the same signal the fallback path gates on.
+        # scenario for a file that isn't real testable source at all — a log
+        # or data file whose CONTENT merely contains words like "auth" or
+        # "migration" (no code there to write a real test against), a
+        # build/infra/config file like pom.xml (see _is_scenario_worthy), or a
+        # file that's already a test itself. Drop any scenario whose every
+        # affected_file fails all three checks — the same gates the fallback
+        # path applies.
         try:
             result.scenarios = [
                 s for s in result.scenarios
-                if not s.affected_files or any(detect_language(f) != "unknown" for f in s.affected_files)
+                if not s.affected_files
+                or any(_is_scenario_worthy(detect_language(f)) and not is_test_file(f) for f in s.affected_files)
             ]
             result.total_scenarios = len(result.scenarios)
             priorities = [getattr(s.priority, "value", s.priority) for s in result.scenarios]

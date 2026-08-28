@@ -116,47 +116,203 @@ async def github_webhook(
 
 async def _run_with_diff(req, provider, orch, store):
     """Fetch the actual diff then run analysis."""
+    git    = None
+    pr_id  = req.metadata.get("pr_id")
+    repo   = req.metadata.get("repo_slug") or req.repo_url.rstrip("/").split("/")[-1]
+    new_head = req.pr.head_sha if req.pr else ""
+    prior: dict | None = None   # set below if this PR was analyzed before — also used for triage carry-forward
+    report = None                # set by whichever path below produces the final report
+
     try:
-        git    = make_git_client()
-        pr_id  = req.metadata.get("pr_id")
-        repo   = req.metadata.get("repo_slug") or req.repo_url.rstrip("/").split("/")[-1]
+        git = make_git_client()
 
-        if pr_id:
-            raw_diff = git.get_pr_diff(repo, pr_id)
-        else:
-            raw_diff = git.get_branch_diff(repo, req.source_ref, req.target_ref)
+        # Incremental re-analysis: if this exact PR was already analyzed,
+        # decide what the new push actually requires.
+        # See governance/review_session_store.py::pr_analysis_head.
+        if pr_id and new_head:
+            from governance.review_session_store import get_review_store
+            review_store = get_review_store()
+            prior = review_store.get_last_analyzed_head(provider, repo, str(pr_id))
+            if prior and prior.get("head_sha") and prior["head_sha"] != new_head:
+                try:
+                    incremental_diff = git.get_branch_diff(repo, prior["head_sha"], new_head)
+                    incremental_hunks = parse_diff(incremental_diff)
+                    if not incremental_hunks:
+                        # No net new code (a rebase, a merge commit, a
+                        # whitespace-only commit) — skip the full pipeline and
+                        # point back at the prior result. Real cost/time
+                        # savings for the common "nothing meaningful changed"
+                        # case. record_pr_head is deliberately NOT updated
+                        # here — the old head remains the valid "last real
+                        # analysis" point for the next push's diff range.
+                        prior_report = store.get(prior["request_id"])
+                        if prior_report is not None:
+                            log.info("[%s] No net new code since %s for PR %s (repo=%s) — reusing prior result",
+                                     req.request_id, prior["request_id"], pr_id, repo)
+                            from config.settings import get_settings as _get_settings
+                            from output.pr_commenter import make_pr_commenter as _make_pr_commenter
+                            _commenter = _make_pr_commenter(_get_settings())
+                            if _commenter:
+                                _commenter.post_text(
+                                    f"GTO: no net new code since the last analysis "
+                                    f"(`{prior['request_id']}`) — reusing that result rather than "
+                                    f"re-running the full review.",
+                                    pr_id, repo,
+                                )
+                            return
+                    else:
+                        # Real new content — true incremental re-review:
+                        # analyze ONLY the new commits, then merge with the
+                        # prior full report, instead of re-analyzing the
+                        # whole PR from scratch.
+                        report = await _run_incremental_merge(
+                            req, orch, store, git, repo, pr_id, prior, incremental_hunks)
+                except Exception as exc:
+                    log.debug("[%s] Incremental-diff check failed (%s) — proceeding with full analysis",
+                              req.request_id, exc)
 
-        from ingestion.diff_parser import parse_diff
-        req.hunks = parse_diff(raw_diff)
+        if report is None:
+            # No prior analysis for this PR, or the incremental path above
+            # didn't produce a report (fell through / failed) — today's
+            # unchanged full-PR-diff, full-pipeline behavior.
+            if pr_id:
+                raw_diff = git.get_pr_diff(repo, pr_id)
+            else:
+                raw_diff = git.get_branch_diff(repo, req.source_ref, req.target_ref)
+
+            req.hunks = parse_diff(raw_diff)
+
+            try:
+                from ingestion.path_review_config import load_from_git_client, load_team_default, merge_path_review_configs
+                # Resolve .gto.yaml from the TARGET branch, never the PR's own
+                # head — a PR must not be able to weaken scrutiny of itself
+                # via its own config file. `git` here is the same client just
+                # used for the diff.
+                repo_cfg = load_from_git_client(git, repo, req.target_ref)
+                team_cfg = load_team_default(git)
+                req.path_review_config = merge_path_review_configs(repo_cfg, team_cfg)
+            except Exception as exc:
+                log.debug("[%s] .gto.yaml load failed (%s) — proceeding without path-scoped rules", req.request_id, exc)
+
+            report = await orch.analyse_async(req)
+            store.save(report)
     except Exception as exc:
         log.warning("[%s] Diff fetch failed (%s) — proceeding without diff", req.request_id, exc)
+        if report is None:
+            report = await orch.analyse_async(req)
+            store.save(report)
 
-    try:
-        from ingestion.path_review_config import load_from_git_client, load_team_default, merge_path_review_configs
-        # Resolve .gto.yaml from the TARGET branch, never the PR's own head —
-        # a PR must not be able to weaken scrutiny of itself via its own
-        # config file. `git` here is the same client just used for the diff.
-        repo_cfg = load_from_git_client(git, repo, req.target_ref)
-        team_cfg = load_team_default(git)
-        req.path_review_config = merge_path_review_configs(repo_cfg, team_cfg)
-    except Exception as exc:
-        log.debug("[%s] .gto.yaml load failed (%s) — proceeding without path-scoped rules", req.request_id, exc)
+    if pr_id and new_head:
+        from governance.review_session_store import get_review_store as _get_review_store
+        _review_store = _get_review_store()
+        # Fixes an orphaning bug that exists today independent of
+        # incremental re-analysis: review_triage is keyed only by
+        # request_id, so a reviewer's false_positive/won't_fix verdict on
+        # the PRIOR request_id would otherwise be silently invisible on this
+        # new one. Runs for every re-analysis of a tracked PR, not just an
+        # incremental-merge one. Deliberately a SEPARATE try/except from
+        # record_pr_head below — a carry-forward failure must never prevent
+        # the new head from being recorded.
+        if prior and prior.get("request_id"):
+            try:
+                carried = _review_store.carry_forward_triage(prior["request_id"], report.request_id, report.top_issues)
+                if carried:
+                    log.info("[%s] Carried forward %d triage verdict(s) from %s",
+                             req.request_id, carried, prior["request_id"])
+            except Exception as exc:
+                log.debug("[%s] carry_forward_triage failed (%s)", req.request_id, exc)
+        try:
+            _review_store.record_pr_head(provider, repo, str(pr_id), new_head, report.request_id)
+        except Exception as exc:
+            log.debug("[%s] record_pr_head failed (%s)", req.request_id, exc)
 
-    report = await orch.analyse_async(req)
-    store.save(report)
-
-    # Optional: post PR comment
+    # Optional: post PR comment. Uses the same richer, per-file-grouped,
+    # suggestion-fenced renderer (post_inline_comments) the manual "Post to
+    # PR" button already uses, instead of the older, flatter PRCommenter.post()
+    # — the automatic webhook-triggered flow gets the same polish. Credential
+    # resolution mirrors make_pr_commenter's own branching exactly (same
+    # cfg.post_pr_comments gate, same per-provider token/workspace/api_url
+    # selection) since post_inline_comments is a free function, not a
+    # PRCommenter method.
     from config.settings import get_settings
-    from output.pr_commenter import make_pr_commenter
+    from output.pr_commenter import post_inline_comments
     from output.notification import make_notification_service
-    cfg        = get_settings()
-    commenter  = make_pr_commenter(cfg)
-    notifier   = make_notification_service(cfg)
-    if commenter:
-        posted_ok = commenter.post(report)
-        if posted_ok:
-            _record_summary_comment(req, provider, report.request_id)
+    cfg      = get_settings()
+    notifier = make_notification_service(cfg)
+    if cfg.post_pr_comments and pr_id:
+        if cfg.git_provider == "bitbucket_server":
+            pr_token, pr_workspace, pr_base_url = cfg.bitbucket_token, cfg.bitbucket_workspace, cfg.bitbucket_api_url
+        elif cfg.git_provider == "bitbucket":
+            pr_token, pr_workspace, pr_base_url = cfg.bitbucket_token, cfg.bitbucket_workspace, cfg.bitbucket_api_url
+        else:
+            pr_token, pr_workspace, pr_base_url = cfg.github_token, "", cfg.github_api_url
+        try:
+            total_posted = post_inline_comments(
+                report=report, token=pr_token, provider=cfg.git_provider,
+                workspace=pr_workspace, base_url=pr_base_url,
+                repo_slug=repo, pr_id=str(pr_id),
+            )
+            if total_posted > 0:
+                _record_summary_comment(req, provider, report.request_id)
+        except Exception as exc:
+            log.warning("[%s] PR comment posting failed (%s)", req.request_id, exc)
     notifier.notify(report)
+
+
+async def _run_incremental_merge(req, orch, store, git, repo, pr_id, prior: dict, incremental_hunks: list):
+    """True incremental re-review: analyze ONLY the new commits, then merge
+    with the prior full report — instead of re-running the whole PR's diff
+    through every agent again. Returns the merged, re-finalized report, or
+    None on any internal failure (the caller falls back to today's full
+    re-analysis in that case — this function deliberately never raises).
+    """
+    try:
+        prior_report = store.get(prior["request_id"])
+        if prior_report is None:
+            log.debug("[%s] Prior report %s not in store — falling back to full analysis",
+                      req.request_id, prior["request_id"])
+            return None
+
+        # Run the existing, unmodified pipeline against ONLY the new commits'
+        # hunks — no orchestrator changes needed, it already works on
+        # whatever's in request.hunks.
+        req.hunks = incremental_hunks
+        partial_report = await orch.analyse_async(req)
+
+        from governance.report_merge import merge_reports
+        merged = merge_reports(prior_report, partial_report)
+
+        # Full PR diff — cheap (no LLM cost), needed only to supply correct
+        # changed_files/changed_lines/source_lines so old findings (already
+        # verified against the full diff originally) don't get incorrectly
+        # re-flagged unverified for touching files outside the new commits'
+        # range. No agent re-runs against this — it's used purely for the
+        # re-verification passes below.
+        full_raw_diff = git.get_pr_diff(repo, pr_id)
+        full_hunks = parse_diff(full_raw_diff)
+        full_req_view = req.model_copy(update={"hunks": full_hunks})
+
+        changed_files = {h.file_path for h in full_hunks}
+        changed_lines = orch._changed_lines(full_req_view)
+        source_lines = orch._source_lines(full_req_view)
+
+        # _finalize needs a TokenBudgetManager only to record report.token_budget
+        # (summary()["total_allocated"]) — no new agent calls happen here, so a
+        # manager whose one custom budget equals the two real reports' already-
+        # recorded totals is sufficient (not a fresh per-agent allocation).
+        from core.token_manager import TokenBudgetManager
+        total_budget = (prior_report.token_budget or 0) + (partial_report.token_budget or 0)
+        budget = TokenBudgetManager(merged.request_id, custom_budgets={"_merge": total_budget})
+
+        merged = orch._finalize(merged, budget, changed_files, changed_lines, source_lines)
+        store.save(merged)
+        log.info("[%s] Incremental re-review: merged %s (prior) + new commits — gate=%s",
+                  req.request_id, prior["request_id"], merged.gate_decision)
+        return merged
+    except Exception as exc:
+        log.warning("[%s] Incremental merge failed (%s) — falling back to full analysis",
+                    req.request_id, exc, exc_info=True)
+        return None
 
 
 def _record_summary_comment(req, provider: str, request_id: str) -> None:

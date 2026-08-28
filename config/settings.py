@@ -93,7 +93,12 @@ class Settings(BaseSettings):
     budget_reserve:            int = Field(default=3000,  alias="BUDGET_RESERVE")
     budget_performance_impact: int = Field(default=3000,  alias="BUDGET_PERFORMANCE_IMPACT")
     budget_data_privacy:       int = Field(default=3000,  alias="BUDGET_DATA_PRIVACY")
-    budget_maintainability:    int = Field(default=2000,  alias="BUDGET_MAINTAINABILITY")
+    # Bumped from 2000 alongside the code_analysis/ast_analysis strong-model
+    # move — a dual static+LLM enterprise-depth review (SOLID/DRY/naming/
+    # documentation, not just the static rule list) needs more room than the
+    # static-only budget the old default was sized for.
+    budget_maintainability:    int = Field(default=3500,  alias="BUDGET_MAINTAINABILITY")
+    budget_ast_analysis:       int = Field(default=4000,  alias="BUDGET_AST_ANALYSIS")
     budget_license_compliance: int = Field(default=0,     alias="BUDGET_LICENSE_COMPLIANCE")  # static-only
     budget_observability:      int = Field(default=2000,  alias="BUDGET_OBSERVABILITY")
     budget_functional_validation: int = Field(default=3500, alias="BUDGET_FUNCTIONAL_VALIDATION")
@@ -167,6 +172,15 @@ class Settings(BaseSettings):
     # Directory of pre-downloaded OSV snapshot zips (Maven.zip / NuGet.zip …) —
     # the LAST-RESORT lookup when every live source is down (air-gapped).
     osv_offline_dir:           str  = Field(default="",    alias="OSV_OFFLINE_DIR")
+
+    # deps.dev (Google/OpenSSF Open Source Insights) — real SPDX license per
+    # package/version, used by license_compliance_agent instead of guessing
+    # from the package name. Separate settings from OSV_* since a corporate
+    # proxy/CA policy may differ per external host.
+    deps_dev_verify_ssl:       bool = Field(default=True,  alias="DEPS_DEV_VERIFY_SSL")
+    deps_dev_ca_bundle:        str  = Field(default="",    alias="DEPS_DEV_CA_BUNDLE")
+    deps_dev_base_url:         str  = Field(default="",    alias="DEPS_DEV_BASE_URL")
+    deps_dev_proxy_url:        str  = Field(default="",    alias="DEPS_DEV_PROXY_URL")
     maven_repo_url:            str  = Field(default="",    alias="MAVEN_REPO_URL")
     maven_repo_auth:           str  = Field(default="",    alias="MAVEN_REPO_AUTH")
     maven_scan_transitive:     bool = Field(default=True,  alias="MAVEN_SCAN_TRANSITIVE")
@@ -387,6 +401,7 @@ class Settings(BaseSettings):
 
     # ── CVE lookup ────────────────────────────────────────────────────────────
     osv_enabled:      bool = Field(default=True, alias="OSV_ENABLED")
+    deps_dev_enabled: bool = Field(default=True, alias="DEPS_DEV_ENABLED")
 
     # ── Reference graph depth ─────────────────────────────────────────────────
     ref_max_depth:    int  = Field(default=2, alias="REF_MAX_DEPTH")
@@ -433,6 +448,7 @@ class Settings(BaseSettings):
             "performance_impact": self.budget_performance_impact,
             "data_privacy":       self.budget_data_privacy,
             "maintainability":    self.budget_maintainability,
+            "ast_analysis":       self.budget_ast_analysis,
             "license_compliance": self.budget_license_compliance,
             "observability":      self.budget_observability,
             "functional_validation": self.budget_functional_validation,

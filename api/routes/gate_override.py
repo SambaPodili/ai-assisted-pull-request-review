@@ -144,6 +144,73 @@ def override_gate(request_id: str, body: OverrideRequest, request: Request):
     }
 
 
+class ApprovePrRequest(BaseModel):
+    provider:   str
+    token:      str   # required — the reviewer's OWN credential, never the shared bot.
+                       # A blank/missing token would defeat the entire point of this
+                       # endpoint (the approval must show as the real reviewer on the
+                       # PR, not "GTO Bot") — no server-side fallback, unlike /comment-pr.
+    base_url:   str = ""
+    workspace:  str = ""
+    repo_slug:  str
+    pr_id:      str
+
+
+@router.post("/{request_id}/approve-pr")
+def approve_pr(request_id: str, body: ApprovePrRequest, request: Request):
+    """
+    Reviewer sign-off on a PR — approval only, never merges. Distinct from
+    /override: this doesn't change GTO's own gate decision or touch
+    GateOverrideStore, it's a side-channel reviewer action reusing the same
+    provider "approve" mechanism /override already relies on for its own
+    optional PR reflection (output.pr_commenter.post_pr_decision).
+
+    Requires: pr:approve permission. Recorded: immutable audit log entry
+    (AuditEvent.PR_APPROVED), keyed to the calling Subject's identity —
+    cross-reference against the PR's own approval identity (tied to
+    whichever token was supplied) for audit purposes.
+    """
+    from api.app import get_report_store, get_audit_logger
+    cfg = get_settings()
+
+    subject = resolve_subject(request, skip_auth=cfg.skip_auth)
+    if not subject:
+        raise HTTPException(401, "Authentication required")
+    subject.require(Permission.PR_APPROVE)
+
+    if not body.token:
+        raise HTTPException(400, "token is required — approval must show as your own identity on the PR")
+
+    report = get_report_store().get(request_id)
+    if not report:
+        raise HTTPException(404, f"Report '{request_id}' not found")
+
+    from output.pr_commenter import post_pr_decision
+    try:
+        pr_action = post_pr_decision(
+            "APPROVE", body.provider, body.token, body.base_url, body.repo_slug,
+            body.pr_id, body.workspace, reason="", report_id=request_id)
+    except Exception as exc:
+        log.warning("PR approve failed for %s: %s", request_id, exc)
+        raise HTTPException(502, f"Could not approve the PR: {exc}")
+
+    audit = get_audit_logger()
+    audit.log(AuditEvent.PR_APPROVED, {
+        "request_id":  request_id,
+        "repo_slug":   body.repo_slug,
+        "pr_id":       body.pr_id,
+        "provider":    body.provider,
+        "approved_by": subject.name or subject.key_id,
+        "user_id":     subject.user_id,
+    })
+
+    return {
+        "request_id": request_id,
+        "pr_action":  pr_action,
+        "status":     "approved" if pr_action.get("ok") else "failed",
+    }
+
+
 @router.get("/overrides")
 def list_overrides(request: Request):
     """List all gate overrides (auditor/admin only)."""

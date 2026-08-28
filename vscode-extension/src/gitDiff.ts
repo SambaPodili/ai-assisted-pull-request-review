@@ -45,6 +45,21 @@ function normalizeRepoUrl(remoteUrl: string, folderName: string): string {
   return trimmed.replace(/\.git$/, '');
 }
 
+/** Extracts `org/repo` (or `PROJ/repo`) from a normalized repo URL
+ * (`https://host/org/repo`, the shape `normalizeRepoUrl` produces) — the
+ * `repo_slug` a provider REST call needs. Falls back to the raw string
+ * unchanged for the `local/foldername` case (no real remote), which is
+ * already bare and would just fail the provider call downstream, same as
+ * today. */
+export function ownerRepoFromUrl(repoUrl: string): string {
+  try {
+    const u = new URL(repoUrl);
+    return u.pathname.replace(/^\//, '').replace(/\.git$/, '').replace(/\/$/, '');
+  } catch {
+    return repoUrl.replace(/\.git$/, '');
+  }
+}
+
 /** Converts one glob pattern (`.gitignore`-flavored) to an anchored RegExp
  * tested against a path relative to the repo root. A pattern with no `/` is
  * treated as `**\/<pattern>` (matches at any depth, like a slash-less

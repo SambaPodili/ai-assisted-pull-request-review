@@ -145,11 +145,12 @@ _LANG_TO_ECOSYSTEM: dict[str, str] = {
 
 @dataclass
 class OsvVuln:
-    package:   str
-    vuln_id:   str          # e.g. "GHSA-xxxx" or "CVE-2024-1234"
-    summary:   str
-    severity:  str = ""     # CRITICAL | HIGH | MEDIUM | LOW | ""
-    aliases:   list[str] = field(default_factory=list)  # cross-refs (CVE IDs)
+    package:        str
+    vuln_id:        str          # e.g. "GHSA-xxxx" or "CVE-2024-1234"
+    summary:        str
+    severity:       str = ""     # CRITICAL | HIGH | MEDIUM | LOW | ""
+    aliases:        list[str] = field(default_factory=list)  # cross-refs (CVE IDs)
+    fixed_version:  str = ""     # "" when no fix is published yet
 
 
 _SEV_LABELS = {"CRITICAL": "CRITICAL", "HIGH": "HIGH", "MODERATE": "MEDIUM",
@@ -197,6 +198,20 @@ def _cvss_band(score_str: str) -> str:
         return _band(math.ceil(raw * 10) / 10)
     except (KeyError, ValueError):
         return ""
+
+
+def _fixed_version_from_vuln(vuln: dict) -> str:
+    """First 'fixed' event in the vuln's affected[].ranges[].events[] — the
+    minimum version that resolves it. Mirrors the walk in fixed_version_for(),
+    reused here so callers that already have the full vuln object (query_versioned/
+    query_batch, via _fetch_vuln_details) don't need a second network round trip."""
+    for affected in vuln.get("affected", []):
+        for rng in affected.get("ranges", []):
+            for evt in rng.get("events", []):
+                fixed = evt.get("fixed")
+                if fixed:
+                    return fixed
+    return ""
 
 
 def _severity_from_vuln(vuln: dict) -> str:
@@ -281,6 +296,7 @@ def query_versioned(
                 summary=(v.get("summary") or v.get("details", "") or "")[:200],
                 severity=_severity_from_vuln(v),
                 aliases=[a for a in v.get("aliases", []) if a.startswith("CVE-")],
+                fixed_version=_fixed_version_from_vuln(v),
             ))
         if vulns:
             out[(name, version)] = vulns
@@ -316,16 +332,25 @@ def query_batch(
         log.warning("OSV batch query failed: %s", exc)
         return {}
 
+    # /querybatch returns only sparse stubs (mostly just id) — fetch full
+    # details (severity, fixed-version) the same way query_versioned does, so
+    # the name-only path isn't stuck reporting every CVE as "severity unknown".
+    id_set = {v.get("id") for result in data.get("results", []) or []
+              for v in (result.get("vulns") or []) if v.get("id")}
+    details = _fetch_vuln_details(id_set, timeout_s)
+
     results: dict[str, list[OsvVuln]] = {}
     for (name, _eco), result in zip(packages, data.get("results", [])):
         vulns: list[OsvVuln] = []
-        for v in result.get("vulns", []):
+        for stub in result.get("vulns", []):
+            v = details.get(stub.get("id"), stub)
             vulns.append(OsvVuln(
                 package=name,
                 vuln_id=v.get("id", ""),
-                summary=v.get("summary", "")[:200],
+                summary=(v.get("summary") or v.get("details", "") or "")[:200],
                 severity=_severity_from_vuln(v),
                 aliases=[a for a in v.get("aliases", []) if a.startswith("CVE-")],
+                fixed_version=_fixed_version_from_vuln(v),
             ))
         if vulns:
             results[name] = vulns
@@ -390,6 +415,27 @@ def cve_ids(vulns: list[OsvVuln]) -> list[str]:
                 seen.add(c)
                 ids.append(c)
     return ids
+
+
+def cve_findings(vulns: list[OsvVuln]) -> list[tuple[str, str, str, str]]:
+    """Dedup (package, cve_id, severity, fixed_version) tuples, CVE-only —
+    the structured counterpart to cve_ids(), for callers that need severity
+    and fix-version data rather than a bare list of IDs. Returns plain tuples
+    (not core.models.CveFinding) so this ingestion-layer module doesn't need
+    to import the core layer; callers build their own typed objects."""
+    out: list[tuple[str, str, str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for v in vulns:
+        candidates = [v.vuln_id] + v.aliases
+        cve_id = next((c for c in candidates if c.startswith("CVE-")), "")
+        if not cve_id:
+            continue
+        key = (v.package, cve_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((v.package, cve_id, v.severity, v.fixed_version))
+    return out
 
 
 def fixed_version_for(

@@ -112,6 +112,33 @@ class TestSecretsEntropyAgent:
         result = self._agent().run(req, zero_budget)
         assert result.overall_severity != RiskLevel.LOW or len(result.findings) >= 0
 
+    def test_detects_unquoted_env_file_secret(self, zero_budget):
+        """.env/.properties/.yaml files never quote values — Layer 2b must
+        catch a high-entropy unquoted assignment the same way a quoted
+        string literal in source code is already caught, since these files
+        were previously invisible to every layer except a known-prefix hit."""
+        content = (
+            '+++ b/.env\n'
+            '+DB_PASSWORD=Xk9mQ2vLp8wRt5nJ4hYc7Zb1Fg6Ds3\n'
+        )
+        req = make_req(hunk(".env", content, lang="text"))
+        result = self._agent().fallback_result(req)
+        assert any(f.kind == "high_entropy" and f.variable == "DB_PASSWORD"
+                   for f in result.findings)
+        assert result.overall_severity in (RiskLevel.CRITICAL, RiskLevel.HIGH)
+
+    def test_unquoted_assignment_layer_gated_to_env_style_files(self, zero_budget):
+        """The unquoted-assignment layer must not fire on ordinary source
+        files — only .env/.properties/.yaml/etc — so a long unquoted
+        right-hand side in a .py file isn't misread as a secret."""
+        content = (
+            '+++ b/service.py\n'
+            '+SOME_VERY_LONG_CONSTANT_NAME = some_function_call_result_value\n'
+        )
+        req = make_req(hunk("service.py", content, lang="python"))
+        result = self._agent().fallback_result(req)
+        assert result.findings == []
+
     def test_clean_code_no_findings(self, zero_budget):
         req = make_req(hunk("service.py",
             '+def process_payment(amount: Decimal) -> bool:\n'
