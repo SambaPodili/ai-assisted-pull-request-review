@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.14.3
+
+- **Marketplace icon** — redrawn as the UOB lockup (red mark + white "UOB") on a
+  dark-blue rounded card over white. The previous icon rendered the mark as thin
+  vertical red bars that aliased into a zigzag at the small sizes VS Code shows
+  in the Extensions list and activity bar; the bars are now bold enough to
+  survive the downscale.
+- **Publisher** renamed `gto` → `UOB`. This changes the extension identifier
+  from `gto.gto-pr-review` to `UOB.gto-pr-review`, so VS Code sees it as a new
+  extension — uninstall the old `gto.gto-pr-review` before installing this
+  build. Setting keys (`gto.*`) and command ids are unchanged.
+- **Description** trimmed — dropped "business-impact mapping".
+
 ## 0.14.1
 
 Review-noise fixes for the office deployment, from user feedback on a PR that
