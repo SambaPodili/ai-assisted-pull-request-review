@@ -191,20 +191,53 @@ class RemediationAgent(BaseAgent[RemediationResult]):
         return context_str + format_user_priorities(request.user_instructions)
 
     def fallback_result(self, request: AnalysisRequest) -> RemediationResult:
+        # Diff-aware boilerplate: only include a line when the change actually
+        # touches that concern, so a dependency-bump / test-only PR doesn't get
+        # "ensure 80% coverage" / "validate API contract with consuming teams".
+        from agents.test_coverage_agent import _untested_changed_files
+        from ingestion.source_class import is_reviewable_code
+        from ingestion.test_detect import is_test_file
+
+        files       = [h.file_path for h in request.hunks]
+        all_content = "\n".join(h.content for h in request.hunks)
+        has_sql     = any(f.lower().endswith(".sql") or "/migration" in f.lower() for f in files)
+        has_api     = bool(re.search(
+            r'@(GET|POST|PUT|DELETE|PatchMapping|RequestMapping|app\.(get|post|put|delete)|router\.)'
+            r'|openapi|swagger|\.proto\b', all_content, re.I))
+        has_manifest = any(not is_reviewable_code(f) and not is_test_file(f)
+                           and f.lower().rsplit("/", 1)[-1] in {
+                               "pom.xml", "build.gradle", "build.gradle.kts",
+                               "package.json", "requirements.txt", "go.mod", "cargo.toml"}
+                           for f in files)
+        try:
+            untested = _untested_changed_files(request)
+        except Exception:
+            untested = 0
+
+        fixes = ["Review the findings below and address any critical or high items before merging."]
+        if untested > 0:
+            fixes.append(f"Add unit/integration tests for the {untested} changed source file(s) that "
+                         "currently have no paired test.")
+        if has_api:
+            fixes.append("Validate the API contract change with all consuming teams before deployment.")
+        if has_sql:
+            fixes.append("Review the schema/migration change for a safe rollback path with the DBA team.")
+        if has_manifest:
+            fixes.append("Confirm the dependency updates introduce no new CVEs or breaking transitive changes.")
+
+        checklist = [
+            "Run the regression test suite on staging for the affected modules.",
+            "Confirm no secrets are committed (scan with detect-secrets or gitleaks).",
+            "Obtain sign-off from the security team for any critical findings.",
+        ]
+        if has_api:
+            checklist.insert(1, "Perform a manual smoke test on all affected API endpoints.")
+        if has_sql:
+            checklist.append("Validate the rollback procedure with the DBA team.")
+
         return RemediationResult(
-            fix_suggestions=[
-                "Review and remediate all critical and high security findings before merging.",
-                "Ensure unit and integration test coverage exceeds 80% for all changed modules.",
-                "Validate API contract changes with all consuming teams before deployment.",
-                "Perform a manual walkthrough of changed transaction logic with a domain expert.",
-            ],
-            validation_checklist=[
-                "Run full regression test suite on staging environment.",
-                "Perform manual smoke test on all affected API endpoints.",
-                "Validate rollback procedure with the DBA team (especially for schema changes).",
-                "Confirm no secrets are committed (scan with detect-secrets or gitleaks).",
-                "Obtain sign-off from the security team for any critical findings.",
-            ],
+            fix_suggestions=fixes,
+            validation_checklist=checklist,
             deployment_strategy=DeploymentStrategy.CANARY,
             executive_summary=(
                 "This change has been flagged for manual review before production deployment. "

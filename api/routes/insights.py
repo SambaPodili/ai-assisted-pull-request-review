@@ -566,39 +566,34 @@ def similar_prs(request_id: str, top_k: int = 5):
 
     all_reports = _load_reports(limit=500)
 
-    # Build target fingerprint
-    target_files = set()
-    if target.reference_impact:
-        target_files.update(f.file_path for f in (target.reference_impact.references or []))
-    for attr in ("security","performance_impact","data_privacy","maintainability"):
-        result = getattr(target, attr, None)
-        if result:
-            for f in getattr(result, "findings", None) or getattr(result, "pii_findings", []):
-                fp = getattr(f, "file_path", "")
-                if fp:
-                    target_files.add(fp)
+    target_files = _significant_files(target)
 
     target_summary = ""
     if target.code_analysis:
         target_summary = (target.code_analysis.summary or "").lower()
     target_words = set(target_summary.split())
 
+    # Collapse near-identical past runs (same repo + branch + changed-file set):
+    # a repo re-analysed 4× in testing should contribute ONE row, not four.
+    seen_fingerprints: set = set()
+
     results = []
-    for r in all_reports:
+    for r in sorted(all_reports, key=_completed_ts, reverse=True):
         if r.request_id == request_id:
             continue
 
-        # File overlap
-        r_files: set[str] = set()
-        for attr in ("security","performance_impact","data_privacy","maintainability"):
-            result = getattr(r, attr, None)
-            if result:
-                for f in getattr(result, "findings", None) or getattr(result, "pii_findings", []):
-                    fp = getattr(f, "file_path", "")
-                    if fp:
-                        r_files.add(fp)
+        r_files = _significant_files(r)
 
-        file_overlap = len(target_files & r_files) / max(len(target_files | r_files), 1)
+        fp_key = (r.repo_url, r.source_ref, frozenset(r_files))
+        if fp_key in seen_fingerprints:
+            continue
+        seen_fingerprints.add(fp_key)
+
+        # File overlap — on the REAL changed-file set, with build/config/test
+        # noise (pom.xml, lockfiles, *Test.java) already stripped out, so two
+        # PRs that merely both bump pom.xml are not called "similar".
+        inter = len(target_files & r_files)
+        file_overlap = inter / max(len(target_files | r_files), 1)
 
         # Keyword overlap in summary
         r_summary = ""
@@ -607,11 +602,12 @@ def similar_prs(request_id: str, top_k: int = 5):
         r_words    = set(r_summary.split())
         kw_overlap = len(target_words & r_words) / max(len(target_words | r_words), 1)
 
-        # Same repo bonus
-        repo_match = 0.2 if r.repo_url == target.repo_url else 0.0
+        # Same-repo bonus only counts when there's also real shared code —
+        # otherwise every PR in the repo tied at a flat 0.2.
+        repo_match = 0.15 if (r.repo_url == target.repo_url and inter > 0) else 0.0
 
-        similarity = round(0.5 * file_overlap + 0.3 * kw_overlap + repo_match, 3)
-        if similarity < 0.05:
+        similarity = round(0.6 * file_overlap + 0.25 * kw_overlap + repo_match, 3)
+        if similarity < 0.15:
             continue
 
         results.append({
@@ -644,6 +640,37 @@ def _elapsed(r) -> str:
         return f"{int(h/24)}d ago"
     except Exception:
         return "—"
+
+
+def _completed_ts(r) -> datetime:
+    ts = getattr(r, "completed_at", None)
+    return ts if isinstance(ts, datetime) else datetime.min
+
+
+def _significant_files(r) -> set[str]:
+    """The changed-file set used to judge PR similarity — real first-party
+    source only. Prefers the report's recorded `files_changed_list`; falls
+    back to the files that findings landed on for older reports that predate
+    that field. Build manifests, lockfiles and test files are excluded so
+    they don't manufacture false similarity."""
+    from ingestion.source_class import is_reviewable_code
+
+    files: set[str] = set()
+    for f in getattr(r, "files_changed_list", None) or []:
+        if f:
+            files.add(f)
+    if not files:
+        if getattr(r, "reference_impact", None):
+            files.update(f.file_path for f in (r.reference_impact.references or []))
+        for attr in ("security", "performance_impact", "data_privacy", "maintainability"):
+            result = getattr(r, attr, None)
+            if not result:
+                continue
+            for f in getattr(result, "findings", None) or getattr(result, "pii_findings", []):
+                fp = getattr(f, "file_path", "")
+                if fp:
+                    files.add(fp)
+    return {f for f in files if is_reviewable_code(f)}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -688,9 +688,12 @@ function renderReport(r: AnalysisReport, opts: ReportViewOpts): string {
             msg.items.map((it) => {
               const pct = Math.round((it.similarity || 0) * 100);
               const label = it.pr_title || it.source_ref || it.repo;
+              const branch = it.pr_title && it.source_ref ? ' (' + esc(it.source_ref) + ')' : '';
+              const shared = (it.shared_files && it.shared_files.length)
+                ? ' · ' + it.shared_files.length + ' shared file' + (it.shared_files.length > 1 ? 's' : '') : '';
               return '<div class="similar-row"><span class="sim-pct">' + pct + '%</span> ' +
-                '<span>' + esc(label) + '</span> ' +
-                '<span class="dim">' + esc(it.gate) + ' · ' + esc(it.elapsed) + '</span></div>';
+                '<span>' + esc(label) + branch + '</span> ' +
+                '<span class="dim">' + esc(it.gate) + ' · ' + esc(it.elapsed) + shared + '</span></div>';
             }).join('') + '</details>';
         }
       });

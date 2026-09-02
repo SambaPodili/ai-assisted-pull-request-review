@@ -27,6 +27,7 @@ from core.models import (
     MaintainabilityIssue, MaintainabilityResult,
 )
 from agents.base_agent import BaseAgent, format_hunks_for_prompt
+from ingestion.source_class import is_reviewable_code
 
 log = logging.getLogger(__name__)
 
@@ -93,10 +94,26 @@ def _run_static(request: AnalysisRequest) -> list[MaintainabilityIssue]:
 
     prev_was_control = False   # for dead-code check
 
+    # Per-file gate: only nitpick real first-party source. pom.xml / *.xml /
+    # *.yaml / *.properties etc. would otherwise get "magic number" on every
+    # version literal and "nesting depth" on their indentation; test files get
+    # noise for deeply-nested test setup. "unknown" here means _guess_file
+    # couldn't resolve a path — keep scanning rather than silently drop.
+    reviewable: dict[str, bool] = {}
+
     for idx, line in enumerate(lines):
         is_added   = line.startswith("+") and not line.startswith("+++")
         is_removed = line.startswith("-") and not line.startswith("---")
         file_path  = _guess_file(lines, idx)
+
+        if file_path not in reviewable:
+            reviewable[file_path] = file_path == "unknown" or is_reviewable_code(file_path)
+        if not reviewable[file_path]:
+            # Reset multi-line state so nothing leaks across a skipped file.
+            in_func_def = False
+            in_except = False
+            prev_was_control = False
+            continue
 
         # ── Long function detection (track + lines after def) ──────────────────
         if is_added and _FUNC_DEF.match(line):
@@ -417,6 +434,13 @@ class MaintainabilityAgent(BaseAgent[MaintainabilityResult]):
             log.warning("MaintainabilityAgent: LLM call failed, using static only: %s", exc)
             llm_issues = []
 
+        # Same gate as the static pass — the LLM sees the raw diff and will
+        # otherwise comment on pom.xml / config / test files too.
+        llm_issues = [
+            i for i in llm_issues
+            if not getattr(i, "file_path", "") or is_reviewable_code(i.file_path)
+        ]
+
         # Merge: static + LLM, deduplicate
         all_issues = _dedup(static_issues + llm_issues)
         result = _build_result(all_issues)
@@ -424,8 +448,9 @@ class MaintainabilityAgent(BaseAgent[MaintainabilityResult]):
         return result
 
     def build_user_prompt(self, request: AnalysisRequest, context: dict[str, Any]) -> str:
+        hunks = [h for h in request.hunks if is_reviewable_code(h.file_path)] or request.hunks
         hunks_text = format_hunks_for_prompt(
-            request.hunks,
+            hunks,
             max_chars_per_hunk=2000,
             focus="general",
         )

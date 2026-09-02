@@ -649,6 +649,12 @@ Respond ONLY with valid JSON matching the QAScenariosResult schema."""
         # affected_file fails all three checks — the same gates the fallback
         # path applies.
         try:
+            for s in result.scenarios:
+                # A scenario that named both a test file and a real file would
+                # otherwise still display "…crsEnquiryResponseProcessorTest.java".
+                non_test = [f for f in (s.affected_files or []) if not is_test_file(f)]
+                if non_test:
+                    s.affected_files = non_test
             result.scenarios = [
                 s for s in result.scenarios
                 if not s.affected_files

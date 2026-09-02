@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.14.1
+
+Review-noise fixes for the office deployment, from user feedback on a PR that
+was mostly Maven dependency bumps plus new test classes.
+
+- **❓ Explain** now shows a clear message ("This GTO backend is too old to
+  support Explain — ask your admin to update it to the latest build.") when it
+  hits a backend that predates the `/report/{id}/explain-finding` endpoint,
+  instead of a bare "Not Found". The endpoint ships in the current backend
+  build — update the backend to enable Explain.
+- **Similar past PRs** — the row now shows the branch alongside the PR title
+  and a shared-file count. Backend matching was reworked (see below) so the
+  list stops filling with unrelated PRs all tied at the same score.
+- **Backend** (requires a backend redeploy):
+  - The maintainability agent no longer nitpicks `pom.xml` / `*.xml` / YAML /
+    `.properties` / other build & config files (no more "Magic number `3`" on
+    a `<version>` tag or "Nesting depth" on XML indentation), and no longer
+    reports on files that are themselves tests.
+  - The test-coverage agent no longer proposes "write a unit test" stubs for
+    methods that are already tests.
+  - The remediation fallback ("Suggested fixes") is now diff-aware — it only
+    raises test-coverage / API-contract / schema-rollback / dependency items
+    when the change actually touches those areas.
+  - "Similar past PRs" fingerprints on the real changed-file set (build
+    manifests, lockfiles and test files excluded) and collapses near-identical
+    past runs, so a dependency bump no longer looks "50% similar" to every
+    other dependency bump.
+
 ## 0.14.0
 
 A senior-review batch — seven features aimed at cutting manual reviewer/developer

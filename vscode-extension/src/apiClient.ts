@@ -294,7 +294,19 @@ export async function explainFinding(
     body: JSON.stringify(body),
   });
   if (resp.status === 401) throw new ApiError('Unauthorized — check your API key (GTO: Set API Key).', 401);
-  if (!resp.ok) throw new ApiError(await parseErrorBody(resp), resp.status);
+  if (!resp.ok) {
+    const detail = await parseErrorBody(resp);
+    // A bare "Not Found" (FastAPI's unknown-route body) means this backend
+    // build predates the /explain-finding endpoint — distinct from
+    // "Report '…' not found." which is a real, expired report.
+    if (resp.status === 404 && /^not found\.?$/i.test(detail.trim())) {
+      throw new ApiError(
+        'This GTO backend is too old to support Explain — ask your admin to update it to the latest build.',
+        404,
+      );
+    }
+    throw new ApiError(detail, resp.status);
+  }
   const data = (await resp.json()) as { answer?: string };
   return data.answer ?? '';
 }

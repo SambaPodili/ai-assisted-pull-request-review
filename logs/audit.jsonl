@@ -1168,3 +1168,59 @@
 {"ts": "2026-08-28T10:43:58.543464Z", "event": "analysis_started", "request_id": "3931f250-3dc8-458d-a2be-6a011911f789", "repo_url": "https://github.com/bank/payments", "source_ref": "feature/JIRA-9999", "target_ref": "main"}
 {"ts": "2026-08-28T10:43:58.547095Z", "event": "analysis_completed", "request_id": "3931f250-3dc8-458d-a2be-6a011911f789", "gate": "APPROVE", "risk": "low", "tokens": 0}
 {"ts": "2026-08-28T10:44:04.686772Z", "event": "analysis_completed", "request_id": "6b6189e8-8356-488d-aec4-8ac03b491acb", "gate": "BLOCK", "risk": "low", "tokens": 0}
+{"ts": "2026-08-31T07:56:12.419658Z", "event": "analysis_started", "request_id": "0b55448d-fd35-4b1c-b9c2-5429c2d102ce", "repo_url": "https://github.com/test/repo", "source_ref": "feature/test", "target_ref": "main"}
+{"ts": "2026-08-31T07:56:16.400142Z", "event": "analysis_completed", "request_id": "0b55448d-fd35-4b1c-b9c2-5429c2d102ce", "gate": "HOLD", "risk": "low", "tokens": 0}
+{"ts": "2026-08-31T07:56:16.731204Z", "event": "pull_request", "provider": "github", "request_id": "36d99873-82fe-4074-a905-1943293b47b8"}
+{"ts": "2026-08-31T07:56:19.227690Z", "event": "analysis_started", "request_id": "36d99873-82fe-4074-a905-1943293b47b8", "repo_url": "", "source_ref": "feature/branch", "target_ref": "main"}
+{"ts": "2026-08-31T07:56:20.807938Z", "event": "analysis_completed", "request_id": "36d99873-82fe-4074-a905-1943293b47b8", "gate": "HOLD", "risk": "low", "tokens": 0}
+{"ts": "2026-08-31T07:56:32.876538Z", "event": "pull_request", "provider": "github", "request_id": "9661226e-6a56-4a25-8447-71655d60aa1c"}
+{"ts": "2026-08-31T07:56:38.309829Z", "event": "pullrequest:created", "provider": "bitbucket", "request_id": "a8d7bc20-cba1-43f3-9157-a482b5ee1257"}
+{"ts": "2026-08-31T07:56:41.227314Z", "event": "analysis_started", "request_id": "0e2ecf25-4bc9-444e-b905-d76d20d3f936", "repo_url": "https://github.com/bank/payments", "source_ref": "feature/JIRA-9999", "target_ref": "main"}
+{"ts": "2026-08-31T07:56:42.449321Z", "event": "analysis_completed", "request_id": "0e2ecf25-4bc9-444e-b905-d76d20d3f936", "gate": "HOLD", "risk": "low", "tokens": 0}
+{"ts": "2026-08-31T07:56:42.450625Z", "event": "analysis_started", "request_id": "996a9636-9023-41f5-aa92-4e2bbf1b403f", "repo_url": "https://github.com/bank/payments", "source_ref": "feature/JIRA-9999", "target_ref": "main"}
+{"ts": "2026-08-31T07:56:42.453358Z", "event": "analysis_completed", "request_id": "996a9636-9023-41f5-aa92-4e2bbf1b403f", "gate": "HOLD", "risk": "low", "tokens": 0}
+{"ts": "2026-08-31T07:56:42.454806Z", "event": "analysis_started", "request_id": "a2880307-113d-4cfb-9943-128d5ef46e2a", "repo_url": "https://github.com/bank/payments", "source_ref": "feature/JIRA-9999", "target_ref": "main"}
+{"ts": "2026-08-31T07:56:44.941458Z", "event": "analysis_completed", "request_id": "a2880307-113d-4cfb-9943-128d5ef46e2a", "gate": "APPROVE", "risk": "low", "tokens": 0}
+{"ts": "2026-08-31T07:56:44.943432Z", "event": "analysis_started", "request_id": "296c1ffa-275f-4f9f-a1f9-0e6805411130", "repo_url": "https://github.com/bank/payments", "source_ref": "feature/JIRA-9999", "target_ref": "main"}
+{"ts": "2026-08-31T07:56:46.740923Z", "event": "analysis_completed", "request_id": "296c1ffa-275f-4f9f-a1f9-0e6805411130", "gate": "BLOCK", "risk": "critical", "tokens": 0}
+{"ts": "2026-08-31T07:56:46.743038Z", "event": "analysis_started", "request_id": "2ee785f0-f877-4017-ba0d-fe0f9e96502a", "repo_url": "https://github.com/bank/payments", "source_ref": "feature/JIRA-9999", "target_ref": "main"}
+{"ts": "2026-08-31T07:56:49.603603Z", "event": "analysis_completed", "request_id": "2ee785f0-f877-4017-ba0d-fe0f9e96502a", "gate": "APPROVE", "risk": "low", "tokens": 0}
+{"ts": "2026-08-31T07:56:49.605178Z", "event": "analysis_started", "request_id": "493f43e1-0918-406c-a2ca-7daff7604107", "repo_url": "https://github.com/bank/payments", "source_ref": "feature/JIRA-9999", "target_ref": "main"}
+{"ts": "2026-08-31T07:56:49.606286Z", "event": "analysis_completed", "request_id": "493f43e1-0918-406c-a2ca-7daff7604107", "gate": "HOLD", "risk": "low", "tokens": 0}
+{"ts": "2026-08-31T07:56:49.607302Z", "event": "analysis_started", "request_id": "ff9f046d-da1e-41d5-a203-76b9754f84d0", "repo_url": "https://github.com/bank/payments", "source_ref": "feature/JIRA-9999", "target_ref": "main"}
+{"ts": "2026-08-31T07:56:49.608039Z", "event": "analysis_completed", "request_id": "ff9f046d-da1e-41d5-a203-76b9754f84d0", "gate": "APPROVE", "risk": "low", "tokens": 0}
+{"ts": "2026-08-31T07:56:49.609001Z", "event": "analysis_started", "request_id": "24fd1f06-da48-4ccc-897c-946f227e228e", "repo_url": "https://github.com/bank/payments", "source_ref": "feature/JIRA-9999", "target_ref": "main"}
+{"ts": "2026-08-31T07:56:49.609783Z", "event": "analysis_completed", "request_id": "24fd1f06-da48-4ccc-897c-946f227e228e", "gate": "HOLD", "risk": "low", "tokens": 0}
+{"ts": "2026-08-31T07:56:49.610732Z", "event": "analysis_started", "request_id": "0c6909c9-e673-48fc-8048-7b96c50b23d0", "repo_url": "https://github.com/bank/payments", "source_ref": "feature/JIRA-9999", "target_ref": "main"}
+{"ts": "2026-08-31T07:56:49.614933Z", "event": "analysis_completed", "request_id": "0c6909c9-e673-48fc-8048-7b96c50b23d0", "gate": "APPROVE", "risk": "low", "tokens": 0}
+{"ts": "2026-08-31T07:56:49.616060Z", "event": "analysis_started", "request_id": "35c709d9-97e8-42d1-a433-52b41a54b85b", "repo_url": "https://github.com/bank/payments", "source_ref": "feature/JIRA-9999", "target_ref": "main"}
+{"ts": "2026-08-31T07:56:49.619558Z", "event": "analysis_completed", "request_id": "35c709d9-97e8-42d1-a433-52b41a54b85b", "gate": "APPROVE", "risk": "low", "tokens": 0}
+{"ts": "2026-08-31T07:56:55.288134Z", "event": "analysis_completed", "request_id": "870b8f94-4b23-4377-a247-b4f72a24e3d6", "gate": "BLOCK", "risk": "low", "tokens": 0}
+{"ts": "2026-08-31T07:59:24.393582Z", "event": "analysis_started", "request_id": "c861c1d8-0968-40fe-8a13-07e9d9dd2cc7", "repo_url": "https://github.com/test/repo", "source_ref": "feature/test", "target_ref": "main"}
+{"ts": "2026-08-31T07:59:31.695470Z", "event": "analysis_completed", "request_id": "c861c1d8-0968-40fe-8a13-07e9d9dd2cc7", "gate": "HOLD", "risk": "low", "tokens": 0}
+{"ts": "2026-08-31T07:59:32.031139Z", "event": "pull_request", "provider": "github", "request_id": "a6a145b8-8e9f-4fb4-bd96-068bca9a2970"}
+{"ts": "2026-08-31T07:59:32.528364Z", "event": "analysis_started", "request_id": "a6a145b8-8e9f-4fb4-bd96-068bca9a2970", "repo_url": "", "source_ref": "feature/branch", "target_ref": "main"}
+{"ts": "2026-08-31T07:59:34.328964Z", "event": "analysis_completed", "request_id": "a6a145b8-8e9f-4fb4-bd96-068bca9a2970", "gate": "HOLD", "risk": "low", "tokens": 0}
+{"ts": "2026-08-31T07:59:38.382850Z", "event": "pull_request", "provider": "github", "request_id": "c39915f3-e8fd-4535-b695-cdef5b6e42ab"}
+{"ts": "2026-08-31T07:59:40.796764Z", "event": "pullrequest:created", "provider": "bitbucket", "request_id": "2f843ae0-1a92-4430-88bd-c0cfbc940355"}
+{"ts": "2026-08-31T07:59:44.032608Z", "event": "analysis_started", "request_id": "ae05d143-9024-469c-b14c-d4f99a7ddbaf", "repo_url": "https://github.com/bank/payments", "source_ref": "feature/JIRA-9999", "target_ref": "main"}
+{"ts": "2026-08-31T07:59:45.543171Z", "event": "analysis_completed", "request_id": "ae05d143-9024-469c-b14c-d4f99a7ddbaf", "gate": "HOLD", "risk": "low", "tokens": 0}
+{"ts": "2026-08-31T07:59:45.544832Z", "event": "analysis_started", "request_id": "2d7908f6-4e4a-4b35-8cfe-6742120e157f", "repo_url": "https://github.com/bank/payments", "source_ref": "feature/JIRA-9999", "target_ref": "main"}
+{"ts": "2026-08-31T07:59:45.549202Z", "event": "analysis_completed", "request_id": "2d7908f6-4e4a-4b35-8cfe-6742120e157f", "gate": "HOLD", "risk": "low", "tokens": 0}
+{"ts": "2026-08-31T07:59:45.550629Z", "event": "analysis_started", "request_id": "8e8fb6e8-2378-4b30-a9c4-4753a95d1703", "repo_url": "https://github.com/bank/payments", "source_ref": "feature/JIRA-9999", "target_ref": "main"}
+{"ts": "2026-08-31T07:59:48.336651Z", "event": "analysis_completed", "request_id": "8e8fb6e8-2378-4b30-a9c4-4753a95d1703", "gate": "APPROVE", "risk": "low", "tokens": 0}
+{"ts": "2026-08-31T07:59:48.339538Z", "event": "analysis_started", "request_id": "77654943-04ec-4f70-85b3-76365875fbc8", "repo_url": "https://github.com/bank/payments", "source_ref": "feature/JIRA-9999", "target_ref": "main"}
+{"ts": "2026-08-31T07:59:51.223495Z", "event": "analysis_completed", "request_id": "77654943-04ec-4f70-85b3-76365875fbc8", "gate": "BLOCK", "risk": "critical", "tokens": 0}
+{"ts": "2026-08-31T07:59:51.225248Z", "event": "analysis_started", "request_id": "6f4e4997-1dad-4955-92f2-7ab412ef0899", "repo_url": "https://github.com/bank/payments", "source_ref": "feature/JIRA-9999", "target_ref": "main"}
+{"ts": "2026-08-31T07:59:57.233648Z", "event": "analysis_completed", "request_id": "6f4e4997-1dad-4955-92f2-7ab412ef0899", "gate": "APPROVE", "risk": "low", "tokens": 0}
+{"ts": "2026-08-31T07:59:57.239720Z", "event": "analysis_started", "request_id": "0eef9320-69b4-47d3-85ee-7648e20ef29b", "repo_url": "https://github.com/bank/payments", "source_ref": "feature/JIRA-9999", "target_ref": "main"}
+{"ts": "2026-08-31T07:59:57.241177Z", "event": "analysis_completed", "request_id": "0eef9320-69b4-47d3-85ee-7648e20ef29b", "gate": "HOLD", "risk": "low", "tokens": 0}
+{"ts": "2026-08-31T07:59:57.242493Z", "event": "analysis_started", "request_id": "c78da267-e250-4ea2-a309-7ccc0dc436d4", "repo_url": "https://github.com/bank/payments", "source_ref": "feature/JIRA-9999", "target_ref": "main"}
+{"ts": "2026-08-31T07:59:57.243358Z", "event": "analysis_completed", "request_id": "c78da267-e250-4ea2-a309-7ccc0dc436d4", "gate": "APPROVE", "risk": "low", "tokens": 0}
+{"ts": "2026-08-31T07:59:57.244402Z", "event": "analysis_started", "request_id": "30efed9e-c680-480f-a563-2db16c9c32ed", "repo_url": "https://github.com/bank/payments", "source_ref": "feature/JIRA-9999", "target_ref": "main"}
+{"ts": "2026-08-31T07:59:57.245173Z", "event": "analysis_completed", "request_id": "30efed9e-c680-480f-a563-2db16c9c32ed", "gate": "HOLD", "risk": "low", "tokens": 0}
+{"ts": "2026-08-31T07:59:57.245995Z", "event": "analysis_started", "request_id": "f235b01a-65aa-4187-ada8-521605530bc2", "repo_url": "https://github.com/bank/payments", "source_ref": "feature/JIRA-9999", "target_ref": "main"}
+{"ts": "2026-08-31T07:59:57.250112Z", "event": "analysis_completed", "request_id": "f235b01a-65aa-4187-ada8-521605530bc2", "gate": "APPROVE", "risk": "low", "tokens": 0}
+{"ts": "2026-08-31T07:59:57.251241Z", "event": "analysis_started", "request_id": "82052145-62f0-48fa-a736-5804f5c137d0", "repo_url": "https://github.com/bank/payments", "source_ref": "feature/JIRA-9999", "target_ref": "main"}
+{"ts": "2026-08-31T07:59:57.254476Z", "event": "analysis_completed", "request_id": "82052145-62f0-48fa-a736-5804f5c137d0", "gate": "APPROVE", "risk": "low", "tokens": 0}
+{"ts": "2026-08-31T08:00:02.874039Z", "event": "analysis_completed", "request_id": "909d0f90-98a8-4c22-b8b6-b7de57486986", "gate": "BLOCK", "risk": "low", "tokens": 0}

@@ -188,3 +188,38 @@ def test_llm_path_does_not_overwrite_existing_skeleton(monkeypatch):
     result = agent.run(req, budget)
 
     assert result.scenarios[0].test_skeleton == "# already provided by the LLM"
+
+
+def test_llm_path_strips_test_files_from_mixed_scenario(monkeypatch):
+    """A scenario naming BOTH a test class and a real file must keep only the
+    real file — otherwise the report displays 'write tests for FooTest.java'."""
+    req = AnalysisRequest(
+        request_id=str(uuid.uuid4()), change_type=ChangeType.PR,
+        repo_url="https://github.com/bank/payments", source_ref="f", target_ref="main",
+        hunks=[DiffHunk(file_path="payments/service.py", language="python", additions=2, deletions=0,
+                         content="+def process_payment(token):\n+    return True\n")],
+    )
+    llm_result = QAScenariosResult(
+        scenarios=[
+            QAScenario(id="QA-001", title="Regression around payment", type=T.REGRESSION,
+                       priority=RiskLevel.HIGH, description="d",
+                       affected_files=["payments/service.py",
+                                       "src/test/java/com/x/CrsEnquiryResponseProcessorTest.java"]),
+            QAScenario(id="QA-002", title="Test-only scenario", type=T.REGRESSION,
+                       priority=RiskLevel.LOW, description="d",
+                       affected_files=["src/test/java/com/x/CrsEnquiryResponseProcessorTest.java"]),
+        ],
+        total_scenarios=2,
+    )
+    import agents.qa_scenarios_agent as mod
+    monkeypatch.setattr(mod.BaseAgent, "run", lambda self, request, budget, context=None: llm_result)
+
+    agent  = QAScenariosAgent(api_key="sk-test")
+    budget = TokenBudgetManager(req.request_id, {"qa_scenarios": 999999, "_reserve": 0})
+    result = agent.run(req, budget)
+
+    titles = {s.title for s in result.scenarios}
+    assert "Test-only scenario" not in titles           # dropped entirely
+    assert "Regression around payment" in titles
+    mixed = next(s for s in result.scenarios if s.title == "Regression around payment")
+    assert all("Test.java" not in f for f in mixed.affected_files)

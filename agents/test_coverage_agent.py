@@ -52,7 +52,11 @@ class TestCoverageAgent(BaseAgent[TestCoverageResult]):
     def build_user_prompt(self, request: AnalysisRequest, context: dict[str, Any]) -> str:
         test_files   = context.get("test_files", [])
         coverage_pct = context.get("current_coverage_pct", "unknown")
-        diff         = "\n\n".join(h.content for h in request.hunks)
+        # Exclude files that are themselves tests — otherwise the model proposes
+        # "write a unit test for this test class". The gap analysis still runs
+        # over every changed source file via the context/fallback paths.
+        src_hunks    = [h for h in request.hunks if not _is_test_file(h.file_path)]
+        diff         = "\n\n".join(h.content for h in (src_hunks or request.hunks))
         trimmed      = trim_diff_for_budget(diff, max_tokens_approx=2200)
 
         return (
@@ -179,6 +183,8 @@ def _expected_test_path(src: str) -> str:
 def _extract_new_methods(request: AnalysisRequest) -> list[str]:
     methods = []
     for hunk in request.hunks:
+        if _is_test_file(hunk.file_path):
+            continue   # don't generate a test stub for a method that IS a test
         for line in hunk.content.splitlines():
             if not line.startswith("+") or line.startswith("+++"):
                 continue
