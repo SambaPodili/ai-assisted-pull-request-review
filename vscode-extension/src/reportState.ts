@@ -11,12 +11,15 @@
 
 import * as vscode from 'vscode';
 
-/** Stable identity for one finding — (file, line) is enough in practice: if
- * the line moves, treating it as a "new" location (rather than matching a
- * stale suppression/seen-entry to the wrong code) is the safer failure mode. */
-export function fingerprint(filePath: string, line: number): string {
-  return `${filePath}:${line || 0}`;
-}
+// Re-exported (not redefined) from the shared package — this used to be a
+// second hand-copy of the same one-line formula shared/report-view's
+// render.ts also needs (for the "New" badge / suppress-button matching in
+// issueHtml()). That function's own comment says the formula "MUST stay
+// byte-identical across every host" — a second copy in THIS codebase (vs.
+// the genuinely cross-language IntelliJ port, which can't avoid its own
+// copy) was avoidable drift risk with no benefit. Single source of truth
+// now: shared/report-view/src/render.ts.
+export { fingerprint } from '../../shared/report-view/src';
 
 export interface SuppressedEntry {
   fingerprint: string;

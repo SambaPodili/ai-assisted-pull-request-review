@@ -46,6 +46,7 @@ import {
   SuppressedEntry,
 } from './reportState';
 import { loadPathReviewConfig } from './pathReviewConfig';
+import { gatherReviewContext } from './reviewContext';
 
 let lastReport:
   | {
@@ -70,6 +71,7 @@ export function activate(context: vscode.ExtensionContext): void {
   initDiagnostics(context);
   registerCodeActions(context);
   registerCodeLenses(context);
+  ResultsPanel.init(context.extensionUri);
 
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   statusBarItem.command = 'gto.analyzeChanges';
@@ -300,8 +302,17 @@ async function runAnalysis(context: vscode.ExtensionContext, params: RunParams):
   const pathReviewConfig = await loadPathReviewConfig(repo.cwd);
   const backendUrl = getBackendUrl();
   const modelOverride = await resolveModelOverride(context, backendUrl, apiKey);
+  // connected_repos / existing_tests / external_references / functional_docs
+  // — best-effort, all gated behind their own gto.* settings (empty by
+  // default, so this is a fast no-op until the user opts in). Gathered here
+  // (before runKey) rather than inside withProgress below, so a metadata-only
+  // change (e.g. editing gto.connectedRepoPaths) between two runs of the same
+  // diff isn't masked by the "nothing changed" cache short-circuit. See
+  // reviewContext.ts for why this can run fully locally, unlike the web app's
+  // equivalent of the same fields.
+  const metadata = await gatherReviewContext(repo.cwd, diffText, backendUrl, apiKey!);
 
-  const runKey = JSON.stringify({ diffText, sourceRef, targetRef, preset, userInstructions, pathReviewConfig, modelOverride });
+  const runKey = JSON.stringify({ diffText, sourceRef, targetRef, preset, userInstructions, pathReviewConfig, modelOverride, metadata });
   if (interactive && runKey === lastRunKey && lastReport) {
     vscode.window.showInformationMessage('GTO: nothing changed since the last run — showing the previous result.');
     ResultsPanel.showReport(lastReport.report, lastReport.repoRoot, lastReport.opts);
@@ -341,6 +352,7 @@ async function runAnalysis(context: vscode.ExtensionContext, params: RunParams):
             userInstructions,
             pathReviewConfig,
             modelOverride,
+            metadata,
           },
           token,
           onStatus

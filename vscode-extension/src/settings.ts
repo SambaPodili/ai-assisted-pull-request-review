@@ -71,6 +71,25 @@ export function getExcludePatterns(): string[] {
   return vscode.workspace.getConfiguration('gto').get<string[]>('excludePatterns', []);
 }
 
+/** Repo names/slugs declared as dependents — sent as metadata.connected_repos
+ * (dependency agent's blast-radius baseline). See reviewContext.ts for the
+ * actual gathering of all metadata.* fields sent with each analysis. */
+export function getConnectedRepos(): string[] {
+  return vscode.workspace.getConfiguration('gto').get<string[]>('connectedRepos', []);
+}
+
+/** Local checkouts of dependent repos to grep for call-sites — see
+ * reviewContext.ts::gatherExternalReferences. */
+export function getConnectedRepoPaths(): string[] {
+  return vscode.workspace.getConfiguration('gto').get<string[]>('connectedRepoPaths', []);
+}
+
+/** Functional/requirement spec documents to trace this change against — see
+ * reviewContext.ts::gatherFunctionalDocs. */
+export function getFunctionalSpecPaths(): string[] {
+  return vscode.workspace.getConfiguration('gto').get<string[]>('functionalSpecPaths', []);
+}
+
 export async function getApiKey(secrets: vscode.SecretStorage): Promise<string | undefined> {
   return secrets.get(SECRET_KEY);
 }

@@ -32,6 +32,11 @@ export interface AnalyzeOptions {
    * AnalyseRequest.llm_config). Undefined = don't send it, use whatever the
    * backend is configured with (today's behavior, unchanged). */
   modelOverride?: ModelOverride;
+  /** connected_repos / existing_tests / external_references / functional_docs
+   * — gathered by reviewContext.ts. Undefined/empty = today's behavior
+   * unchanged (those agents fall back to their diff-only/no-op path exactly
+   * as before this field existed). */
+  metadata?: Record<string, unknown>;
 }
 
 export interface SubmitResponse {
@@ -340,6 +345,7 @@ export async function submitAnalysis(opts: AnalyzeOptions): Promise<SubmitRespon
       user_instructions: opts.userInstructions ?? '',
       path_review_config: opts.pathReviewConfig ?? null,
       ...(opts.modelOverride ? { llm_config: opts.modelOverride } : {}),
+      ...(opts.metadata && Object.keys(opts.metadata).length ? { metadata: opts.metadata } : {}),
     }),
   });
   if (resp.status === 401) throw new ApiError('Unauthorized — check your API key (GTO: Set API Key).', 401);

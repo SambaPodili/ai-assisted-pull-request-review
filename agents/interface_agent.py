@@ -263,11 +263,43 @@ _OPENAPI_STRUCTURAL = {
 def _parse_openapi_diff(diff: str, file_path: str) -> list[ContractBreak]:
     breaks: list[ContractBreak] = []
     in_removed_path = False
-    for line in diff.splitlines():
-        if not line.startswith("-") or line.startswith("---"):
+    # Nearest preceding property-key line seen — context ' ' lines count, not
+    # just removed '-' ones, since the common real case is the field-name line
+    # itself is UNTOUCHED and only its nested `type:` line changed:
+    #     amount:            <- context, never sets in_removed_path
+    #   -   type: string
+    #   +   type: integer
+    # A `type:` line has no field name of its own in YAML, it's nested
+    # directly under one. Heuristic, not a real YAML parser: good enough to
+    # populate ContractBreak.field_name for governance/consumer_contract.py
+    # without taking on a schema-parsing dependency for this.
+    last_field_key = ""
+    # True once the CURRENT field's own key line has been reported as fully
+    # removed (not just its nested type) — suppresses a redundant/misleading
+    # "type_change" break for a field that no longer exists at all, e.g.:
+    #   -  email:
+    #   -    type: string
+    # is one field deletion, not a deletion PLUS a "was string" type change.
+    field_was_removed = False
+    lines = diff.splitlines()
+    for idx, line in enumerate(lines):
+        if line.startswith(("---", "+++")):
+            continue
+        if not line.startswith(("-", " ")):
             in_removed_path = False
             continue
+        is_removed = line.startswith("-")
         content = line[1:].strip()
+
+        # Track the enclosing field key from ANY line (context or removed) —
+        # see comment above. Added ('+') lines are excluded on purpose: a
+        # brand-new field key is irrelevant to interpreting a REMOVED type line.
+        if re.match(r"[a-zA-Z_][a-zA-Z0-9_]*:", content) and not content.startswith("type:"):
+            last_field_key = content.split(":")[0]
+            field_was_removed = False  # entering a new field's scope — unknown yet
+        if not is_removed:
+            in_removed_path = False
+            continue
 
         # Removed API path
         if re.match(r"/([\w{}/.-]+):", content):
@@ -280,25 +312,46 @@ def _parse_openapi_diff(diff: str, file_path: str) -> list[ContractBreak]:
             ))
         # Removed field from schema object (indented property key)
         elif re.match(r"[a-zA-Z_][a-zA-Z0-9_]*:", content) and not content.startswith("type:"):
-            key = content.split(":")[0].lower()
+            field = content.split(":")[0]
+            key = field.lower()
             # Children of an already-reported removed path, and OpenAPI structural
             # keywords (verbs / metadata), are not contract fields — reporting them
             # individually is pure noise on top of the path-removal finding.
             if in_removed_path or key in _OPENAPI_STRUCTURAL:
                 continue
+            field_was_removed = True
             breaks.append(ContractBreak(
                 interface_type="REST",
-                path=f"{file_path}: field '{content.split(':')[0]}'",
+                path=f"{file_path}: field '{field}'",
                 break_type="removed",
                 severity=RiskLevel.HIGH,
+                field_name=field,
             ))
-        # Type change
-        elif content.startswith("type:"):
+        # Type change — but not for a field whose own key line was JUST
+        # reported removed above (that's one field deletion, not a deletion
+        # plus a separate "type changed" break for the same field).
+        elif content.startswith("type:") and not field_was_removed:
+            old_type = content.split(":", 1)[1].strip() or None
+            # A unified diff shows a one-line replacement as the removed line
+            # immediately followed by its added replacement — look one line
+            # ahead for that added `type:` line so the break can name what it
+            # actually changed TO, not just what it changed from. Bounded to
+            # the very next line only: further away means it's a coincidence,
+            # not the paired replacement (e.g. the added type line belongs to
+            # a different field entirely).
+            new_type = None
+            if idx + 1 < len(lines):
+                nxt = lines[idx + 1]
+                if nxt.startswith("+") and nxt[1:].strip().startswith("type:"):
+                    new_type = nxt[1:].strip().split(":", 1)[1].strip() or None
             breaks.append(ContractBreak(
                 interface_type="REST",
                 path=f"{file_path}: type declaration",
                 break_type="type_change",
                 severity=RiskLevel.HIGH,
+                field_name=last_field_key or None,
+                old_type=old_type,
+                new_type=new_type,
             ))
     return breaks
 

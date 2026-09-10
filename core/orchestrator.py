@@ -1059,6 +1059,18 @@ class ImpactAnalysisOrchestrator:
         except Exception as exc:
             log.debug("[%s] Consumer-impact tracing skipped: %s", report.request_id, exc)
 
+        # ── Consumer-CONTRACT compatibility (field-level, see module docstring) ─
+        try:
+            from governance.consumer_contract import check_consumer_contracts
+            existing_keys = {(c.change, c.repo, c.file_path, c.line) for c in report.consumer_impacts}
+            for c in check_consumer_contracts(report):
+                key = (c.change, c.repo, c.file_path, c.line)
+                if key not in existing_keys:
+                    existing_keys.add(key)
+                    report.consumer_impacts.append(c)
+        except Exception as exc:
+            log.debug("[%s] Consumer-contract check skipped: %s", report.request_id, exc)
+
         # ── Compliance mapping (OWASP / PCI-DSS / CWE Top 25) ────────────────
         try:
             from governance.compliance import assess as assess_compliance

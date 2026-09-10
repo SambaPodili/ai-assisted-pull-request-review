@@ -18,7 +18,7 @@ import pytest
 
 from core.models import (
     AnalysisRequest, AnalysisReport, ChangeType, PRMetadata,
-    SecurityResult, SecurityFinding, RiskLevel,
+    SecurityResult, SecurityFinding, RiskLevel, RemediationResult,
 )
 from core.orchestrator import ImpactAnalysisOrchestrator
 from governance.review_session_store import SQLiteReviewSessionStore
@@ -155,3 +155,102 @@ def test_true_incremental_merge_end_to_end(review_store):
     head = review_store.get_last_analyzed_head("github", "org/repo", "42")
     assert head["head_sha"] == "sha-2"
     assert head["request_id"] == merged.request_id
+
+
+def test_incremental_merge_regenerates_full_pr_narrative(review_store):
+    """Regression test for a real bug: the TokenBudgetManager built for the
+    merge/finalize step (`custom_budgets={"_merge": ...}`) was missing a
+    "_reserve" key, which check_and_reserve/get_remaining/record_usage all
+    fall back to for any agent name not given its own slot — a bare
+    `self._agents["_reserve"]` KeyErrors when that key is absent. Since
+    orch._rem.run(...) is called with THIS budget to regenerate the merged
+    report's narrative, every single incremental re-review's narrative
+    regeneration silently KeyError'd (caught by the surrounding try/except,
+    logged, and the stale latest-slice narrative was kept) — the whole
+    feature never ran. This wasn't caught by the end-to-end test above
+    because that test's prior/partial reports never populate `remediation`,
+    so the `if merged.remediation is not None:` guard skipped the buggy
+    code path entirely. This test populates `remediation` on both prior and
+    partial reports specifically to exercise it."""
+    review_store.record_pr_head("github", "org/repo", "42", "sha-1", "prior-req")
+
+    git = FakeGitClient()
+    orch = ImpactAnalysisOrchestrator(api_key=None, phase=1)
+    report_store = FakeReportStore()
+    report_store._by_id["prior-req"].remediation = RemediationResult(
+        pr_walkthrough="STALE — describes only the prior push.",
+        executive_summary="STALE summary.",
+    )
+    req = make_req(head_sha="sha-2")
+
+    async def fake_analyse_with_remediation(r):
+        report = await fake_analyse_async(r)
+        report.remediation = RemediationResult(
+            pr_walkthrough="Latest-slice-only walkthrough (should be replaced).",
+            executive_summary="Latest-slice-only summary (should be replaced).",
+        )
+        return report
+
+    fresh = RemediationResult(
+        pr_walkthrough="FRESH — describes the whole accumulated PR.",
+        executive_summary="FRESH executive summary.",
+    )
+
+    from api.routes.webhooks import _run_with_diff
+    with patch("api.routes.webhooks.make_git_client", return_value=git), \
+         patch.object(orch, "analyse_async", side_effect=fake_analyse_with_remediation), \
+         patch.object(orch._rem, "run", return_value=fresh) as mock_rem_run, \
+         patch("output.pr_commenter.make_pr_commenter", return_value=None), \
+         patch("output.notification.make_notification_service") as mock_notif, \
+         patch("ingestion.path_review_config.load_from_git_client", return_value=None), \
+         patch("ingestion.path_review_config.load_team_default", return_value=None):
+        mock_notif.return_value.notify = lambda *a, **k: None
+        asyncio.run(_run_with_diff(req, "github", orch, report_store))
+
+    assert mock_rem_run.called, "orch._rem.run must be called to regenerate the full-PR narrative"
+    # The budget passed to it must actually work for an arbitrary agent name
+    # (this is the exact call that used to KeyError) — assert directly rather
+    # than relying on the try/except having swallowed a failure.
+    passed_budget = mock_rem_run.call_args[0][1]
+    assert passed_budget.check_and_reserve("remediation", 100) is True
+
+    merged = report_store.saved[0]
+    assert merged.remediation.pr_walkthrough == "FRESH — describes the whole accumulated PR."
+    assert merged.remediation.executive_summary == "FRESH executive summary."
+
+
+def test_narrative_regeneration_failure_is_visible_in_the_report_not_just_logged(review_store):
+    """If this step fails for ANY reason (a future regression, an expired
+    API key, a network blip — not just the specific _reserve bug above), it
+    must be visible to whoever opens the report, not just a backend log line
+    nobody's watching. That silence is exactly how the _reserve bug went
+    unnoticed for a full session."""
+    review_store.record_pr_head("github", "org/repo", "42", "sha-1", "prior-req")
+
+    git = FakeGitClient()
+    orch = ImpactAnalysisOrchestrator(api_key=None, phase=1)
+    report_store = FakeReportStore()
+    report_store._by_id["prior-req"].remediation = RemediationResult(pr_walkthrough="STALE")
+    req = make_req(head_sha="sha-2")
+
+    async def fake_analyse_with_remediation(r):
+        report = await fake_analyse_async(r)
+        report.remediation = RemediationResult(pr_walkthrough="latest-slice")
+        return report
+
+    from api.routes.webhooks import _run_with_diff
+    with patch("api.routes.webhooks.make_git_client", return_value=git), \
+         patch.object(orch, "analyse_async", side_effect=fake_analyse_with_remediation), \
+         patch.object(orch._rem, "run", side_effect=RuntimeError("simulated LLM failure")), \
+         patch("output.pr_commenter.make_pr_commenter", return_value=None), \
+         patch("output.notification.make_notification_service") as mock_notif, \
+         patch("ingestion.path_review_config.load_from_git_client", return_value=None), \
+         patch("ingestion.path_review_config.load_team_default", return_value=None):
+        mock_notif.return_value.notify = lambda *a, **k: None
+        asyncio.run(_run_with_diff(req, "github", orch, report_store))
+
+    merged = report_store.saved[0]
+    # The merge itself must still succeed (never gate on this failing).
+    assert merged.remediation.pr_walkthrough == "latest-slice"
+    # But the failure must be visible in the report, not just logged.
+    assert any("simulated LLM failure" in e for e in merged.errors)

@@ -11,6 +11,8 @@ Static rules (run first, always):
   - Magic numbers       : integer literals != 0, 1, 2, -1 outside obvious contexts
   - Dead code after return/raise/break
   - Missing type hints  : new Python `def` without `->` and no `: type` params
+  - Missing return      : Python `def` annotated to return a value with no `return <value>` in body
+  - Commented-out code  : added `#`/`//` lines that still parse as real statements
   - TODO/FIXME left in  : added lines containing TODO or FIXME
 
 Banking context: clean, auditable code is a regulatory hygiene requirement.
@@ -56,6 +58,29 @@ _LOG_OR_RAISE   = re.compile(r'\b(log|logger|logging|print|raise|return)\b', re.
 _TYPE_HINT_PARAM = re.compile(r':\s*\w+')   # rough: at least one typed param
 _RETURN_HINT    = re.compile(r'->')
 
+# Python function signature (added or unchanged context line) that declares a
+# non-None return type. Matched on context lines too (not just "+") because the
+# signature itself is often untouched by the diff that guts the function body.
+_FUNC_DEF_TYPED = re.compile(
+    r'^[+ ]\s*(?:async\s+)?def\s+\w+\s*\([^)]*\)\s*->\s*([A-Za-z_][\w\.\[\], "\']*)\s*:\s*$'
+)
+# ANY Python def (typed or not), added or context — used only to detect that
+# the PREVIOUS tracked function's scope has ended (see the missing-return
+# check below); matching context lines too, not just "+", for the same
+# reason _FUNC_DEF_TYPED does.
+_FUNC_DEF_ANY_PY = re.compile(r'^[+ ]\s*(?:async\s+)?def\s+\w+\s*\(')
+# A `return <value>` on an added OR unchanged line means the function still
+# returns something; only a `-` (removed) return counts against it.
+_RETURN_VALUE   = re.compile(r'^[+ ]\s*return\s+\S')
+
+# Commented-out code: a `#`/`//` line added by the diff whose payload still has
+# code punctuation and either a control-flow keyword or an assignment — i.e.
+# it would still parse as a statement if the comment marker were stripped.
+_COMMENT_LINE   = re.compile(r'^\+\s*(#|//)\s?(.*)$')
+_CODE_KEYWORD   = re.compile(r'^(return|if|elif|else|for|while|def|class|try|except|finally|with|import|from)\b')
+_CODE_PUNCT     = re.compile(r'[{}()\[\];]')
+_CODE_ASSIGN    = re.compile(r'(?<![=!<>])=(?!=)')
+
 
 def _leading_indent(line: str) -> tuple[int, int]:
     """Return (spaces, tabs) of indent in the code part (skip the leading +/-)."""
@@ -94,6 +119,17 @@ def _run_static(request: AnalysisRequest) -> list[MaintainabilityIssue]:
 
     prev_was_control = False   # for dead-code check
 
+    in_ret_func        = False   # for missing-return check
+    ret_func_start     = 0
+    ret_func_file      = ""
+    ret_func_type      = ""
+    ret_func_touched   = False
+    ret_func_saw_value = False
+
+    comment_run_start = 0        # for commented-out-code check
+    comment_run_len   = 0
+    comment_run_file  = ""
+
     # Per-file gate: only nitpick real first-party source. pom.xml / *.xml /
     # *.yaml / *.properties etc. would otherwise get "magic number" on every
     # version literal and "nesting depth" on their indentation; test files get
@@ -113,6 +149,8 @@ def _run_static(request: AnalysisRequest) -> list[MaintainabilityIssue]:
             in_func_def = False
             in_except = False
             prev_was_control = False
+            in_ret_func = False
+            comment_run_len = 0
             continue
 
         # ── Long function detection (track + lines after def) ──────────────────
@@ -312,6 +350,101 @@ def _run_static(request: AnalysisRequest) -> list[MaintainabilityIssue]:
                 suggestion="Resolve or track the issue in your ticketing system before merging.",
             ))
 
+        # ── Missing return statement (Python fn annotated to return a value) ───
+        if file_path.endswith(".py"):
+            m = _FUNC_DEF_TYPED.match(line)
+            # ANY function definition (typed or not) ends the PREVIOUS
+            # function's scope — not just a typed one. Without this, a
+            # subsequent untyped `def helper():` is invisible to this
+            # tracker (only _FUNC_DEF_TYPED.match is checked below), so
+            # `in_ret_func` stays open across the function boundary and
+            # helper's own `return <value>` gets misattributed to the
+            # PRIOR (typed) function — a false negative that silently
+            # suppresses a real missing-return finding on the first function.
+            is_any_def = bool(m) or bool(_FUNC_DEF_ANY_PY.match(line))
+            if is_any_def:
+                if in_ret_func and ret_func_type != "None" and ret_func_touched and not ret_func_saw_value:
+                    issues.append(MaintainabilityIssue(
+                        kind="missing_return",
+                        severity="high",
+                        description=f"Function is annotated to return `{ret_func_type}` but its body "
+                                    "has no `return <value>` statement — it will return `None`.",
+                        file_path=ret_func_file,
+                        line=ret_func_start,
+                        suggestion="Add the missing return statement, or change the annotation to "
+                                   "`-> None` if that's intentional.",
+                    ))
+            if m:
+                in_ret_func        = True
+                ret_func_start     = _ln(idx)
+                ret_func_file      = file_path
+                ret_func_type      = m.group(1).strip()
+                ret_func_touched   = False
+                ret_func_saw_value = False
+            elif is_any_def:
+                # An untyped def also closes tracking — nothing to open in
+                # its place (no annotation to check for its own body).
+                in_ret_func = False
+            elif in_ret_func:
+                if not line.startswith((" ", "\t", "+", "-")):
+                    if ret_func_type != "None" and ret_func_touched and not ret_func_saw_value:
+                        issues.append(MaintainabilityIssue(
+                            kind="missing_return",
+                            severity="high",
+                            description=f"Function is annotated to return `{ret_func_type}` but its "
+                                        "body has no `return <value>` statement — it will return `None`.",
+                            file_path=ret_func_file,
+                            line=ret_func_start,
+                            suggestion="Add the missing return statement, or change the annotation to "
+                                       "`-> None` if that's intentional.",
+                        ))
+                    in_ret_func = False
+                else:
+                    if is_added:
+                        ret_func_touched = True
+                    if _RETURN_VALUE.match(line):
+                        ret_func_saw_value = True
+
+        # ── Commented-out code (added `#`/`//` line that still looks like code) ─
+        if is_added:
+            cm = _COMMENT_LINE.match(line)
+            payload = cm.group(2).strip() if cm else None
+            looks_code = bool(payload) and bool(_CODE_PUNCT.search(payload)) and (
+                bool(_CODE_KEYWORD.match(payload)) or bool(_CODE_ASSIGN.search(payload))
+            )
+            if looks_code:
+                if comment_run_len == 0:
+                    comment_run_start = _ln(idx)
+                    comment_run_file  = file_path
+                comment_run_len += 1
+            else:
+                if payload != "":   # a blank `#` comment line doesn't break a run
+                    if comment_run_len >= 2:
+                        issues.append(MaintainabilityIssue(
+                            kind="commented_out_code",
+                            severity="medium",
+                            description=f"{comment_run_len} consecutive line(s) of commented-out code "
+                                        "added in this diff.",
+                            file_path=comment_run_file,
+                            line=comment_run_start,
+                            suggestion="Remove commented-out code before merging — version control "
+                                       "already preserves history if it's needed later.",
+                        ))
+                    comment_run_len = 0
+        else:
+            if comment_run_len >= 2:
+                issues.append(MaintainabilityIssue(
+                    kind="commented_out_code",
+                    severity="medium",
+                    description=f"{comment_run_len} consecutive line(s) of commented-out code "
+                                "added in this diff.",
+                    file_path=comment_run_file,
+                    line=comment_run_start,
+                    suggestion="Remove commented-out code before merging — version control "
+                               "already preserves history if it's needed later.",
+                ))
+            comment_run_len = 0
+
     # Close open long-function at EOF
     if in_func_def and func_line_count > 60:
         issues.append(MaintainabilityIssue(
@@ -332,6 +465,31 @@ def _run_static(request: AnalysisRequest) -> list[MaintainabilityIssue]:
             file_path=except_file,
             line=except_start,
             suggestion="Log the exception at minimum: `log.exception('...')`",
+        ))
+
+    # Close open missing-return tracking at EOF
+    if in_ret_func and ret_func_type != "None" and ret_func_touched and not ret_func_saw_value:
+        issues.append(MaintainabilityIssue(
+            kind="missing_return",
+            severity="high",
+            description=f"Function is annotated to return `{ret_func_type}` but its body has no "
+                        "`return <value>` statement — it will return `None`.",
+            file_path=ret_func_file,
+            line=ret_func_start,
+            suggestion="Add the missing return statement, or change the annotation to `-> None` "
+                       "if that's intentional.",
+        ))
+
+    # Close open commented-out-code run at EOF
+    if comment_run_len >= 2:
+        issues.append(MaintainabilityIssue(
+            kind="commented_out_code",
+            severity="medium",
+            description=f"{comment_run_len} consecutive line(s) of commented-out code added in this diff.",
+            file_path=comment_run_file,
+            line=comment_run_start,
+            suggestion="Remove commented-out code before merging — version control already "
+                       "preserves history if it's needed later.",
         ))
 
     return issues
@@ -395,7 +553,8 @@ class MaintainabilityAgent(BaseAgent[MaintainabilityResult]):
         "the depth a senior engineer would apply in a real design review — not a linter restating what "
         "the static rules below already caught.\n"
         "The diff has already been scanned for long functions, deep nesting, bare/swallowed exceptions, "
-        "magic numbers, dead code, missing type hints, and leftover TODOs — do NOT repeat those. Instead "
+        "magic numbers, dead code, missing type hints, functions annotated to return a value but missing "
+        "a return statement, commented-out code, and leftover TODOs — do NOT repeat those. Instead "
         "look for what pattern-matching misses:\n"
         "  - SOLID violations: a class/function taking on a second unrelated responsibility, a change "
         "that couples two things that shouldn't know about each other\n"

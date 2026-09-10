@@ -2,7 +2,7 @@
   "name": "gto-pr-review",
   "displayName": "GTO Pull Request Review Framework",
   "description": "Multi-agent PR review & risk gating — run it on your uncommitted changes without leaving the editor.",
-  "version": "0.14.3",
+  "version": "0.15.1",
   "publisher": "UOB",
   "icon": "media/icon.png",
   "engines": {
@@ -179,6 +179,24 @@
             "**/DerivedData/**"
           ],
           "description": "Glob patterns (.gitignore-flavored — a pattern with no '/' matches at any depth) for files to leave out of every analysis, on top of what .gitignore already hides. Defaults cover common IDE/tooling noise plus build/dependency output for JS/TS (node_modules, lock files), Java/Kotlin (target, .gradle, *.class), Python (__pycache__, venv, .pytest_cache, egg-info), .NET (obj — not bin, which some projects use for real shipped code), Go/PHP/Ruby (vendor), and Swift (.build, DerivedData). Applies to both 'Analyze Changes' and 'Analyze Branch...'."
+        },
+        "gto.connectedRepos": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Repo names/slugs that depend on this one (e.g. \"org/downstream-service\"). Sent as metadata.connected_repos — used as a blast-radius baseline by the dependency agent, same field the web app's Settings screen sends. Does not by itself search those repos for call-sites; see gto.connectedRepoPaths for that."
+        },
+        "gto.connectedRepoPaths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Local filesystem paths to dependent repos already checked out on this machine (e.g. a sibling checkout, or another folder in this multi-root workspace). Before each analysis, GTO greps these for call-sites of the functions/classes/methods your diff adds or changes, and sends the matches as metadata.external_references so Cross-Repo Impact and Reference Impact can see real downstream breakage — not just where you declared a dependency, but where it's actually called. Leave empty to skip (no local repos to check)."
+        },
+        "gto.functionalSpecPaths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Paths (workspace-relative or absolute) to functional/requirement spec documents — .md, .txt, .docx, or .pdf — to trace this change against. Sent as metadata.functional_docs; enables the Functional Validation agent's implemented/partial/missing/contradicted check. .docx/.pdf are sent to your configured backend's /docs/extract endpoint for text extraction — the same one the web app's document-upload UI uses."
         }
       }
     }

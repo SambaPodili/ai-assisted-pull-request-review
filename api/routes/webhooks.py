@@ -296,15 +296,69 @@ async def _run_incremental_merge(req, orch, store, git, repo, pr_id, prior: dict
         changed_lines = orch._changed_lines(full_req_view)
         source_lines = orch._source_lines(full_req_view)
 
-        # _finalize needs a TokenBudgetManager only to record report.token_budget
-        # (summary()["total_allocated"]) — no new agent calls happen here, so a
-        # manager whose one custom budget equals the two real reports' already-
-        # recorded totals is sufficient (not a fresh per-agent allocation).
+        # _finalize needs a TokenBudgetManager to record report.token_budget
+        # (summary()["total_allocated"]) — "_merge" carries the two real
+        # reports' already-recorded totals for that. It ALSO backs the real
+        # narrative-regeneration call below, which needs its own real
+        # "remediation" budget (not just a `_merge` bucket): TokenBudgetManager
+        # always requires a "_reserve" key too — check_and_reserve/
+        # get_remaining/record_usage all fall back to
+        # self._agents["_reserve"] for any agent name not given its own slot,
+        # and that lookup KeyErrors if custom_budgets never included one (this
+        # exact bug shipped here once — every remediation.run() call below
+        # silently KeyError'd and was swallowed by the try/except, so the
+        # "regenerate the narrative" feature never actually ran).
         from core.token_manager import TokenBudgetManager
+        from config.settings import get_settings
+        settings = get_settings()
         total_budget = (prior_report.token_budget or 0) + (partial_report.token_budget or 0)
-        budget = TokenBudgetManager(merged.request_id, custom_budgets={"_merge": total_budget})
+        budget = TokenBudgetManager(merged.request_id, custom_budgets={
+            "_merge": total_budget,
+            "remediation": settings.budget_remediation,
+            "_reserve": settings.budget_reserve,
+        })
 
         merged = orch._finalize(merged, budget, changed_files, changed_lines, source_lines)
+
+        # Regenerate the remediation narrative (pr_walkthrough/executive_summary/
+        # deployment_strategy/validation_checklist) against the FULL accumulated
+        # PR — not the latest-slice values report_merge.py copies over as its
+        # initial placeholder. The narrative-generating prompt sends no raw diff
+        # text (see remediation_agent.build_user_prompt — it's built entirely
+        # from report metrics + top_issues), so the fix here isn't `full_req_view`
+        # itself, it's that `merged` is now fully re-finalized: its top_issues/
+        # gate/risk reflect the WHOLE PR's findings, where the partial run's own
+        # context only ever saw the incremental slice's findings. code_fixes/
+        # diagrams are left as report_merge.py already merged them (old + new) —
+        # only the narrative text fields are refreshed here.
+        if merged.remediation is not None:
+            try:
+                from agents.remediation_agent import build_full_report_context
+                full_rem_ctx = build_full_report_context(merged)
+                fresh = orch._rem.run(full_req_view, budget, full_rem_ctx)
+                merged.remediation.pr_walkthrough      = fresh.pr_walkthrough
+                merged.remediation.executive_summary   = fresh.executive_summary
+                merged.remediation.deployment_strategy = fresh.deployment_strategy
+                merged.remediation.validation_checklist = fresh.validation_checklist
+            except Exception as exc:
+                log.warning("[%s] Full-PR narrative regeneration failed (%s) — keeping "
+                            "latest-slice narrative from the incremental merge", req.request_id, exc)
+                # Also surface this in the report itself (report.errors is
+                # already rendered as a visible banner in both the VS Code
+                # panel and the IntelliJ tool window) — a backend log line
+                # nobody's watching is how the "_reserve" KeyError bug this
+                # guards against went unnoticed for an entire session. Never
+                # let a failure HERE take down the merge itself, though —
+                # this is a courtesy notice, not a gating condition.
+                try:
+                    merged.errors.append(
+                        "The PR walkthrough/executive summary above may describe only the latest "
+                        "push, not the full PR — regenerating it against the full accumulated diff "
+                        f"failed ({exc})."
+                    )
+                except Exception:
+                    pass
+
         store.save(merged)
         log.info("[%s] Incremental re-review: merged %s (prior) + new commits — gate=%s",
                   req.request_id, prior["request_id"], merged.gate_decision)

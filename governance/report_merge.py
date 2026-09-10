@@ -189,11 +189,15 @@ def merge_reports(old: AnalysisReport, new_partial: AnalysisReport) -> AnalysisR
     # Remediation: code_fixes/fix_suggestions are per-finding and merged like
     # the agent-result fields above, so old findings don't lose their
     # suggested fixes. The narrative fields (pr_walkthrough, executive_summary,
-    # diagrams, validation_checklist, deployment_strategy) are kept from
-    # new_partial as the current/latest state — a KNOWN IMPERFECTION: a truly
-    # complete walkthrough would describe the full accumulated diff, not just
-    # the latest incremental slice. Acceptable for v1; revisit if this proves
-    # confusing in practice.
+    # diagrams, validation_checklist, deployment_strategy) start out as
+    # new_partial's latest-slice values — just a placeholder here. The caller
+    # (api/routes/webhooks.py::_run_incremental_merge) overwrites pr_walkthrough/
+    # executive_summary/deployment_strategy/validation_checklist right after
+    # calling this function, once it has re-finalized the merged report and can
+    # regenerate them against the FULL accumulated PR instead of only the new
+    # commits. Diagrams are left as the latest-slice value — regenerating a
+    # sequence diagram for the whole PR on every incremental push isn't worth
+    # the extra LLM call.
     if new_partial.remediation is not None:
         if merged.remediation is not None:
             merged.remediation.code_fixes = [*merged.remediation.code_fixes, *new_partial.remediation.code_fixes]

@@ -1,5 +1,81 @@
 # Changelog
 
+## 0.15.1
+
+Fixes from a full code review of the 0.15.0 changes (applies to both this
+extension and the IntelliJ plugin, which share the same backend):
+
+- **Backend** (requires a backend redeploy):
+  - Fixed a real bug that silently disabled 0.15.0's "full-PR narrative on
+    incremental re-review" feature entirely: the `TokenBudgetManager` built
+    for that regeneration call was missing a required `"_reserve"` key,
+    so every call KeyError'd internally (caught and logged, never
+    surfaced) and the narrative silently stayed on the latest-slice text.
+    Now gives that call a real `remediation` budget instead.
+  - Fixed the OpenAPI diff parser double-reporting a fully deleted field as
+    BOTH a "removed" break and a spurious "type changed (was `string`)"
+    break for the same field — now just the one correct "removed" break.
+  - Fixed a maintainability-agent state-machine bug where an untyped
+    function between two typed ones could hide a real missing-return
+    finding on the first function (its own `return` value was
+    misattributed backwards across the function boundary).
+  - The consumer-contract type-change description now shows the actual new
+    type too (`` `string` → `integer` ``), not just what it changed from —
+    the model field existed but was never actually populated.
+- Removed a redundant third copy of the suppression-fingerprint formula in
+  this extension's own source (now re-exported from the shared rendering
+  package instead of hand-duplicated) — no behavior change, just one fewer
+  place for it to silently drift out of sync.
+
+## 0.15.0
+
+Four "good to have" items from the capability review, all implemented:
+
+- **Sequence diagrams render inline** in the results panel (bundled
+  mermaid.min.js, matches the current VS Code theme) — previously only shown
+  as raw copyable Mermaid source. The raw source + copy button are still there
+  in a details block below the rendered diagram.
+- **Send full review context from the editor** — three new settings let the
+  extension send what the web app already sends but VS Code never did:
+  `gto.connectedRepos` (blast-radius baseline), `gto.connectedRepoPaths`
+  (local checkouts of dependent repos — greps them for real call-sites of
+  this diff's changed symbols), `gto.functionalSpecPaths` (.md/.txt/.docx/.pdf
+  specs to trace the change against). All opt-in, empty by default, and — for
+  the repo-local ones — actually *cheaper* here than in the web app, since a
+  local checkout has filesystem access the browser doesn't.
+- **Backend** (requires a backend redeploy):
+  - Incremental PR re-review now regenerates the PR walkthrough/executive
+    summary/deployment strategy against the FULL accumulated PR once the
+    merged report is re-finalized, instead of describing only the latest
+    push's commits.
+  - New **consumer-contract compatibility** check: when a producer's OpenAPI
+    field is removed or retyped, and reference-impact already found a
+    cross-repo caller whose captured line literally mentions that field name,
+    it's now surfaced as a `ConsumerImpact` record — real evidence a
+    *specific* consumer's contract expectation broke, not just "something
+    calls this class." First deterministic slice of the fuller design (a
+    dedicated per-field grep of consumer repos); see
+    `governance/consumer_contract.py`'s docstring for the known scope limit.
+
+## 0.14.4
+
+Maintainability/QA detection fixes — from user-reported gaps on a real diff
+(a method with its return statement commented out, leaving it silently
+returning `None`).
+
+- **Backend** (requires a backend redeploy):
+  - Maintainability agent now statically flags **commented-out code**: 2+
+    consecutive added `#`/`//` lines that still parse as real statements
+    (assignments, `return`, control-flow keywords), not just prose comments.
+  - Maintainability agent now statically flags a Python function **missing its
+    return statement**: a `def` annotated `-> SomeType` whose body has no
+    `return <value>` — it silently returns `None` instead.
+  - QA Scenarios agent's LLM path now generates **real test bodies** (concrete
+    inputs/expected values derived from the diff) instead of always producing
+    an Arrange/Act/Assert placeholder skeleton with `assert ...`. The
+    placeholder template is now only a fallback for when the LLM leaves a
+    scenario's test empty.
+
 ## 0.14.3
 
 - **Marketplace icon** — redrawn as the UOB lockup (red mark + white "UOB") on a

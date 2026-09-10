@@ -322,6 +322,17 @@ class ContractBreak(BaseModel):
     break_type:     str    # removed | renamed | type_change | required_added
     consumers:      list[str] = []
     severity:       RiskLevel = RiskLevel.HIGH
+    # Structured field-level detail, populated only where the parser can
+    # actually name the field (currently: _parse_openapi_diff's removed-field
+    # and type-change branches). Optional/blank elsewhere — every other
+    # break_type still works exactly as before this existed. Lets
+    # governance/consumer_contract.py check whether a specific FIELD (not
+    # just the endpoint/symbol as a whole) is actually referenced in a
+    # consumer's own code, which a symbol-name/endpoint-token match alone
+    # can't answer — see that module's docstring.
+    field_name:     str | None = None
+    old_type:       str | None = None
+    new_type:       str | None = None
 
 
 class InterfaceResult(AgentResultBase):

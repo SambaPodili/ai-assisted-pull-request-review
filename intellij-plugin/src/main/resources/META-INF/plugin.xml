@@ -1,0 +1,76 @@
+<idea-plugin>
+    <id>com.uob.gto.pr-review</id>
+    <name>GTO Pull Request Review Framework</name>
+    <vendor url="https://github.com/SambaPodili/ai-assisted-pull-request-review">UOB</vendor>
+    <description><![CDATA[
+        Multi-agent PR review &amp; risk gating — run it on your uncommitted changes
+        without leaving the IDE. IntelliJ counterpart to the GTO VS Code extension;
+        same backend, same review agents, same results view (shared rendering —
+        see shared/report-view in the monorepo).
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.json</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow id="GTO Review"
+                    anchor="right"
+                    icon="/icons/gto.svg"
+                    factoryClass="com.uob.gto.toolwindow.GtoResultsToolWindowFactory"/>
+
+        <applicationConfigurable
+                parentId="tools"
+                instance="com.uob.gto.settings.GtoSettingsConfigurable"
+                id="com.uob.gto.settings.GtoSettingsConfigurable"
+                displayName="GTO Review"/>
+
+        <applicationService serviceImplementation="com.uob.gto.settings.GtoSettingsState"/>
+        <applicationService serviceImplementation="com.uob.gto.LastReportHolder"/>
+
+        <notificationGroup id="GTO Review" displayType="BALLOON"/>
+
+        <localInspection language=""
+                          displayName="GTO Review findings"
+                          groupName="GTO Review"
+                          enabledByDefault="true"
+                          level="WARNING"
+                          implementationClass="com.uob.gto.inspection.GtoFindingInspection"/>
+
+        <postStartupActivity implementation="com.uob.gto.GtoStartupActivity"/>
+
+        <statusBarWidgetFactory implementation="com.uob.gto.GtoStatusBarWidgetFactory"
+                                 id="GtoStatusBarWidget"/>
+
+        <codeInsight.codeVisionProvider implementation="com.uob.gto.inspection.GtoCodeVisionProvider"/>
+    </extensions>
+
+    <actions>
+        <group id="com.uob.gto.ActionGroup" text="GTO" popup="true">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+
+            <action id="com.uob.gto.AnalyzeChanges" class="com.uob.gto.actions.AnalyzeChangesAction"
+                    text="GTO: Analyze Changes" description="Review uncommitted changes with GTO">
+                <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt shift G"/>
+            </action>
+            <action id="com.uob.gto.AnalyzeBranch" class="com.uob.gto.actions.AnalyzeBranchAction"
+                    text="GTO: Analyze Branch..." description="Review a branch comparison with GTO"/>
+            <separator/>
+            <action id="com.uob.gto.ShowLastResult" class="com.uob.gto.actions.ShowLastResultAction"
+                    text="GTO: Show Last Result" description="Reopen the most recent GTO review"/>
+            <separator/>
+            <action id="com.uob.gto.SetApiKey" class="com.uob.gto.actions.SetApiKeyAction"
+                    text="GTO: Set API Key" description="Store the GTO backend API key"/>
+            <action id="com.uob.gto.SetModelApiKey" class="com.uob.gto.actions.SetModelApiKeyAction"
+                    text="GTO: Set Model API Key" description="Store a personal model-provider API key"/>
+            <action id="com.uob.gto.SelectModel" class="com.uob.gto.actions.SelectModelAction"
+                    text="GTO: Select Model" description="Choose a server-configured model preset"/>
+            <action id="com.uob.gto.SetGitProviderToken" class="com.uob.gto.actions.SetGitProviderTokenAction"
+                    text="GTO: Set Personal Git Provider Token" description="Store a personal Bitbucket/GitHub token"/>
+            <separator/>
+            <action id="com.uob.gto.InstallGitHook" class="com.uob.gto.actions.InstallGitHookAction"
+                    text="GTO: Install Git Hook" description="Install a pre-push GTO check"/>
+            <action id="com.uob.gto.UninstallGitHook" class="com.uob.gto.actions.UninstallGitHookAction"
+                    text="GTO: Uninstall Git Hook" description="Remove the pre-push GTO check"/>
+        </group>
+    </actions>
+</idea-plugin>

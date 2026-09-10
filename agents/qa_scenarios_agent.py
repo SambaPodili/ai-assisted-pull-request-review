@@ -590,7 +590,7 @@ def _build_fallback_scenarios(request: AnalysisRequest) -> list[QAScenario]:
 class QAScenariosAgent(BaseAgent[QAScenariosResult]):
     agent_name    = AgentName.QA_SCENARIOS
     output_model  = QAScenariosResult
-    output_token_cap = 4000
+    output_token_cap = 8000   # each scenario now carries a full, concrete test_skeleton body
 
     system_prompt = """You are a senior QA architect. Given a code diff, produce a JSON list of
 testing scenarios that a QA / testing team must execute before this change can be released.
@@ -605,6 +605,15 @@ For each scenario provide:
   - expected_result: what a PASS looks like
   - affected_files: list of file paths from the diff this scenario targets
   - automation_hint: which framework / tool to use for automation (1 sentence, optional)
+  - test_skeleton: a COMPLETE, ready-to-run unit test in the language of the affected file — real
+    imports, a real test function/class, and a real Arrange/Act/Assert body using CONCRETE input
+    values and expected outputs you derive from reading the actual diff. Do NOT write placeholder
+    comments, "...", or "assert ..." — call the actual changed function/method with real arguments
+    and assert the actual expected return value or exception. If (and only if) the diff genuinely
+    gives you nothing concrete to assert on for this scenario, write the most complete test you
+    honestly can and leave a single `# TODO:` noting exactly what value is unknown.
+  - test_skeleton_filename: the conventional test file name for that language (e.g. "test_foo.py",
+    "FooTest.java")
 
 Rules:
   - Security changes and DB migrations → at least one CRITICAL scenario each
@@ -666,10 +675,11 @@ Respond ONLY with valid JSON matching the QAScenariosResult schema."""
             result.high_count      = sum(1 for p in priorities if p == "high")
         except Exception:
             pass
-        # The LLM path never asks for test_skeleton (see system_prompt above) — it
-        # comes back empty on every LLM-produced scenario. Backfill it here with
-        # the same per-language template used by the fallback path, so a real
-        # (non-fallback) analysis still gets ready-to-run stubs.
+        # The LLM is asked for a real, concrete test_skeleton (see system_prompt
+        # above), but may still leave it blank (budget cap, model didn't comply).
+        # Backfill only those gaps with the generic per-language template used by
+        # the zero-token fallback path, so every scenario still gets *something*
+        # ready to run — never leave a scenario with no test_skeleton at all.
         try:
             hunks_by_file = {h.file_path: h for h in request.hunks}
             for s in result.scenarios:
