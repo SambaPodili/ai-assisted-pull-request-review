@@ -50,7 +50,7 @@ intellijPlatform {
         version.set(providers.gradleProperty("pluginVersion"))
 
         ideaVersion {
-            sinceBuild.set("233")
+            sinceBuild.set("223")
             untilBuild.set(provider { null }) // no upper bound — stay compatible forward until proven otherwise
         }
     }
@@ -86,6 +86,18 @@ val copySharedReportView = tasks.register<Copy>("copySharedReportView") {
 tasks {
     named("processResources") {
         dependsOn(copySharedReportView)
+    }
+    // buildSearchableOptions (indexes Settings-page fields for the Settings
+    // dialog's own search box) launches a headless IDE using the SAME
+    // platformVersion this module compiles against, and the Gradle plugin's
+    // OWN implementation of that task hard-refuses below IDE 2023.3 — a
+    // build-tooling limit, unrelated to whether the plugin's actual code is
+    // compatible with an older IDE (verified separately: compileKotlin
+    // passes clean against 2022.3.3). Disabling it costs only the Settings-
+    // search-box indexing for our one Settings page; the page itself still
+    // works and is still reachable normally via Settings > Tools > GTO Review.
+    named("buildSearchableOptions") {
+        enabled = false
     }
     withType<KotlinCompile> {
         compilerOptions {

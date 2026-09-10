@@ -7,9 +7,16 @@ IntelliJ Platform Gradle Plugin (Kotlin).
 ## Status: feature parity with the VS Code extension
 
 Every VS Code extension command and interaction has an IntelliJ
-counterpart, verified building (`compileKotlin`, `buildPlugin`, and
-`verifyPluginProjectConfiguration` all pass clean) against IntelliJ
-Platform Community `2023.3.6`.
+counterpart, verified building (`compileKotlin` and `buildPlugin` pass
+clean) against IntelliJ Platform Community `2022.3.3` (build 223) — the
+plugin's declared floor (`sinceBuild = 223`, `gradle.properties`'
+`platformVersion`), so a developer on an older IDE install isn't blocked.
+`verifyPluginProjectConfiguration` prints an advisory warning at this
+floor ("older versions are no longer maintained") — informational only,
+not a build failure; `buildSearchableOptions` (Settings-search-box
+indexing, unrelated to plugin functionality) is disabled because that
+Gradle task itself hard-refuses IDEs below build 233, regardless of what
+the plugin's own code supports.
 
 | VS Code | IntelliJ | File |
 |---|---|---|
@@ -19,7 +26,7 @@ Platform Community `2023.3.6`.
 | Quick Fix (💡 lightbulb) | ✅ same staleness check as the results panel's Apply button | `inspection/GtoFindingInspection.kt` (`GtoApplyFixQuickFix`), `GtoCodeFixApplier.kt` |
 | CodeLens ("⚠ N GTO issue(s)") | ✅ via IntelliJ's Code Vision (the platform's own CodeLens equivalent) | `inspection/GtoCodeVisionProvider.kt` |
 | Status bar item | ✅ | `GtoStatusBarWidget.kt` |
-| Auto-analyze-on-save | ✅ 1.5s-debounced, non-interactive, never overlaps a run in flight | `GtoStartupActivity.kt` |
+| Auto-analyze-on-save | ✅ 1.5s-debounced, non-interactive, never overlaps a run in flight | `GtoFileSaveListener.kt` |
 | Local suppression (`.gto-ignore.json`) + "New" delta badge | ✅ same fingerprint formula as shared/report-view and the web app | `GtoReportState.kt` |
 | Git hook install/uninstall | ✅ reuses the exact bash script byte-for-byte (plain shell, IDE-agnostic) | `actions/GitHookActions.kt` |
 | Set API Key / Model API Key / Git Provider Token | ✅ via PasswordSafe (OS keychain) | `actions/CredentialActions.kt`, `settings/GtoCredentials.kt` |

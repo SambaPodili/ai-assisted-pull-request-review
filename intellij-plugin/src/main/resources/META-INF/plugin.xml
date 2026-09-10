@@ -36,7 +36,7 @@
                           level="WARNING"
                           implementationClass="com.uob.gto.inspection.GtoFindingInspection"/>
 
-        <postStartupActivity implementation="com.uob.gto.GtoStartupActivity"/>
+        <fileDocumentManagerListener implementation="com.uob.gto.GtoFileSaveListener"/>
 
         <statusBarWidgetFactory implementation="com.uob.gto.GtoStatusBarWidgetFactory"
                                  id="GtoStatusBarWidget"/>

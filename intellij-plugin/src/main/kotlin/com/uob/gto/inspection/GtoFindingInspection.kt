@@ -33,10 +33,9 @@ import java.io.File
  * Code side's diagnostics (cleared implicitly once a new report replaces
  * the old one).
  *
- * TODO (next pass): the CodeLens-style "⚠ N GTO issue(s)" inline hint
- * (codeLenses.ts) isn't ported — IntelliJ's own gutter/Problems-panel
- * already surfaces multiple findings on one line when hovered, which
- * covers most of that feature's value without a separate component.
+ * The CodeLens-style "⚠ N GTO issue(s)" inline hint (codeLenses.ts) is
+ * ported separately via IntelliJ's Code Vision — see
+ * inspection/GtoCodeVisionProvider.kt — not duplicated here.
  */
 class GtoFindingInspection : LocalInspectionTool() {
 
