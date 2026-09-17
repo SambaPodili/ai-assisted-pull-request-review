@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.2.2
+
+Fixes for backend connectivity and the "Explain" feature found while
+debugging a fresh install against a cleartext (http://) uvicorn backend.
+
+- **`GET /api/v1/model-presets` parsing fixed.** The backend returns
+  `{"presets": [...]}` (an object wrapping the array, same as
+  `vscode-extension/src/apiClient.ts`), but `ApiClient.kt` was parsing the
+  raw response body directly as a JSON array, throwing
+  `Element class JsonObject is not a JsonArray` on every "GTO: Select
+  Model" attempt.
+- **`HttpClient` pinned to HTTP/1.1** in both `ApiClient.kt` and
+  `ReviewContext.kt` (functional-spec `.docx`/`.pdf` upload). The JDK
+  client's default HTTP/2 preference sends an `Upgrade: h2c` preface on
+  the first cleartext (`http://`) request, which uvicorn's `h11` parser
+  rejects with `"Invalid HTTP request received."` — most visibly on
+  `POST /analyse` (a body-bearing request); bodyless GETs could slip
+  through. In `ReviewContext.kt` this failure was previously swallowed
+  silently, dropping functional docs from the review context with no
+  visible error.
+- **"Explain" now reuses the configured model.** `explainFinding()` was
+  always answered by the backend's global default model, even when the
+  analysis itself ran against a configured preset or manual
+  provider/model override — so Explain could hit a different (and
+  differently-gated) model than Analyze did. It now resolves and sends
+  the same `llm_config` a fresh Analyze run would use (backend change:
+  `ExplainFindingRequest.llm_config`, threaded into
+  `governance.reply_answerer.answer_reply`'s `cfg` param).
+
 ## 0.2.1
 
 Lowered the minimum supported IntelliJ Platform version so developers on

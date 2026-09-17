@@ -147,13 +147,20 @@ class ApiClient(private val backendUrl: String, private val apiKey: String) {
     }
 
     /** "Explain this finding" — a fixed, never-user-typed question, answered
-     * by the same guardrailed Q&A engine used for PR chat replies. */
-    fun explainFinding(requestId: String, agent: String, category: String?, filePath: String?, title: String?): String {
+     * by the same guardrailed Q&A engine used for PR chat replies.
+     * [modelOverride], when given, is the same llm_config shape AnalyzeOptions
+     * sends — lets Explain reuse whichever provider/model the analysis itself
+     * used instead of the backend's global default model. */
+    fun explainFinding(
+        requestId: String, agent: String, category: String?, filePath: String?, title: String?,
+        modelOverride: JsonObject? = null,
+    ): String {
         val body = buildJsonObject {
             put("agent", agent)
             if (category != null) put("category", category)
             if (filePath != null) put("file_path", filePath)
             if (title != null) put("title", title)
+            if (modelOverride != null) put("llm_config", modelOverride)
         }
         val resp = http.send(request("/api/v1/report/$requestId/explain-finding", "POST", body.toString()).build(), HttpResponse.BodyHandlers.ofString())
         if (resp.statusCode() == 404) {

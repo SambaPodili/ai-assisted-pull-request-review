@@ -744,10 +744,16 @@ def get_compliance_report(
 
 
 class ExplainFindingRequest(BaseModel):
-    agent:     str = ""
-    category:  str = ""
-    file_path: str = ""
-    title:     str = ""
+    model_config = ConfigDict(protected_namespaces=())
+
+    agent:      str = ""
+    category:   str = ""
+    file_path:  str = ""
+    title:      str = ""
+    # Same shape as AnalyseRequest.llm_config — lets a client reuse whichever
+    # provider/model it used for the analysis itself instead of always
+    # falling back to the backend's global default model.
+    llm_config: dict[str, Any] = {}
 
 
 _EXPLAIN_QUESTION = "Explain why this was flagged and what a reviewer should check before dismissing it."
@@ -789,7 +795,10 @@ def explain_finding(
         "summary":  report.code_analysis.summary if report.code_analysis else "",
     }
 
-    answer = answer_reply(reply_text=_EXPLAIN_QUESTION, finding_context=finding_context, report_summary=report_summary)
+    answer = answer_reply(
+        reply_text=_EXPLAIN_QUESTION, finding_context=finding_context, report_summary=report_summary,
+        cfg=body.llm_config or None,
+    )
     return {"answer": answer}
 
 

@@ -268,8 +268,11 @@ object AnalysisRunner {
      * for a shared backend. Falls back to the advanced free-text override
      * only when no preset is selected. A selected-but-unresolved preset
      * (removed server-side, fetch failed) does NOT silently fall through to
-     * the free-text settings — better to warn and run unmodified. */
-    private fun resolveModelOverride(project: Project, backendUrl: String, apiKey: String): JsonObject? {
+     * the free-text settings — better to warn and run unmodified.
+     * Not private: also called from GtoResultsPanel's "Explain" handler so
+     * Explain resolves against the same currently-configured model as a
+     * fresh Analyze run, rather than the backend's global default. */
+    fun resolveModelOverride(project: Project, backendUrl: String, apiKey: String): JsonObject? {
         val settings = GtoSettingsState.getInstance().state
         val presetName = settings.selectedModelPreset.trim()
         if (presetName.isEmpty()) {

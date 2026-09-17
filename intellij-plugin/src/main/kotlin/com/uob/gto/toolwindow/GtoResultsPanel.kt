@@ -12,6 +12,7 @@ import com.intellij.ui.jcef.JBCefBrowserBase
 import com.intellij.ui.jcef.JBCefJSQuery
 import com.uob.gto.GtoCodeFixApplier
 import com.uob.gto.GtoReportState
+import com.uob.gto.actions.AnalysisRunner
 import com.uob.gto.api.AnalysisReportView
 import com.uob.gto.api.ApiClient
 import com.uob.gto.api.ApiException
@@ -407,7 +408,8 @@ class GtoResultsPanel(private val project: Project) : JPanel(BorderLayout()) {
         val requestId = report?.requestId ?: return
         Thread {
             try {
-                val text = ApiClient(backendUrl, apiKey).explainFinding(requestId, agent, category, file, title)
+                val modelOverride = AnalysisRunner.resolveModelOverride(project, backendUrl, apiKey)
+                val text = ApiClient(backendUrl, apiKey).explainFinding(requestId, agent, category, file, title, modelOverride)
                 respond(buildJsonObject { put("command", "explainDone"); put("fingerprint", fp); put("text", text) })
             } catch (e: Exception) {
                 respond(buildJsonObject { put("command", "explainDone"); put("fingerprint", fp); put("text", ""); put("error", describeError(e)) })
