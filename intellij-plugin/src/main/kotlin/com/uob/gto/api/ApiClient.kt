@@ -65,8 +65,14 @@ class AnalysisReportView(val raw: JsonObject) {
 
 class ApiClient(private val backendUrl: String, private val apiKey: String) {
 
+    // Pinned to HTTP/1.1: the JDK client's default HTTP/2 preference sends an
+    // "Upgrade: h2c" preface on the first cleartext (http://) request, which
+    // uvicorn's h11 parser can't handle and rejects with "Invalid HTTP
+    // request received." — most visibly on POST /analyse (a body-bearing
+    // request), while bodyless GETs could slip through.
     private val http: HttpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(15))
+        .version(HttpClient.Version.HTTP_1_1)
         .build()
 
     private fun request(path: String, method: String = "GET", body: String? = null): HttpRequest.Builder {
