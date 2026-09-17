@@ -196,7 +196,12 @@ object ReviewContext {
             .filter { it.isNotBlank() }.take(MAX_DOCS)
         if (configured.isEmpty()) return emptyList()
 
-        val http by lazy { HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15)).build() }
+        // HTTP/1.1 pinned: see ApiClient.kt's HttpClient for why — the JDK
+        // default HTTP/2 preference sends an Upgrade: h2c preface on
+        // cleartext POSTs that uvicorn's h11 parser rejects.
+        val http by lazy {
+            HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15)).version(HttpClient.Version.HTTP_1_1).build()
+        }
         val out = mutableListOf<Pair<String, String>>()
         for (p in configured) {
             val abs = if (File(p).isAbsolute) File(p) else File(repoRoot, p)
