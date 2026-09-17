@@ -63,6 +63,34 @@ def _wrap_reply_text(text: str) -> str:
     )
 
 
+def _resolve_model_config(cfg):
+    """Fill in a blank api_key/base_url from backend settings, same rule as
+    agents/base_agent.py::BaseAgent._resolve_model_config: a client-supplied
+    override (e.g. a secret-free server model PRESET — provider+model only,
+    by design) means "use the configured env credential for that provider",
+    not "call with no credential at all". Without this, any preset-based
+    override reaching here raises inside UnifiedLLMClient.create() ("No API
+    key for provider ...") on every call, which answer_reply's except-clause
+    then quietly turns into a generic "couldn't generate an answer" reply."""
+    from agents.llm_client import ModelConfig
+    from config.settings import get_settings
+
+    if not cfg:
+        return ModelConfig.from_settings()
+
+    mc = ModelConfig.from_dict(cfg)
+    settings = get_settings()
+    if mc.provider == "anthropic":
+        if not mc.api_key:
+            mc.api_key = settings.anthropic_api_key
+    else:
+        if not mc.base_url:
+            mc.base_url = (getattr(settings, "llm_base_url", "") or "").strip()
+        if not mc.api_key:
+            mc.api_key = (getattr(settings, "llm_api_key", "") or getattr(settings, "openai_api_key", "") or "").strip()
+    return mc
+
+
 def answer_reply(reply_text: str, finding_context: dict[str, Any], report_summary: dict[str, Any],
                   cfg=None) -> str:
     """Returns a comment body to post back. Never raises for a guard
@@ -75,7 +103,7 @@ def answer_reply(reply_text: str, finding_context: dict[str, Any], report_summar
         return CANNED_BLOCKED_REPLY
 
     from agents.llm_client import make_llm_client
-    client = make_llm_client(cfg)
+    client = make_llm_client(_resolve_model_config(cfg))
 
     context_lines = [f"Report summary: {report_summary}"]
     if finding_context:
