@@ -260,7 +260,7 @@ class ApiClient(private val backendUrl: String, private val apiKey: String) {
     fun fetchModelPresets(): List<ModelPreset> {
         val resp = http.send(request("/api/v1/model-presets").build(), HttpResponse.BodyHandlers.ofString())
         checkOk(resp)
-        val arr = Json.parseToJsonElement(resp.body()).jsonArray
+        val arr = Json.parseToJsonElement(resp.body()).jsonObject["presets"]?.jsonArray ?: return emptyList()
         return arr.map {
             val o = it.jsonObject
             ModelPreset(
